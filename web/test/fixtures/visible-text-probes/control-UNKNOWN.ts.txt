@@ -1,0 +1,4 @@
+export function review_guard_probe(parent: HTMLElement): void {
+  const node = parent;
+  node.textContent = "UNKNOWN";
+}

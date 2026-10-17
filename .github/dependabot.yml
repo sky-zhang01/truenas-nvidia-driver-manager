@@ -1,0 +1,39 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Etc/UTC
+    ignore:
+      # The SSH signature verifier requires the dalek 2 series.
+      - dependency-name: ed25519-dalek
+        versions: [">=3"]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Etc/UTC
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Etc/UTC
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Etc/UTC
+    ignore:
+      # The Debian digest and frozen package closure are regenerated together.
+      - dependency-name: debian
+      # Node major upgrades are deliberate and update both CI workflows together.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]

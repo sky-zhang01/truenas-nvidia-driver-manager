@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "../dist-test",
+    // Use explicit Node declarations in node-runtime.d.ts without adding runtime type dependencies.
+    "types": [],
+    "noEmit": false
+  },
+  "include": ["../src/**/*.ts", "./**/*.ts"]
+}

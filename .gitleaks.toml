@@ -1,0 +1,61 @@
+# gitleaks configuration for truenas-nvidia-driver-manager.
+#
+# The default rule set stays fully enabled: this file only adds four narrow
+# allowlists for four reviewed false positives. Every entry names one exact
+# file, one built-in rule id and a regular expression that matches only the
+# reviewed non-secret, and every entry uses condition = "AND" so that the path
+# alone never exempts a file. No rule is disabled, replaced or widened.
+#
+# Notes for whoever edits this file:
+#   * Two rule ids are extended, so there are exactly two [[rules]] tables, one
+#     per id. A third table repeating an id would replace the earlier one and
+#     silently drop its allowlists.
+#   * A marker's trailing dashes are written `-{5}` (an equivalent regular
+#     expression) instead of `-----` on purpose: spelling the armour markers
+#     out in full would make this configuration file match the private-key rule
+#     itself, and this file ships inside the exported tree.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+    # src/startup.rs — the localisation message key `startup.mapping.nsenter_failed`
+    # is a JSON value of `{"key": ...}`. Only that key shape in that one file.
+    [[rules.allowlists]]
+    description = "src/startup.rs: a startup.mapping.* i18n message key is a JSON value, not a credential"
+    condition = "AND"
+    regexTarget = "secret"
+    paths = ['''(^|/)src/startup\.rs$''']
+    regexes = ['''^startup\.mapping\.[a-z_.]+$''']
+
+    # tests/fixtures/stock-nvidia.raw-580.173.02-unsquashfs-lls.txt:1747 — a
+    # manual-page file name in the vendor sysext listing. Only that name.
+    [[rules.allowlists]]
+    description = "tests/fixtures: the vendor manual-page file name pkey_alloc.2.gz in the sysext listing"
+    condition = "AND"
+    regexTarget = "secret"
+    paths = ['''(^|/)tests/fixtures/stock-nvidia\.raw-580\.173\.02-unsquashfs-lls\.txt$''']
+    regexes = ['''^pkey_alloc\.2\.gz$''']
+
+[[rules]]
+id = "private-key"
+
+    # web/test/ssh-render.test.ts:17-19 — the keyless armour fixture that the
+    # `looksLikePrivateKey` test feeds to the detector. Only this exact block.
+    [[rules.allowlists]]
+    description = "web/test/ssh-render.test.ts: the keyless armour fixture used by the private-key detector test"
+    condition = "AND"
+    regexTarget = "secret"
+    paths = ['''(^|/)web/test/ssh-render\.test\.ts$''']
+    regexes = ['''^-----BEGIN OPENSSH PRIVATE KEY-{5}\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n-----END OPENSSH PRIVATE KEY-{5}$''']
+
+    # web/test/ssh-render.test.ts — the three begin-marker string literals in
+    # the table of the private-key detector test. Only these exact rows.
+    [[rules.allowlists]]
+    description = "web/test/ssh-render.test.ts: the begin-marker literals asserted on by the private-key detector test"
+    condition = "AND"
+    regexTarget = "secret"
+    paths = ['''(^|/)web/test/ssh-render\.test\.ts$''']
+    regexes = ['''^-----BEGIN RSA PRIVATE KEY-{5}", true\],\n    \["-----BEGIN ENCRYPTED PRIVATE KEY-{5}", true\],\n    \["-----BEGIN PRIVATE KEY-{5}$''']

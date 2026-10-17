@@ -1,0 +1,1293 @@
+/* Theme changes use the root data-theme attribute and preserve one shared DOM. */
+
+html[data-theme="plate-light"] {
+  color-scheme: light;
+
+  --bg: #e6e3db;
+  --fg: #242321;
+  --strong-fg: #16181b;
+  --panel: #f6f5f0;
+  --inset: #eceae1;
+  --border: #c2bcac;
+  --muted: #68655e;
+
+  --accent: #1e4a78;
+  --btn-primary-bg: #1e4a78;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover-bg: #16385c;
+  --btn-danger-fg: #ffffff;
+
+  --info: #1e4a78;
+  --info-bg: #e5ecf3;
+  --info-fg: #183654;
+  --warning: #593d00;
+  --warning-bg: #f7ecd2;
+  --error: #962a2a;
+  --error-bg: #f7e5e1;
+  --success: #237346;
+  --success-bg: #e9f3eb;
+
+  --code-bg: #efeee7;
+  --code-fg: #242321;
+  --row-alt: #efeee7;
+  --focus-color: #1e4a78;
+
+  --topbar-bg: #dbd7cb;
+  --topbar-border: #c2bcac;
+  --sidebar-bg: #dbd7cb;
+  --sidebar-border: #c2bcac;
+  --nav-fg: #4a4740;
+  --nav-active-bg: #f6f5f0;
+  --nav-active-fg: #242321;
+  --nav-active-ring: #c2bcac;
+  --nav-active-bar: none;
+  --nav-active-icon: #1e4a78;
+  --nav-mobile-bar: #242321;
+  --nav-dot: #f3b329;
+  --nav-dot-ring: rgba(36, 34, 30, 0.65);
+
+  --rivet-dark: #9a968a;
+  --rivet-light: #f8f7f3;
+  --hole-core: #8f8c82;
+  --hole-ring: #c9c6bc;
+  --scrim: rgba(36, 34, 30, 0.45);
+  --shadow: 0 1px 2px rgba(48, 44, 36, 0.14), 0 4px 14px rgba(48, 44, 36, 0.1);
+  --radius: 3px;
+  --texture: radial-gradient(circle at 2px 2px, rgba(60, 56, 46, 0.07) 1.3px, transparent 1.8px);
+  --texture-size: 22px 22px;
+}
+
+html[data-theme="plate-dark"] {
+  color-scheme: dark;
+
+  --bg: #1b1d20;
+  --fg: #e6e8ea;
+  --strong-fg: #f1f3f5;
+  --panel: #282b2e;
+  --inset: #202326;
+  --border: #3a3f46;
+  --muted: #9ea3a8;
+
+  --accent: #9fc1f7;
+  --btn-primary-bg: #2563eb;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover-bg: #1d4ed8;
+  --btn-danger-fg: #1b1d20;
+
+  --info: #9fc1f7;
+  --info-bg: #1c2b3d;
+  --info-fg: #cbdcf7;
+  --warning: #facc15;
+  --warning-bg: #422e07;
+  --error: #f87171;
+  --error-bg: #3a1a18;
+  --success: #34d399;
+  --success-bg: #162920;
+
+  --code-bg: #202326;
+  --code-fg: #e6e8ea;
+  --row-alt: #23262a;
+  --focus-color: #9fc1f7;
+
+  --topbar-bg: #202326;
+  --topbar-border: #3a3f46;
+  --sidebar-bg: #202326;
+  --sidebar-border: #3a3f46;
+  --nav-fg: #b8bdc2;
+  --nav-active-bg: #25282b;
+  --nav-active-fg: #f1f3f5;
+  --nav-active-ring: #3a3f46;
+  --nav-active-bar: none;
+  --nav-active-icon: #9fc1f7;
+  --nav-mobile-bar: #2563eb;
+  --nav-dot: #facc15;
+  --nav-dot-ring: rgba(0, 0, 0, 0.7);
+
+  --rivet-dark: #101214;
+  --rivet-light: #4a4f55;
+  --hole-core: #101214;
+  --hole-ring: #4a4f55;
+  --scrim: rgba(0, 0, 0, 0.55);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 14px rgba(0, 0, 0, 0.3);
+  --radius: 3px;
+  --texture: radial-gradient(circle at 2px 2px, rgba(226, 230, 234, 0.045) 1.3px, transparent 1.8px);
+  --texture-size: 22px 22px;
+}
+
+/* With no data-theme attribute, focused-light is the default. */
+:root,
+html[data-theme="focused-light"] {
+  color-scheme: light;
+
+  --bg: #f1f5f9;
+  --fg: #0f172a;
+  --strong-fg: #0f172a;
+  --panel: #ffffff;
+  --inset: #f1f5f9;
+  --border: #e2e8f0;
+  /* Hint color must retain AA contrast against the canvas. */
+  --muted: #5b6b80;
+
+  --accent: #0369a1;
+  --btn-primary-bg: #0369a1;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover-bg: #075985;
+  --btn-danger-fg: #ffffff;
+
+  --info: #0369a1;
+  --info-bg: #f0f7ff;
+  --info-fg: #0c4a6e;
+  --warning: #92400e;
+  --warning-bg: #fffbeb;
+  --error: #b91c1c;
+  --error-bg: #fef2f2;
+  --success: #047857;
+  --success-bg: #ecfdf5;
+
+  --code-bg: #f8fafc;
+  --code-fg: #0f172a;
+  --row-alt: #f8fafc;
+  --focus-color: #0369a1;
+
+  --topbar-bg: #ffffff;
+  --topbar-border: #e2e8f0;
+  --sidebar-bg: #f8fafc;
+  --sidebar-border: #e2e8f0;
+  --nav-fg: #475569;
+  --nav-active-bg: #ecfdf5;
+  --nav-active-fg: #065f46;
+  --nav-active-ring: transparent;
+  --nav-active-bar: inset 3px 0 0 0 #047857;
+  --nav-active-icon: #047857;
+  --nav-mobile-bar: #047857;
+  --nav-dot: #b45309;
+  --nav-dot-ring: rgba(15, 23, 42, 0.55);
+
+  --scrim: rgba(15, 23, 42, 0.45);
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.08);
+  --radius: 10px;
+  --texture: none;
+  --texture-size: auto;
+}
+
+html[data-theme="focused-dark"] {
+  color-scheme: dark;
+
+  --bg: #0b1326;
+  --fg: #dae2fd;
+  --strong-fg: #eef3ff;
+  --panel: #171f33;
+  --inset: #101a30;
+  --border: #414753;
+  --muted: #c1c6d5;
+
+  --accent: #aac7ff;
+  --btn-primary-bg: #0066cc;
+  --btn-primary-fg: #dfe8ff;
+  --btn-primary-hover-bg: #0857b0;
+  --btn-danger-fg: #0b1326;
+
+  --info: #aac7ff;
+  --info-bg: #16233f;
+  --info-fg: #cbdcf7;
+  --warning: #fbbf24;
+  --warning-bg: #3a2a05;
+  --error: #ffb4ab;
+  --error-bg: #93000a;
+  --success: #59de9b;
+  --success-bg: #0d2b22;
+
+  --code-bg: #101a30;
+  --code-fg: #dae2fd;
+  --row-alt: #1b2440;
+  --focus-color: #aac7ff;
+
+  --topbar-bg: #131b2e;
+  --topbar-border: #2a3450;
+  --sidebar-bg: #131b2e;
+  --sidebar-border: #2a3450;
+  --nav-fg: #b6c2e2;
+  --nav-active-bg: #12291d;
+  --nav-active-fg: #d7f5e7;
+  --nav-active-ring: transparent;
+  --nav-active-bar: inset 3px 0 0 0 #34d399;
+  --nav-active-icon: #59de9b;
+  --nav-mobile-bar: #34d399;
+  --nav-dot: #facc15;
+  --nav-dot-ring: rgba(0, 0, 0, 0.7);
+
+  --scrim: rgba(2, 6, 18, 0.6);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.35);
+  --radius: 10px;
+  --texture: none;
+  --texture-size: auto;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  background-image: var(--texture);
+  background-size: var(--texture-size);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus-color);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 4px);
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--inset);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+}
+
+.btn-primary {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--btn-primary-hover-bg);
+  border-color: var(--btn-primary-hover-bg);
+}
+
+.btn-primary:disabled {
+  background: var(--inset);
+  border: 1px dashed var(--border);
+  color: var(--muted);
+}
+
+.btn-danger {
+  background: var(--error);
+  border-color: var(--error);
+  color: var(--btn-danger-fg);
+  font-weight: 600;
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+input,
+select {
+  font: inherit;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 4px);
+  background: var(--panel);
+  color: var(--fg);
+}
+
+/* Allow the native file input to shrink so its intrinsic width cannot stretch a narrow dialog. */
+input[type="file"] {
+  max-width: 100%;
+  min-width: 0;
+}
+
+label {
+  display: inline-block;
+  margin: 0.25rem 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  min-height: 4.5rem;
+  padding: 0.35rem 1rem;
+  background: var(--topbar-bg);
+  border-bottom: 1px solid var(--topbar-border);
+}
+
+.brand-lockup {
+  position: relative;
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 0.05rem;
+  min-width: min(100%, 12rem);
+}
+
+.app-title {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  min-width: 0;
+}
+
+.brand-lockup-svg {
+  display: block;
+  width: 240px;
+  max-width: 100%;
+  height: 38px;
+  flex: none;
+  color: var(--fg);
+}
+
+.app-name {
+  min-width: 0;
+}
+
+.app-purpose {
+  margin: 0;
+  max-width: 46rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 400;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.cls-tn,
+.tn-blue {
+  fill: #0095d5;
+}
+
+.tn-cyan {
+  fill: #31beec;
+}
+
+.cls-nv,
+.nv-green {
+  fill: #76b900;
+}
+
+.core-slate {
+  fill: #94a3b8;
+}
+
+.cls-dm,
+.letter-dm {
+  fill: currentColor;
+}
+
+.header-gpu {
+  flex: 1 1 14rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.header-gpu-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.app-actions label {
+  margin: 0;
+  color: var(--muted);
+}
+
+#theme-control,
+#lang-control {
+  max-width: 10rem;
+}
+
+.app-nav {
+  position: fixed;
+  top: 4.5rem;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  width: 16rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem 0.75rem 1.5rem;
+  overflow-y: auto;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+}
+
+.app-nav a {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 2.75rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius, 4px);
+  color: var(--nav-fg);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.app-nav a:hover {
+  background: var(--inset);
+  color: var(--fg);
+}
+
+.app-nav a[aria-current="page"] {
+  background: var(--nav-active-bg);
+  border-color: var(--nav-active-ring);
+  box-shadow: var(--nav-active-bar);
+  color: var(--nav-active-fg);
+  font-weight: 600;
+}
+
+.nav-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+
+.nav-icon svg {
+  width: 20px;
+  height: 20px;
+  color: var(--nav-fg);
+}
+
+.app-nav a[aria-current="page"] .nav-icon svg {
+  color: var(--nav-active-icon);
+}
+
+/* The task dot shares its link with accessible state text; color alone must not carry meaning. */
+.nav-dot {
+  position: absolute;
+  top: 0;
+  inset-inline-end: -2px;
+  display: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nav-dot);
+  box-shadow: 0 0 0 1.5px var(--nav-dot-ring);
+}
+
+.app-main {
+  margin-left: 16rem;
+  padding: 1.5rem 2rem 4rem;
+  overflow-x: auto;
+}
+
+@media (max-width: 979px) {
+  .app-nav {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: auto;
+    flex-direction: row;
+    gap: 0;
+    padding: 0 0 env(safe-area-inset-bottom);
+    border-right: 0;
+    border-top: 1px solid var(--sidebar-border);
+    overflow: visible;
+  }
+
+  .app-nav a {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-height: 3.75rem;
+    padding: 0.25rem;
+    border-radius: 0;
+    font-size: 0.78rem;
+  }
+
+  .app-nav a[aria-current="page"] {
+    border-color: transparent;
+    box-shadow: inset 0 3px 0 0 var(--nav-mobile-bar);
+  }
+
+  .app-nav a[data-task-active] .nav-dot {
+    display: block;
+  }
+
+  .app-main {
+    margin-left: 0;
+    padding: 1rem 0.875rem calc(5.75rem + env(safe-area-inset-bottom));
+  }
+}
+
+/* Auto margins collapse to zero on short screens so centered sign-in content stays reachable from the top. */
+
+#app[data-signed-out] {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+@supports (min-height: 100svh) {
+  #app[data-signed-out] {
+    min-height: 100svh;
+  }
+}
+
+#app[data-signed-out] .top-notices,
+#app[data-signed-out] .app-main {
+  width: 100%;
+  max-width: 28rem;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+#app[data-signed-out] .top-notices {
+  padding-right: 2rem;
+  padding-left: 2rem;
+}
+
+#app[data-signed-out] .app-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+#app[data-signed-out] .login-stack {
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+.login-intro {
+  margin: 0 0 0.9rem;
+}
+
+.login-form label {
+  display: block;
+  margin: 0.55rem 0 0.3rem;
+}
+
+.login-form button[type="submit"] {
+  margin-top: 1rem;
+}
+
+.login-help-hint {
+  margin: 0.9rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
+.login-help {
+  margin-top: 0.25rem;
+}
+
+.login-help summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.login-help-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.login-help-list li {
+  margin: 0.4rem 0;
+  overflow-wrap: anywhere;
+}
+
+/* Variable names must wrap within a 320px screen. */
+.login-help code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 979px) {
+  /* Signed-out pages have no bottom tab bar and need no reserved clearance. */
+  #app[data-signed-out] .app-main {
+    padding-bottom: 4rem;
+  }
+
+  #app[data-signed-out] .top-notices {
+    padding-right: 0.875rem;
+    padding-left: 0.875rem;
+  }
+}
+
+.notice {
+  display: grid;
+  grid-template-columns: 1.35rem minmax(0, 1fr);
+  column-gap: 0.5rem;
+  align-items: start;
+  /* Position the notice so its absolute sr-only label stays inside the clipped ancestor and cannot widen the document. */
+  position: relative;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  background: var(--panel);
+  padding: 0.6rem 0.9rem;
+  margin: 0.6rem 0;
+  border-radius: var(--radius, 2px);
+}
+
+.notice > :not(.notice-icon):not(.sr-only) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.notice-icon {
+  grid-column: 1;
+  grid-row: 1 / 60;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.notice.level-info .notice-icon::before {
+  content: "\2139";
+}
+
+.notice.level-warning .notice-icon::before {
+  content: "\26a0";
+}
+
+.notice.level-error .notice-icon::before {
+  content: "\26d4";
+}
+
+.notice.level-info {
+  border-left-color: var(--info);
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+
+.notice.level-info a,
+.notice.level-info code {
+  color: inherit;
+}
+
+.notice.level-warning {
+  border-left-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--fg);
+}
+
+.notice.level-error {
+  border-left-color: var(--error);
+  background: var(--error-bg);
+  color: var(--fg);
+}
+
+.notice-title {
+  font-size: 1rem;
+  margin: 0.2rem 0;
+}
+
+.notice-body,
+.notice-action,
+.notice-note {
+  margin: 0.25rem 0;
+}
+
+.notice-note {
+  color: var(--muted);
+}
+
+.notice-list {
+  margin: 0.25rem 0 0.25rem 1.2rem;
+}
+
+/* Long filenames must remain fully readable and copyable without stretching the dialog. */
+.notice-title,
+.notice-body,
+.notice-action,
+.notice-note,
+.notice-list li {
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.92rem;
+  /* Wrap long URLs and package names at any character to avoid horizontal dialog overflow. */
+  overflow-wrap: anywhere;
+}
+
+dialog.nvm-dialog p {
+  overflow-wrap: anywhere;
+}
+
+.button-reason,
+.inline-reason {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.readings,
+.reading {
+  display: block;
+}
+
+.readings {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 4px);
+  padding: 1.1rem 1.25rem 0.9rem;
+  box-shadow: var(--shadow);
+}
+
+html[data-theme="plate-light"] .readings,
+html[data-theme="plate-dark"] .readings {
+  background-image: radial-gradient(circle at 12px 12px, var(--rivet-dark) 2.2px, var(--rivet-light) 2.8px, transparent 3.4px),
+    radial-gradient(circle at calc(100% - 12px) 12px, var(--rivet-dark) 2.2px, var(--rivet-light) 2.8px, transparent 3.4px),
+    radial-gradient(circle at 12px calc(100% - 12px), var(--rivet-dark) 2.2px, var(--rivet-light) 2.8px, transparent 3.4px),
+    radial-gradient(circle at calc(100% - 12px) calc(100% - 12px), var(--rivet-dark) 2.2px, var(--rivet-light) 2.8px, transparent 3.4px);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25), 0 0 0 1px var(--border), var(--shadow);
+}
+
+html[data-theme="plate-dark"] .readings {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 0 1px var(--border), var(--shadow);
+}
+
+.reading {
+
+  display: grid;
+  grid-template-columns: minmax(10rem, 22rem) minmax(0, 1fr);
+  column-gap: 1rem;
+  align-items: baseline;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.reading-label {
+  color: var(--muted);
+}
+
+.gpu-readout {
+  min-width: 0;
+}
+
+.reading-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  /* Long kernels and checksums remain readable and copyable by wrapping at any character. */
+  overflow-wrap: anywhere;
+}
+
+html[data-theme="plate-light"] .reading-value,
+html[data-theme="plate-dark"] .reading-value {
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.task-times {
+  margin: 0.75rem 0;
+}
+
+.interrupt-next {
+  display: inline-block;
+  margin: 0.35rem 0;
+}
+
+.interrupt-detail {
+  margin: 0.15rem 0 0.75rem;
+}
+
+.interrupt-detail p {
+  margin: 0.35rem 0;
+}
+
+.task-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0.35rem 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.task-steps li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-steps [aria-current="step"] {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 0.75rem;
+}
+
+th,
+td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+th button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-weight: 600;
+  color: inherit;
+}
+
+.row-mismatch td {
+  color: var(--muted);
+  background: var(--row-alt);
+}
+
+.raw-output,
+.log-tail {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--border);
+  padding: 0.6rem;
+  border-radius: var(--radius, 4px);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-tail {
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+dialog.nvm-dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 6px);
+  padding: 1rem;
+  max-width: 46rem;
+  width: 92vw;
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: var(--shadow);
+}
+
+dialog.nvm-dialog::backdrop {
+  background: var(--scrim);
+}
+
+/* Chamfers and the tag hole stay in a decorative band so no focusable control is clipped. */
+html[data-theme="plate-light"] dialog.nvm-dialog,
+html[data-theme="plate-dark"] dialog.nvm-dialog {
+  border-radius: 0;
+  padding-top: 0;
+  clip-path: polygon(
+    16px 0,
+    calc(100% - 16px) 0,
+    100% 16px,
+    100% 100%,
+    0 100%,
+    0 16px
+  );
+}
+
+html[data-theme="plate-light"] dialog.nvm-dialog::before,
+html[data-theme="plate-dark"] dialog.nvm-dialog::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  display: block;
+  height: 28px;
+  background: radial-gradient(
+    circle at 50% 14px,
+    var(--hole-core) 0 5px,
+    var(--hole-ring) 5px 7px,
+    transparent 8px
+  );
+}
+
+.dialog-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+.gpu-select {
+  border: 1px solid var(--border);
+  padding: 0.5rem;
+  margin: 0.75rem 0;
+  border-radius: var(--radius, 4px);
+}
+
+.gpu-option {
+  margin: 0.15rem 0;
+}
+
+.gpu-select legend {
+  color: var(--muted);
+}
+
+.catalog-area {
+  margin-top: 0.75rem;
+}
+
+.catalog-describe {
+  margin-top: 0.5rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0.75rem 0;
+}
+
+.confirm-row {
+
+  display: grid;
+  grid-template-columns: minmax(9rem, 14rem) minmax(0, 1fr);
+  column-gap: 1.25rem;
+  align-items: baseline;
+  padding: 0.15rem 0;
+}
+
+.confirm-label {
+  color: var(--muted);
+}
+
+.confirm-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.confirm-original {
+  display: grid;
+  grid-template-columns: minmax(9rem, 14rem) minmax(0, 1fr);
+  column-gap: 1.25rem;
+  align-items: baseline;
+}
+
+.confirm-original > p {
+  grid-column: 1 / -1;
+}
+
+.upload-summary,
+.upload-version,
+.upload-progress {
+  margin-top: 0.5rem;
+}
+
+.summary-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  margin: 0.15rem 0;
+  overflow-wrap: anywhere;
+}
+
+.top-notices {
+  margin-top: 0.75rem;
+}
+
+.update-blocked:empty {
+  display: none;
+}
+
+/* Use :not(:empty) in family selectors; their specificity would otherwise defeat an :empty reset and paint empty panels. */
+
+html[data-theme="focused-light"] .gpu-area:not(:empty),
+html[data-theme="focused-light"] .catalog-area:not(:empty),
+html[data-theme="focused-light"] .catalog-describe:not(:empty),
+html[data-theme="focused-light"] .drivers-table:not(:empty),
+html[data-theme="focused-light"] .task-state:not(:empty),
+html[data-theme="focused-light"] .task-times:not(:empty),
+html[data-theme="focused-dark"] .gpu-area:not(:empty),
+html[data-theme="focused-dark"] .catalog-area:not(:empty),
+html[data-theme="focused-dark"] .catalog-describe:not(:empty),
+html[data-theme="focused-dark"] .drivers-table:not(:empty),
+html[data-theme="focused-dark"] .task-state:not(:empty),
+html[data-theme="focused-dark"] .task-times:not(:empty),
+html[data-theme="plate-light"] .gpu-area:not(:empty),
+html[data-theme="plate-light"] .catalog-area:not(:empty),
+html[data-theme="plate-light"] .catalog-describe:not(:empty),
+html[data-theme="plate-light"] .drivers-table:not(:empty),
+html[data-theme="plate-light"] .task-state:not(:empty),
+html[data-theme="plate-light"] .task-times:not(:empty),
+html[data-theme="plate-dark"] .gpu-area:not(:empty),
+html[data-theme="plate-dark"] .catalog-area:not(:empty),
+html[data-theme="plate-dark"] .catalog-describe:not(:empty),
+html[data-theme="plate-dark"] .drivers-table:not(:empty),
+html[data-theme="plate-dark"] .task-state:not(:empty),
+html[data-theme="plate-dark"] .task-times:not(:empty) {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 6px);
+  padding: 1rem 1.25rem;
+  margin-top: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.app-main > h2,
+.login-stack > h2 {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.gpu-area:empty,
+.catalog-area:empty,
+.catalog-describe:empty,
+.task-state:empty {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+}
+
+.app-main table {
+  background: var(--panel);
+}
+
+.login-form,
+.password-form {
+  max-width: 24rem;
+}
+
+.login-form input,
+.password-form input {
+  width: 100%;
+}
+
+/* Place the phone width override after base rules to win at equal specificity. */
+@media (max-width: 979px) {
+  .confirm-row,
+  .confirm-original {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0.1rem;
+  }
+
+  .login-form,
+  .password-form {
+    max-width: none;
+  }
+
+  /* Every phone touch control must be at least 44px tall, including header text links. */
+  button,
+  select,
+  input[type="text"],
+  input[type="password"] {
+    min-height: 44px;
+  }
+
+  .app-actions a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .gpu-option {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .gpu-option label {
+    flex: 1;
+    margin: 0;
+  }
+
+  th button {
+    min-height: 44px;
+  }
+
+  .select-all {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .select-all label {
+    flex: 1;
+    margin: 0;
+  }
+
+  .reading {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0.1rem;
+  }
+}
+
+.login-ssh,
+.ssh-keys {
+  margin-top: 0.9rem;
+}
+
+.login-ssh summary,
+.ssh-keys h3 {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.ssh-keys h3 {
+  cursor: default;
+  margin-bottom: 0.4rem;
+}
+
+.login-ssh-body,
+.ssh-steps {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.ssh-steps li {
+  margin: 0.4rem 0;
+  overflow-wrap: anywhere;
+}
+
+/* Command templates scroll horizontally rather than wrapping mid-command. */
+.ssh-command-code,
+.ssh-key-fingerprint {
+  display: block;
+  overflow-x: auto;
+  white-space: pre;
+  max-width: 100%;
+  margin: 0.2rem 0;
+}
+
+.ssh-challenge-line {
+  margin: 0.25rem 0;
+}
+
+.ssh-challenge-line code {
+  display: block;
+  overflow-x: auto;
+  white-space: pre;
+  max-width: 100%;
+  margin: 0.2rem 0;
+}
+
+.ssh-challenge-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.ssh-challenge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.3rem 0;
+}
+
+/* Invalid-challenge emphasis remains until the newest fetch succeeds. */
+.ssh-refresh-attention {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ssh-command {
+  margin: 0.35rem 0;
+}
+
+.ssh-command-label,
+.ssh-key-command .ssh-command-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
+.ssh-expires {
+  display: block;
+  color: var(--muted);
+  font-size: 0.92rem;
+  margin: 0.2rem 0 0.4rem;
+}
+
+.ssh-login-form {
+  margin-top: 0.6rem;
+}
+
+.ssh-key-row {
+  margin: 0.6rem 0;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ssh-key-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.9rem;
+  align-items: baseline;
+}
+
+.ssh-key-algorithm {
+  font-weight: 500;
+}
+
+.ssh-key-comment {
+  color: var(--muted);
+}
+
+.ssh-key-added-at {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.ssh-keys-add {
+  margin-top: 0.9rem;
+}
+
+.ssh-keys-empty {
+  color: var(--muted);
+}

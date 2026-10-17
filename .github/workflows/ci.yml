@@ -1,0 +1,559 @@
+name: CI
+# One workflow, one required check. The changes job classifies the changed
+# files into switches (rust, e2e, image, build_kit, locks); each heavy job
+# runs only when its switch is on, and the gate job — the only check branch
+# protection needs — verifies that everything required ran and succeeded.
+# Pushes to main, v* tags, the weekly schedule and workflow_dispatch are
+# full runs: every switch is on. A pull request is diffed against its base;
+# a missing base, a failed or empty diff and any unregistered path turn
+# every switch on — the safe direction is more checks, never fewer.
+# Concurrency cancels running superseded pull requests. Running main and
+# tag jobs finish; maintainers can rerun a replaced pending tag run.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "43 19 * * 4"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  OSV_SCANNER_VERSION: "v2.7.0"
+  NODE_VERSION: "24.22.0"
+  BUILDX_VERSION: "v0.37.2"
+  BUILDKIT_IMAGE: moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+jobs:
+  changes:
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      rust: ${{ steps.switches.outputs.rust }}
+      e2e: ${{ steps.switches.outputs.e2e }}
+      image: ${{ steps.switches.outputs.image }}
+      build_kit: ${{ steps.switches.outputs.build_kit }}
+      locks: ${{ steps.switches.outputs.locks }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Only pull requests need history for base-to-head routing.
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+          persist-credentials: false
+      - name: compute the switches
+        id: switches
+        env:
+          CHANGES_BASE: ${{ github.event.pull_request.base.sha }}
+        run: bash ci/changes.sh
+
+  public-leak:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: public scan controls
+        run: |
+          bash ci/public-leak-check-test.sh
+          bash ci/install-gitleaks-test.sh
+          bash ci/github-ci-test.sh
+      - name: install checksum-pinned secret scanner
+        run: bash ci/install-gitleaks.sh "${RUNNER_TEMP}/public-leak-tools"
+      - name: scan the tracked commit with generic rules
+        run: |
+          set -Eeuo pipefail
+          work="$(mktemp -d "${RUNNER_TEMP}/public-scan.XXXXXXXX")"
+          trap 'rm -rf -- "${work}"' EXIT
+          git archive --format=tar HEAD | tar -xf - -C "${work}"
+          PATH="${RUNNER_TEMP}/public-leak-tools:${PATH}" bash ci/public-leak-check.sh --root "${work}" --generic-only
+
+  static:
+    timeout-minutes: 8
+    # Runs on every event: the sanitization guards, the red-line scan, the
+    # compose checks and the web build plus unit tests share one checkout;
+    # the dependency scan runs only when a lockfile changed (full runs
+    # report locks=true too).
+    runs-on: ubuntu-latest
+    needs: changes
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: restore npm downloads
+        if: github.event_name != 'schedule'
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-${{ runner.arch }}-npm-${{ env.NODE_VERSION }}-${{ hashFiles('web/package-lock.json') }}
+      - name: sanitization controls
+        run: bash ci/guards-test.sh
+      - name: sanitize all tracked files
+        run: bash ci/guards.sh
+      - name: red-line scan controls
+        run: bash ci/check-red-lines-test.sh
+      - name: red lines (no docker.update / --collect / CollectMode in src/)
+        run: bash ci/check-red-lines.sh
+      - name: compose structural controls
+        run: bash ci/check-compose-test.sh
+      - name: compose template checks
+        run: bash ci/check-compose.sh
+      - name: change routing controls
+        run: bash ci/changes-test.sh
+      - name: gate controls
+        run: bash ci/gate-test.sh
+      - name: release policy controls
+        run: |
+          python3 --version
+          python3 -B .github/scripts/test_ghcr_release.py
+      - name: download controls
+        run: bash ci/download-test.sh
+      - name: runtime license generator tests
+        run: python3 tools/third-party-licenses-test.py
+      - name: image assertion controls
+        run: bash ci/image-assert-test.sh
+      - name: npm ci + tsc -p web
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+      - name: web unit tests
+        run: npm --prefix web run test:unit
+      - name: dependency scan of both lockfiles
+        if: needs.changes.outputs.locks == 'true'
+        run: bash ci/osv-scan.sh
+      - name: save npm downloads
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
+
+  rust:
+    timeout-minutes: 20
+    # Every Rust check keeps its own command and minimum-toolchain policy.
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install Rust check components
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/80-download-resilience >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: identify the Rust compiler
+        id: compiler
+        run: echo "fingerprint=$(rustc -vV | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: restore Cargo registry and targets
+        if: github.event_name != 'schedule'
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'Dockerfile') }}
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: test (unit + fake-host integration + gpu-table example)
+        run: cargo test --locked
+      - name: test host locks across Linux processes
+        run: |
+          cargo test --locked --test lock_process --no-run --message-format=json > "${RUNNER_TEMP}/lock-process-build.json"
+          test_binary="$(jq -er -s '
+            [.[] | select(.reason == "compiler-artifact" and .target.name == "lock_process" and .profile.test)
+             | .executable | select(. != null)] | unique
+            | if length == 1 then .[0] else error("expected one lock_process executable") end
+          ' "${RUNNER_TEMP}/lock-process-build.json")"
+          # Cargo writes target as the runner user; only the Linux lock probes need root.
+          sudo -- "$test_binary" --ignored --test-threads=1 --nocapture
+      # Pull requests check all targets plus the musl target; full runs keep
+      # the complete build and the musl release build.
+      - name: compile with the declared minimum Rust
+        run: bash ci/min-rust.sh ${{ github.event_name == 'pull_request' && 'check' || 'build' }}
+      - name: save Cargo registry and targets
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  e2e:
+    timeout-minutes: 20
+    # Build the release fake host server and run the complete browser suite.
+    # Release mode keeps the argon2id paths within the 7 s expect budget.
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: restore npm downloads
+        if: github.event_name != 'schedule'
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-${{ runner.arch }}-npm-${{ env.NODE_VERSION }}-${{ hashFiles('web/package-lock.json') }}
+      - name: install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: identify the Rust compiler
+        id: compiler
+        run: echo "fingerprint=$(rustc -vV | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: restore Cargo registry and targets
+        if: github.event_name != 'schedule'
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-e2e-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'Dockerfile') }}
+      - name: build the fake host server (release)
+        run: cargo build --locked --release --example fake_host_server
+      - name: build web/dist
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+      - name: restore Playwright browsers
+        if: github.event_name != 'schedule'
+        id: browser-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-chromium-${{ hashFiles('web/package-lock.json') }}
+      - name: install chromium and system dependencies
+        working-directory: web
+        run: |
+          printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/80-download-resilience >/dev/null
+          npx playwright install --with-deps chromium
+      # The hosted runner provides /dev/shm; verify tmpfs and capacity before
+      # creating isolated state. The server and browser run on this host.
+      - name: per-run e2e state
+        run: bash ci/e2e-state.sh
+      - name: playwright
+        working-directory: web
+        run: npx playwright test
+      - name: save Cargo registry and targets
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+      - name: save Playwright browsers
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.browser-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.browser-cache.outputs.cache-primary-key }}
+      - name: upload failure traces and logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-failure-attempt-${{ github.run_attempt }}
+          path: |
+            web/test-results/
+            ${{ env.NVM_E2E_SERVER_LOG }}
+          if-no-files-found: error
+          retention-days: 14
+
+  image:
+    timeout-minutes: 25
+    # Build the image, assert its filesystem and run the container tests in
+    # one job on one daemon — the image ID is shared directly, with no
+    # artifact round trip. Every image run exports the filesystem for checks;
+    # tag runs upload the tested archive and SBOM for the release job.
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
+    permissions:
+      contents: read
+    env:
+      NVM_CI_WORK: /tmp/nvm-ci-container-work
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+      BUILDX_METADATA_PROVENANCE: "max"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+      - name: build the final image once
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: nvm-ci:candidate
+          push: false
+          load: true
+          provenance: false
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
+          cache-from: ${{ github.event_name != 'schedule' && format('type=gha,scope=image-amd64-{0}', hashFiles('Dockerfile', 'Cargo.toml', 'Cargo.lock', 'web/package-lock.json')) || '' }}
+          cache-to: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('type=gha,mode=max,scope=image-amd64-{0}', hashFiles('Dockerfile', 'Cargo.toml', 'Cargo.lock', 'web/package-lock.json')) || '' }}
+      - name: retain the native build record
+        env:
+          BUILT_IMAGE_ID: ${{ steps.build.outputs.imageid }}
+        run: |
+          # The runner writes this script to disk before starting the shell.
+          # Normalized JSON cannot close the quoted heredoc or execute shell text.
+          cat > nvm-build-metadata.json <<'NVM_BUILD_METADATA_JSON'
+          ${{ toJSON(fromJSON(steps.build.outputs.metadata)) }}
+          NVM_BUILD_METADATA_JSON
+          image_id="$(docker image inspect -f '{{.Id}}' nvm-ci:candidate)"
+          test "$image_id" = "$BUILT_IMAGE_ID"
+          printf '%s\n' "$image_id" > nvm-image.id
+      - name: export the image with its id
+        run: |
+          set -euo pipefail
+          image_id="$(cat nvm-image.id)"
+          docker image inspect "${image_id}" >/dev/null
+          docker save "${image_id}" -o nvm-image.tar
+          echo "image: $(wc -c < nvm-image.tar | tr -d ' ') bytes in the docker save archive (sha256 $(sha256sum nvm-image.tar | awk '{print $1}'))"
+      - name: the image filesystem holds only the listed files
+        run: python3 ci/image-assert.py nvm-image.tar
+      - name: log predicate controls
+        run: bash ci/container/log-object-check-test.sh
+      - name: cleanup machinery controls
+        run: bash ci/cleanup-lib-test.sh
+      - name: container-level tests
+        run: |
+          # Reuse the curl-equipped Rust build image, including its pinned digest.
+          NVM_CURL_IMAGE="$(awk '
+            $1 == "FROM" && $3 == "AS" && $4 == "rust" {
+              count++; image = $2; if (NF != 4) exit 1
+            }
+            END { if (count != 1) exit 1; print image }
+          ' Dockerfile)" || { echo "expected exactly one Rust stage in Dockerfile" >&2; exit 1; }
+          [[ "${NVM_CURL_IMAGE}" =~ ^rust:1-bookworm@sha256:[a-f0-9]{64}$ ]] \
+            || { echo "Dockerfile Rust image must be a complete tag@sha256 digest" >&2; exit 1; }
+          export NVM_CURL_IMAGE
+          docker pull "${NVM_CURL_IMAGE}"
+          NVM_IMAGE="$(cat nvm-image.id)" bash ci/container/test.sh
+      - name: record the tested image
+        id: tested-image
+        run: echo "id=$(cat nvm-image.id)" >> "$GITHUB_OUTPUT"
+      - name: generate the tested image SBOM
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ steps.tested-image.outputs.id }}
+          format: spdx-json
+          output-file: nvm-image.spdx.json
+          syft-version: v1.27.1
+          upload-artifact: false
+          upload-release-assets: false
+      - name: upload the image for the release job
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nvm-image
+          path: |
+            nvm-image.tar
+            nvm-image.id
+            nvm-image.spdx.json
+            nvm-build-metadata.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+          compression-level: 1
+      - name: upload retained test evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: container-evidence-attempt-${{ github.run_attempt }}
+          path: /tmp/nvm-ci-container-work/
+          if-no-files-found: error
+          retention-days: 14
+
+  build-script:
+    timeout-minutes: 20
+    # The build script tests run inside the pinned build environment: the
+    # official Debian image pinned by its index digest plus the manifest
+    # packages. The weekly run doubles as the availability check of that
+    # environment.
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.build_kit == 'true'
+    permissions:
+      contents: read
+    env:
+      NVM_CI_WORK: /tmp/nvm-ci-build-script-work
+      NVM_BUILD_KIT: /tmp/nvm-ci-build-kit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: fake input generator controls
+        run: bash ci/build-script/make-fake-run-test.sh
+      - name: prepare the pinned build environment
+        run: bash ci/build-script/prepare-env.sh
+      - name: the generator reproduces the manifest
+        run: bash tools/build-kit.sh check
+      - name: build script tests
+        run: bash ci/build-script/test.sh
+      - name: upload retained test evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-script-evidence-attempt-${{ github.run_attempt }}
+          path: /tmp/nvm-ci-build-script-work/
+          if-no-files-found: error
+          retention-days: 14
+
+  gate:
+    timeout-minutes: 1
+    # The only check branch protection needs. Fails when the changes job
+    # failed, when any job failed or was cancelled, or when a job whose
+    # switch is on was skipped. The release job (v* tags only) runs after
+    # this gate has passed.
+    runs-on: ubuntu-latest
+    needs: [changes, static, rust, e2e, image, build-script, public-leak]
+    if: always()
+    permissions:
+      contents: read
+    env:
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      STATIC_RESULT: ${{ needs.static.result }}
+      RUST_RESULT: ${{ needs.rust.result }}
+      E2E_RESULT: ${{ needs.e2e.result }}
+      IMAGE_RESULT: ${{ needs.image.result }}
+      BUILD_SCRIPT_RESULT: ${{ needs.build-script.result }}
+      PUBLIC_LEAK_RESULT: ${{ needs.public-leak.result }}
+      SWITCH_RUST: ${{ needs.changes.outputs.rust }}
+      SWITCH_E2E: ${{ needs.changes.outputs.e2e }}
+      SWITCH_IMAGE: ${{ needs.changes.outputs.image }}
+      SWITCH_BUILD_KIT: ${{ needs.changes.outputs.build_kit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: judge the run
+        run: bash ci/gate.sh
+
+  release:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    needs: gate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    concurrency:
+      group: ghcr-release
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      GHCR_ATTESTATION_MODE: ${{ (!github.event.repository.private || vars.PRIVATE_ATTESTATIONS_ENABLED == 'true') && 'github' || 'build-record' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: set the repository image name
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: printf 'GHCR_IMAGE=ghcr.io/%s\n' "${RELEASE_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: validate the release tag
+        run: python3 .github/scripts/ghcr_release.py validate
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nvm-image
+      - name: log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: publish the tested image and read back its digest
+        id: published
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/ghcr_release.py publish
+      - name: attest build provenance
+        if: env.GHCR_ATTESTATION_MODE == 'github'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.published.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: attest the tested image SBOM
+        if: env.GHCR_ATTESTATION_MODE == 'github'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.published.outputs.digest }}
+          sbom-path: nvm-image.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: promote the highest stable version and read back
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_DIGEST: ${{ steps.published.outputs.digest }}
+        run: python3 .github/scripts/ghcr_release.py promote
+      - name: retain the SBOM and publication receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ghcr-receipt-attempt-${{ github.run_attempt }}
+          path: |
+            nvm-image.spdx.json
+            nvm-build-metadata.json
+            ghcr-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: log out of GHCR
+        if: always()
+        run: docker logout ghcr.io

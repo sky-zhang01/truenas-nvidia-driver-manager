@@ -1,0 +1,461 @@
+{
+  "entries": [
+    {
+      "path": "ci/build-script/make-fake-run.sh",
+      "sha256": "d0af1d16c285d974871b246ae5e0cdc6952d4c8fe1b1a604475851288c85d075",
+      "rules": [
+        "email"
+      ],
+      "reason": "Synthetic package maintainer address in generated build fixtures."
+    },
+    {
+      "path": "ci/container/log-object-check-test.sh",
+      "sha256": "9716e4ab1f2519f54bb95b2859145c9239ced260f77de5de52b05d8e1deb0943",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Non-ASCII JSON rejection fixture."
+    },
+    {
+      "path": "src/catalog.rs",
+      "sha256": "8ea2e39d718c48b99409cc058097dc936ed84cab15ba98a79c355ef783ecaad0",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Non-ASCII malformed upstream HTML parser fixture."
+    },
+    {
+      "path": "src/ssh_login.rs",
+      "sha256": "ed0fd96284107cfc96ce465e24320aa0742c20ccf2327f18938445e18ec1ca53",
+      "rules": [
+        "email"
+      ],
+      "reason": "Synthetic SSH public-key comment in parser tests."
+    },
+    {
+      "path": "src/web.rs",
+      "sha256": "ebc09fc843a0e4fe263648d5dd4b3df739911cfc825ba77d88ca49ec7515fdfd",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese navigation rejection message displayed in the browser."
+    },
+    {
+      "path": "tests/api_contract.rs",
+      "sha256": "6aab29e3927865997737697e3e5ef579c7437dcfdf6484705c15d9595948d8be",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Assertions on Chinese navigation rejection messages."
+    },
+    {
+      "path": "tests/fake_capabilities.rs",
+      "sha256": "ada84f8febb0443836408761d55f9fa98d38701350e326ab21108a4d43115f3a",
+      "rules": [
+        "email"
+      ],
+      "reason": "Synthetic package maintainer address in host fixtures."
+    },
+    {
+      "path": "tests/ssh_login.rs",
+      "sha256": "132f9e2fa8e7b67ce0493f79c10acb362d0a59d879214e8b1de7c58195bf29a0",
+      "rules": [
+        "email"
+      ],
+      "reason": "Standard OpenSSH key algorithm identifiers containing an at sign."
+    },
+    {
+      "path": "tests/upload.rs",
+      "sha256": "d7a594df6552be88feaa5fd48468239d021c6b4a3f5271c0459e8a0111d6089b",
+      "rules": [
+        "email"
+      ],
+      "reason": "Synthetic package maintainer address in upload fixtures."
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "04d02b68c1fea6345a862d40138b0af27f14f7d681452e69edec1b8a5562763f",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual public legal notices and trademark attributions."
+    },
+    {
+      "path": "web/e2e/auth.spec.ts",
+      "sha256": "51b7d03863f95cad1535ff6abc6a86d31534fa1d23855e803ec9591c0c4c5e91",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/cleanup-failure-dialog.spec.ts",
+      "sha256": "a88f17ce570f24d230ab4e0822a34ece6ecdd7629054e10d74e7691d65199ba9",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/cleanup-upload.spec.ts",
+      "sha256": "46193a8b5002b54f4ba6c08dbdfd643761cab2485cc3b10cf71932a603d0b0a7",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/drivers.spec.ts",
+      "sha256": "6cf0ddcf262b4820a84753e3b94c1bc7d10cd57c611c2c0269ffbedf7cfbf24f",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/keyboard.spec.ts",
+      "sha256": "8ff30126fe037d5555dd1df8d9959d4a6bfe2d39cf922bd2d180c65f562624bf",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/language.spec.ts",
+      "sha256": "6ab6c54042202288713d8a34bdda22523dea101c98970fe0466a05545f67edae",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/roles.spec.ts",
+      "sha256": "06367929a751ba35633a00f07bc2bdd7995c6f6ef8ad9bfa6ac7a04caed5c9b7",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/ssh.spec.ts",
+      "sha256": "96d116820dc85051fe55c824becd1635290e41cdc6395f52ac750c85badb40fd",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/themes.spec.ts",
+      "sha256": "7634c89dc630764ffa6a512a613ae1a05e155c769939654a946840cf604973bc",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/e2e/update.spec.ts",
+      "sha256": "c9b5ca3d479e1183a7638829d8f885fe1d6d8f0701c290a3c5424fa4600593a5",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/src/messages.ts",
+      "sha256": "ee7f88516ea55350f627dcfbb913f31bd9b1bf005ca5ee039b986e6a8e4a270b",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface message catalog."
+    },
+    {
+      "path": "web/test/frontend-repair.test.ts",
+      "sha256": "9a9748d5ce7cf14edefb4ea608845321fc7c8fa5e5dded98cf6532a51c138362",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/test/messages.test.ts",
+      "sha256": "2b6fd22c0e34378612035304a0a73e82a4ad23cda0dc63c086ed591f000d7dcb",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/test/render.test.ts",
+      "sha256": "7df9a261d3ee5057c448570d03cedf0b4c2678e93910913ad27fe0af583f64f0",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/test/rules.test.ts",
+      "sha256": "6c5894864ba3449e7006365f7c563bad58f5912142065e35be01314db5880916",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/test/ssh-render.test.ts",
+      "sha256": "64a111ed290a6caf006b54f5f5b5d98eaf6aebba429f04c760cf3f29b670e3e1",
+      "rules": [
+        "email",
+        "chinese"
+      ],
+      "reason": "Synthetic SSH public-key comment and Chinese interface assertions."
+    },
+    {
+      "path": "web/test/task-steps.test.ts",
+      "sha256": "b01a402c3c74e8c9e6fbc00d5bfe9d709c7270d5f0cd96eefcd376bb59a8c766",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/test/text-log-contract.test.ts",
+      "sha256": "1047a3927cc277a7536c27271671566615a14019799f78871cd13a594b9db4cc",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "ci/guards-test.sh",
+      "line_sha256": "c20f6c165556ced0ab00b1666c65c7a6ec68ab709cc5837fb2600b155ca64970",
+      "rules": [
+        "ipv4"
+      ],
+      "reason": "Synthetic four-part version used to test the existing guard."
+    },
+    {
+      "path": "ci/guards-test.sh",
+      "line_sha256": "83a0cbd62bdcec499f15b3b92e44ae430e24004184eddf2dbb2e1848534cb1b0",
+      "rules": [
+        "ipv6"
+      ],
+      "reason": "Synthetic link-local prefix interpolated with a generated MAC to test address-family boundaries."
+    },
+    {
+      "path": "ci/guards.sh",
+      "line_sha256": "2b79b7b52b0982251ebc0fe0ccfcc0746660bd2dcd79c69c5301122033db106e",
+      "rules": [
+        "ipv4"
+      ],
+      "reason": "Synthetic four-part version in an existing guard canary."
+    },
+    {
+      "path": "ci/guards.sh",
+      "line_sha256": "af3569a31db313d86cbc02220a01971bd4b13bff8476a9110154995e0dc1b067",
+      "rules": [
+        "ipv6"
+      ],
+      "reason": "Synthetic IPv6 prefix interpolated with a generated MAC for a guard canary."
+    },
+    {
+      "path": "ci/guards.sh",
+      "line_sha256": "c1f4651690c5a95d76ff8689595c98b7f46a78e7bcf9c5073ed51452a3b292ba",
+      "rules": [
+        "ipv4"
+      ],
+      "reason": "Synthetic numeric control for the MAC detector."
+    },
+    {
+      "path": "ci/public-leak-check-test.sh",
+      "line_sha256": "5a1a889770d451c66b2b1a5f4e8f3f83cd8204d40bfb746f324b43a04bdf9d03",
+      "rules": [
+        "ipv6"
+      ],
+      "reason": "Synthetic address components assembled at runtime for default-deny controls."
+    },
+    {
+      "path": "web/test/rules.test.ts",
+      "line_sha256": "5415896b3f3a7fdb028848cf16e4b862fd83721f2d03a4526db55db1047b603d",
+      "rules": [
+        "ipv4"
+      ],
+      "reason": "Four-component package version in a toolkit version-comparison test."
+    },
+    {
+      "path": "docs/agent.en.md",
+      "line_sha256": "a7c1eb2845127b4aac7f6fc3cd0c5ebc63d6242c7db0981315bb48762a5fa29d",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "docs/agent.en.md",
+      "line_sha256": "8861f9a0e9d29bf387a06b4f5c4dd9d4b26ff9e8fac3c52d34447847c6801d00",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "docs/agent.zh-CN.md",
+      "line_sha256": "49ad5601bec20a64e3c669e391f3b376dad0b954114b0e7783df00ee317fbbe6",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "src/plan.rs",
+      "line_sha256": "e6cc174a106bf9d135b47a766ad7aba226cda3a0d94bbcabae94d0fb8380aab7",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "tests/ssh_login.rs",
+      "line_sha256": "dfd59b3373900da1c33a7b7a8d7beef93dfcf26a84e4d678af5037788c4fde0f",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/src/messages.ts",
+      "line_sha256": "4ae819cc8798ea5d807cb4893ff1c1bfa2e8ad48b0830fe5843093dbf3d9e9d6",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/src/messages.ts",
+      "line_sha256": "d52a67f3b9686de3d67abef11f1c1c4e21c05dea5b4c38abc7bfce193343a06f",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/src/messages.ts",
+      "line_sha256": "671e5bf977261e00dd025c87d74a734564c5f93cc943f9b9cb2e030ff47ebe95",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/src/views/home.ts",
+      "line_sha256": "0244344a2392cb52e44402da7bfd0652856fda55c78b621d79b768aaf37b5318",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/src/views/plan.ts",
+      "line_sha256": "6382341426885b45adf6905be98741d339c384724640edce3efcf41d27630e7c",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/src/views/tasks.ts",
+      "line_sha256": "aac0c61a6fac537edfbaa87d9fc53115a2de28aa8413019f0b4d8235e7584a47",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/test/frontend-repair.test.ts",
+      "line_sha256": "887424fd09b6ef7720e3f36d77fdceb6e0f908793205ea0563ddd9cf6dddfe9b",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/test/frontend-repair.test.ts",
+      "line_sha256": "3591a6380b5fbb5fcb10ab029a21e77f4bd68d87e1590fa94d364cc2d5d13803",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/test/messages.test.ts",
+      "line_sha256": "e1eecfe721b37796393828545306e7c411473918506f581049d244b08bc8b2b6",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "README.md",
+      "line_sha256": "17bea5e83eaace08751d46a55248f70ca1fb4ee8504e7034bed41f4c47b059f0",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    },
+    {
+      "path": "docs/deploy.en.md",
+      "line_sha256": "723316d39f77f4592a7609ba94c5612af2d2c15b83e453f198a31781da94584e",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    },
+    {
+      "path": "docs/operations.en.md",
+      "line_sha256": "4d81ba723e9225e6e473e833c6ec8c3b8404d177a91ca71c038f4097aee1ba89",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    },
+    {
+      "path": "CHANGELOG.md",
+      "line_sha256": "9ede1ec46c305efef90a514432a29c29b573563166223ec26a0f4beaa4445433",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "line_sha256": "d19b47712b26d490d91b8e335daa3c723e3c88f747b4274bb5161ed7ccebc126",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    },
+    {
+      "path": "SECURITY.md",
+      "line_sha256": "f623550d5d2a60e3e392081f10ec0ef5276038141ecc66aabc1af1da6dc4ab60",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    }
+  ],
+  "public_hosts": [
+    "127.0.0.1",
+    "deb.debian.org",
+    "download.nvidia.com",
+    "ghcr.io",
+    "github.com",
+    "mobyproject.org",
+    "nvidia.github.io",
+    "raw.githubusercontent.com",
+    "registry.npmjs.org",
+    "snapshot.debian.org",
+    "www.apache.org",
+    "www.nvidia.com",
+    "www.truenas.com",
+    "www.w3.org"
+  ]
+}

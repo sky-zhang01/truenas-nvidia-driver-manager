@@ -1,0 +1,22 @@
+# Exclude everything, then admit each item. The last matching pattern wins,
+# so later exclusions are restated after the negations.
+#
+# Admit the license generator and production build inputs. The program embeds
+# docker/build-driver.sh and docker/install-build-kit.sh at compile time.
+*
+!Cargo.toml
+!Cargo.lock
+!src
+!web
+!docker
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!tools
+tools/*
+!tools/third-party-licenses.py
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report
+web/blob-report
+target

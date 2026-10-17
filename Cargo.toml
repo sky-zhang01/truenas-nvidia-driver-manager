@@ -1,0 +1,57 @@
+[package]
+name = "truenas-nvidia-driver-manager"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.85"
+# MSRV-aware resolution: resolver 3 makes `cargo update` — the command Renovate's
+# lock file maintenance runs in this directory — prefer dependency versions whose
+# `rust-version` is at most the 1.85 declared above, instead of locking a crate
+# that needs a newer compiler. Resolver 3 only changes the default of
+# `resolver.incompatible-rust-versions` to "fallback"; feature unification is
+# unchanged from resolver 2.
+resolver = "3"
+license = "MIT"
+description = "Update the NVIDIA driver of a TrueNAS SCALE host from a web UI"
+
+[[bin]]
+name = "truenas-nvidia-driver-manager"
+path = "src/main.rs"
+
+[[example]]
+name = "gen-gpu-table"
+path = "tools/gen-gpu-table.rs"
+test = true
+
+[dependencies]
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+hmac = "0.13"
+argon2 = "0.6"
+getrandom = "0.4"
+libc = "0.2"
+# SSHSIG sign-in: the exact pinned version with the
+# explicit no-rsa feature set; keeping the default features would pull the
+# unpatched `rsa` crate and fail the CI advisory scan (RUSTSEC-2023-0071).
+ssh-key = { version = "=0.6.7", default-features = false, features = ["alloc", "ed25519", "p256", "p384"] }
+# Reject weak and low-order Ed25519 public keys.
+ed25519-dalek = "2.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+# Request-body failure tests and a paused clock for receive timeouts.
+http-body = "1"
+tokio = { version = "1.53", features = ["test-util"] }
+
+# Tests hash passwords with the production Argon2 parameters; an unoptimised
+# argon2 makes every hash ~15x slower and pushes timing-sensitive tests past
+# their budgets on a loaded CI host. Optimise that one crate in dev and test
+# builds only; release builds and the parameters are unchanged.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.release]
+strip = true
+lto = "thin"

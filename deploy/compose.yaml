@@ -1,0 +1,60 @@
+# truenas-nvidia-driver-manager
+# When deploying, choose a published image tag and set the data directory and initial password.
+# TrueNAS drops comments when saving; the deployment guide repeats the key points.
+services:
+  nvidia-driver-manager:
+    # Public GHCR images can be pulled without registry credentials; choose a version tag to select a release.
+    # For latest, update = click Update when offered; roll back = replace :latest with the previous version tag.
+    # An offline host = pull/save on a networked computer, load on the NAS; keep the data directory when upgrading.
+    image: ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:latest
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    runtime: runc
+    environment:
+      # Write each $ in the password as $$.
+      - NVM_INITIAL_ADMIN_PASSWORD=<initial-password>
+      # The next three are optional; the value after = is the default.
+      # - NVM_INITIAL_ADMIN_USERNAME=admin
+      # - NVM_PORT=8199
+      # - NVM_BUILD_TIMEOUT_MINUTES=30
+    volumes:
+      # Left of the colon is the host path of the data directory; its dataset must allow executing programs; the path must not contain : , " or control characters.
+      - /mnt/<pool>/<dataset>:/var/lib/nvm
+    # Enable exactly one network section; bridge is enabled by default.
+    # ==== bridge section ====
+    # Plain HTTP on all NAS interfaces by default; restrict access to a trusted management LAN.
+    # If you change NVM_PORT, change both sides of the mapping to that port.
+    ports:
+      - "8199:8199"
+    # ==== macvlan section (service part) ====
+    # To enable: delete the two ports lines above, then uncomment the lines below and the macvlan part at the end of the file.
+    # networks:
+    #   lan:
+    #     ipv4_address: <container-static-ip>
+    #     mac_address: <mac-address>  # Optional; Docker generates one if omitted.
+    # ==== ipvlan section (service part) ====
+    # To enable: delete the two ports lines above, then uncomment the lines below and the ipvlan part at the end of the file; ipvlan shares the MAC of the host interface.
+    # networks:
+    #   lan:
+    #     ipv4_address: <container-static-ip>
+# ==== macvlan section (end-of-file part) ====
+# networks:
+#   lan:
+#     driver: macvlan
+#     driver_opts:
+#       parent: <host-interface>
+#     ipam:
+#       config:
+#         - subnet: <lan-subnet>
+#           gateway: <lan-gateway>
+# ==== ipvlan section (end-of-file part) ====
+# networks:
+#   lan:
+#     driver: ipvlan
+#     driver_opts:
+#       parent: <host-interface>
+#     ipam:
+#       config:
+#         - subnet: <lan-subnet>
+#           gateway: <lan-gateway>

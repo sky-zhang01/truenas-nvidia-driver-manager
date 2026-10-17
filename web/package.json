@@ -1,0 +1,16 @@
+{
+  "name": "truenas-nvidia-driver-manager-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Framework-free TypeScript front end of truenas-nvidia-driver-manager.",
+  "scripts": {
+    "build": "tsc -p . && cp index.html src/styles.css dist/ && mkdir -p dist/brand && cp brand/*.svg dist/brand/",
+    "test:unit": "tsc -p test && node --test dist-test/test/*.test.js",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "typescript": "^7.0.2"
+  }
+}

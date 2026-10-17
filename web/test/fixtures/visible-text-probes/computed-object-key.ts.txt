@@ -1,0 +1,5 @@
+import {el} from "../dom.js";
+export function review_guard_probe(parent: HTMLElement): void {
+  const node = parent;
+  node.append(el("span", {["text"]: "delete"}));
+}
