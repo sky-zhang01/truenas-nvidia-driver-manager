@@ -14,6 +14,83 @@ export interface Message {
 }
 
 export const MESSAGES: Record<string, Message> = {
+  "login.help.reset_path": {
+    zh: "<数据目录>/manager/secrets/web-credentials.json",
+    en: "<data folder>/manager/secrets/web-credentials.json",
+  },
+  "login.help.reset_location_unknown": {
+    zh: "数据目录就是你在 YAML 卷映射里填写的主机目录。请先确认该目录，再删除凭证文件。",
+    en: "The data folder is the host directory you entered in the YAML volume mapping. Confirm that folder before deleting the credentials file.",
+  },
+
+  "setup.not_available": {
+    zh: "info|管理员已经存在，请直接登录。",
+    en: "info|An administrator already exists. Please sign in.",
+  },
+  "setup.code_help": {
+    zh: "如果你重启过应用，旧设置码已失效。",
+    en: "If you restarted the App, the old code no longer works.",
+  },
+  "setup.code_renewed": {
+    zh: "error|这个设置码已过期，日志里已有新的设置码。",
+    en: "error|That code has expired. A new code is now in the logs.",
+  },
+  "setup.code_invalid": {
+    zh: "error|设置码不对。请复制最新一条包含 SETUP CODE: 的日志里 msg 中的设置码。大写小写都可以。",
+    en: "error|This code does not match. Copy the code from the msg field of the newest log message containing SETUP CODE:. Capital or small letters both work.",
+  },
+  "setup.note": {
+    zh: "请复制最新一条包含 SETUP CODE: 的日志里 msg 中的设置码。重启或重置密码后，请刷新本页。",
+    en: "Copy the code from the msg field of the newest log message containing SETUP CODE:. After a restart or a password reset, reload this page.",
+  },
+  "setup.help.body": {
+    zh: "应用每次启动时都会写一个新的设置码。设置码满 24 小时后，打开本页或提交设置时会在日志里续发。也可以重启应用，复制最新一条包含 SETUP CODE: 的日志里 msg 中的设置码。每个设置码只能用一次，也不会写入磁盘。",
+    en: "The App writes a new code every time it starts. After 24 hours, opening this page or submitting setup writes a new code to the logs. You can also restart the App and copy the code from the msg field of the newest log message containing SETUP CODE:. Each code works once. It is never saved to disk.",
+  },
+  "setup.help.summary": {
+    zh: "日志里没有设置码？",
+    en: "The code is not in the logs?",
+  },
+  "setup.submit": {
+    zh: "创建管理员",
+    en: "Create administrator",
+  },
+  "setup.password_hint": {
+    zh: "至少 8 个字符。一句短话就很好用。",
+    en: "At least 8 characters. A short sentence works well.",
+  },
+  "setup.repeat": {
+    zh: "重复密码",
+    en: "Repeat password",
+  },
+  "setup.administrator": {
+    zh: "管理员",
+    en: "Administrator",
+  },
+  "setup.code": {
+    zh: "设置码",
+    en: "Setup code",
+  },
+  "setup.step.copy": {
+    zh: "找到最新一条包含 SETUP CODE: 的日志，复制 msg 中的设置码，样子像 7KQ2-M9XD-4TWB-HE6R。",
+    en: "Find the newest log message containing SETUP CODE: and copy the code from its msg field. It looks like 7KQ2-M9XD-4TWB-HE6R.",
+  },
+  "setup.step.logs": {
+    zh: "在“工作负载”卡片中，点击容器所在行的文档图标“查看日志”。",
+    en: "In the Workloads card, click the container row’s document icon, View Logs.",
+  },
+  "setup.step.app": {
+    zh: "在 TrueNAS 打开“应用” → “已安装”，点开这个应用。",
+    en: "In TrueNAS, open Apps → Installed and click this App.",
+  },
+  "setup.intro": {
+    zh: "这是首次启动。请先在应用日志里取得设置码，再设定密码。",
+    en: "This is the first start. Get the setup code from the App logs, then choose a password.",
+  },
+  "setup.title": {
+    zh: "设置管理员",
+    en: "Set up the administrator",
+  },
   "task.release.button": { zh: "释放恢复材料", en: "Release recovery material" },
   "task.release.confirm_title": { zh: "释放此任务的恢复材料？", en: "Release this task’s recovery material?" },
   "task.release.confirm_body": { zh: "程序会先核对更晚的成功任务、当前驱动和主机状态。只有确认安全后，才会删除此任务目录中的下载、构建输入与产物。任务记录和日志会保留。", en: "The program will first verify a later successful task, the current driver and the host state. Only after safety is confirmed will it delete downloads, build inputs and outputs in this task’s directory. Task records and logs will be kept." },
@@ -893,10 +970,6 @@ export const MESSAGES: Record<string, Message> = {
     en: "error|The SSH key list could not be read.",
   },
 
-  "password.title": {
-    zh: "请修改初始管理员密码",
-    en: "Change the initial administrator password",
-  },
   "password.title_voluntary": {
     zh: "账户",
     en: "Account",
@@ -904,10 +977,6 @@ export const MESSAGES: Record<string, Message> = {
   "password.section": {
     zh: "修改密码",
     en: "Change password",
-  },
-  "password.intro": {
-    zh: "当前使用的是 compose 中设置的初始密码。请先修改密码,之后才能开始更新。",
-    en: "You signed in with the initial password from the compose file. Change the password before starting an update.",
   },
   "password.rule.too_short": {
     zh: "error|新密码至少需要 8 个字符。",
@@ -924,10 +993,6 @@ export const MESSAGES: Record<string, Message> = {
   "password.rule.placeholder": {
     zh: "error|新密码不能以 `<` 开头并以 `>` 结尾。",
     en: "error|The new password must not both start with `<` and end with `>`.",
-  },
-  "password.rule.same_as_initial": {
-    zh: "error|请换一个与当前密码不同的新密码。",
-    en: "error|Choose a new password that is different from the current one.",
   },
   "password.mismatch": {
     zh: "error|两次输入的新密码不同。",
@@ -1167,10 +1232,6 @@ export const MESSAGES: Record<string, Message> = {
     zh: "error|请求来源与本程序的地址不一致,已被拒绝。请直接打开本程序的地址后重试。",
     en: "error|The request origin does not match this program's address and was refused. Open this program's address directly and try again.",
   },
-  "auth.password_change_required": {
-    zh: "error|请先修改初始管理员密码。",
-    en: "error|Change the initial administrator password first.",
-  },
   "request.invalid": { zh: "error|请求内容不合法。", en: "error|The request is not valid." },
   "request.too_large": { zh: "error|请求内容过大。", en: "error|The request is too large." },
   "request.not_json": {
@@ -1228,12 +1289,12 @@ export const MESSAGES: Record<string, Message> = {
   "login.submit": { zh: "登录", en: "Sign in" },
 
   "login.intro": {
-    zh: "使用部署本应用时设置的管理员账号与密码登录。",
-    en: "Sign in with the administrator account and password configured when this app was deployed.",
+    zh: "用你的管理员账号登录。",
+    en: "Sign in with your administrator account.",
   },
   "login.help.summary": {
-    zh: "没有账号?初始密码在哪里?",
-    en: "No account? Where is the initial password?",
+    zh: "没有账号？忘记密码？",
+    en: "No account? Forgot your password?",
   },
 
   "login.help.hint": {
@@ -1241,20 +1302,16 @@ export const MESSAGES: Record<string, Message> = {
     en: "No account? Contact whoever deployed this app for an administrator account; expand the help below for details.",
   },
   "login.help.no_account": {
-    zh: "没有账号:请联系**部署本应用的人**,获取本应用的管理员账号。",
-    en: "No account: contact **whoever deployed this app** for this app's administrator account.",
-  },
-  "login.help.self_hosted": {
-    zh: "自己部署的:在 TrueNAS 中打开本应用的编辑配置,查看 compose/YAML 里的环境变量。用户名是 `NVM_INITIAL_ADMIN_USERNAME`(默认 `admin`,可以更改),初始密码是 `NVM_INITIAL_ADMIN_PASSWORD` 的值;首次登录后会要求修改密码。",
-    en: "Self-deployed: open this app's edit configuration in TrueNAS and look at the environment variables in the compose/YAML. The username is `NVM_INITIAL_ADMIN_USERNAME` (default `admin`, changeable), and the initial password is the value of `NVM_INITIAL_ADMIN_PASSWORD`; the first sign-in asks you to change the password.",
+    zh: "还没有账号？第一次打开会看到设置页面。",
+    en: "No account yet? The first visit shows a setup page.",
   },
   "login.help.after_reinstall": {
-    zh: "重装或升级时保留了数据目录的,账号和修改过的密码继续有效;初始配置不会覆盖已有凭据。",
-    en: "If a reinstall or upgrade kept the data directory, the account and the changed password keep working; the initial configuration never overwrites existing credentials.",
+    zh: "在旧数据目录上重装？原有账号会保留。想重新开始，请删除下面显示的文件。",
+    en: "Installed again on an existing data folder? The account is kept. To start fresh, delete the file shown below.",
   },
   "login.help.forgot_password": {
-    zh: "忘记密码:请联系有 TrueNAS Shell 和本应用数据目录权限的管理员,按现有运维说明重置管理员账号。按该说明删除凭证文件并重建账号时,已登记的 SSH 公钥会被清除,之后需要重新登记。",
-    en: "Forgot the password: contact an administrator who has TrueNAS Shell and this app's data directory access, and follow the existing operations instructions to reset the administrator account. Rebuilding the account that way clears the registered SSH public keys, which then have to be registered again.",
+    zh: "忘记密码？在 TrueNAS 的命令行里删除下面显示的文件，再刷新本页。应用日志里会出现新的设置码。已登记的 SSH 密钥会清除，任务和驱动不受影响。",
+    en: "Forgot the password? In the TrueNAS Shell, delete the file shown below, then reload this page. A new setup code appears in the App logs. Registered SSH keys are cleared; tasks and drivers stay.",
   },
   "password.new": { zh: "新密码", en: "New password" },
   "password.repeat": { zh: "再次输入新密码", en: "Repeat the new password" },
@@ -1392,6 +1449,7 @@ export const MESSAGES: Record<string, Message> = {
   "drivers.col.kernel": { zh: "目标内核", en: "Target kernel" },
   "drivers.col.status": { zh: "状态", en: "Status" },
   "drivers.col.keep": { zh: "保留", en: "Keep" },
+  "drivers.col.actions": { zh: "操作", en: "Actions" },
   "drivers.source.official": { zh: "官网构建", en: "Official build" },
   "drivers.source.upload": {
     zh: "上传 · 指纹 {fingerprint}",
@@ -1431,6 +1489,9 @@ export const MESSAGES: Record<string, Message> = {
   },
   "tasks.steps": { zh: "计划步骤", en: "Planned steps" },
   "tasks.time.not_interrupted": { zh: "未中断", en: "Not interrupted" },
+  "tasks.time.not_finished": { zh: "尚未结束", en: "Not finished yet" },
+  "tasks.time.unavailable": { zh: "未记录", en: "Not recorded" },
+  "task.value.unavailable": { zh: "暂无可用信息", en: "Unavailable" },
   "task.latest_unknown": {
     zh: "warning|按记录的开始时间，无法确定最近的一次任务。",
     en: "warning|The recorded start times do not identify one latest task.",
@@ -1583,7 +1644,7 @@ export const MESSAGES: Record<string, Message> = {
   },
 
   "extension.missing": {
-    zh: "error|未检测到 TrueNAS 的 NVIDIA 驱动扩展。请先在 TrueNAS 的 Apps 设置中启用 NVIDIA 驱动。",
+    zh: "error|未检测到 TrueNAS 的 NVIDIA 驱动扩展。请先在 TrueNAS 的应用设置中启用 NVIDIA 驱动。",
     en: "error|TrueNAS NVIDIA driver extension not found. Enable the NVIDIA driver in the TrueNAS Apps settings first.",
   },
 
@@ -1629,10 +1690,6 @@ export const MESSAGES: Record<string, Message> = {
     en: "error|Unrecognized setting: {variable}. Remove or correct it in the compose file, then restart the app.",
   },
 
-  "credentials.initial_password_unusable": {
-    zh: "error|初始管理员密码未设置或不符合要求(至少 8 个字符,不超过 1024 字节,不能全是空白,不能以 `<` 开头并以 `>` 结尾)。请在 compose 中设置 NVM_INITIAL_ADMIN_PASSWORD 后重启 App。",
-    en: "error|The initial administrator password is missing or invalid (at least 8 characters, at most 1024 bytes, not all whitespace, not both starting with `<` and ending with `>`). Set NVM_INITIAL_ADMIN_PASSWORD in the compose file and restart the app.",
-  },
 
   "credentials.unreadable": {
     zh: "error|无法读取凭证文件:{reason}。无法验证登录。请按下方的步骤重置账号。",
@@ -1677,8 +1734,8 @@ export const MESSAGES: Record<string, Message> = {
   "query.object.gpus": { zh: "本机显卡", en: "Host GPUs" },
 
   "help.reset_account": {
-    zh: "info|title|无法登录时重置账号\nbody|可按以下步骤删除凭证文件,由程序重建管理员账号。\naction|1. 请确认 compose 中的 NVM_INITIAL_ADMIN_PASSWORD 仍在且符合要求;如有修改,改后请重启 App。\naction|2. 请在 TrueNAS Shell 中删除数据目录下的 `manager/secrets/web-credentials.json`。数据目录是 compose 的 `volumes:` 中映射到 `/var/lib/nvm` 的主机目录。\naction|3. 程序重建账号后,请用初始管理员密码登录,并按要求修改密码。重建会清除已登记的 SSH 公钥,之后需要重新登记。",
-    en: "info|title|Resetting the account if you cannot sign in\nbody|With the steps below, you delete the credentials file and the program recreates the administrator account.\naction|1. Make sure NVM_INITIAL_ADMIN_PASSWORD is still set and valid in the compose file; if you change it, restart the app afterwards.\naction|2. In the TrueNAS Shell, delete `manager/secrets/web-credentials.json` under the data directory. The data directory is the host directory mapped to `/var/lib/nvm` under `volumes:` in the compose file.\naction|3. After the program recreates the account, sign in with the initial administrator password and change the password when asked. Recreating the account clears the registered SSH public keys, which then have to be registered again.",
+    zh: "info|title|无法登录时重置账号\nbody|在 TrueNAS 的命令行里删除下方凭证文件，再刷新本页。应用日志里会出现新的设置码。已登记的 SSH 密钥会清除，任务和驱动不受影响。",
+    en: "info|title|Resetting the account if you cannot sign in\nbody|In the TrueNAS Shell, delete the credentials file below, then reload this page. A new setup code appears in the App logs. Registered SSH keys are cleared; tasks and drivers stay.",
   },
 
   "task.state_unreadable": {
@@ -1890,7 +1947,6 @@ export const MESSAGES: Record<string, Message> = {
 
 MESSAGES["update.disabled_extension"] = MESSAGES["extension.missing"];
 MESSAGES["update.disabled_task_running"] = MESSAGES["update.disabled_task_running_text"];
-MESSAGES["update.disabled_password"] = MESSAGES["auth.password_change_required"];
 MESSAGES["task.running"] = MESSAGES["update.disabled_task_running_text"];
 MESSAGES["upload.busy"] = MESSAGES["upload.busy.text"];
 MESSAGES["plan.source_invalid.toolkit_too_old"] = MESSAGES["upload.group.toolkit_too_old"];

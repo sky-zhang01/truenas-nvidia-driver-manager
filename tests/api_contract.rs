@@ -774,14 +774,14 @@ async fn every_response_carries_csp_and_no_referrer_policy() {
     }
 }
 
-/// The account stays on its initial password. `setup` changes that password, and the size check
-/// below signs in with the initial one.
-async fn initial_account() -> TestApp {
+/// Create an account with the password used by the body-limit sign-in control.
+async fn account_for_body_limits() -> TestApp {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let (status, _, _) = request(&app, Method::GET, "/api/login", None, None).await;
     assert_eq!(status, StatusCode::OK);
+    setup_app(&app, "hunter12").await;
     app
 }
 
@@ -808,7 +808,7 @@ async fn read_json(response: axum::response::Response) -> (StatusCode, serde_jso
 
 #[tokio::test]
 async fn an_anonymous_json_body_over_64_kib_is_refused_and_a_smaller_one_is_not() {
-    let app = initial_account().await;
+    let app = account_for_body_limits().await;
     let over = vec![b'x'; 64 * 1024 + 1];
     assert!(over.len() > 40 * 1024);
     let (status, body) =
@@ -854,7 +854,7 @@ impl HttpBody for PendingBody {
 
 #[tokio::test(start_paused = true)]
 async fn a_stalled_json_body_is_refused_after_the_deadline() {
-    let app = initial_account().await;
+    let app = account_for_body_limits().await;
     let polled = Arc::new(AtomicBool::new(false));
     let request = Request::builder()
         .method(Method::POST)
@@ -1068,7 +1068,7 @@ async fn release_api_refuses_missing_proof_and_explains_why() {
             })),
             host,
         );
-        let cookie = login_changed(&app, "hunter12", "longpass99").await;
+        let cookie = setup_app(&app, "longpass99").await;
         release_scene(&app.host);
         let paths = Paths::new(CONTAINER_DATA_DIR);
         let mut l = release_state(&app.host, RELEASE_L);

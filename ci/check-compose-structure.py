@@ -26,7 +26,7 @@ def fail(message):
 
 
 def template_environment_is_sequence(template):
-    """True when the service's `environment:` is followed by a `- ` item."""
+    """Allow no environment, or a sequence of explicitly enabled settings."""
     lines = template.splitlines()
     for index, line in enumerate(lines):
         if line == "    environment:":
@@ -36,7 +36,7 @@ def template_environment_is_sequence(template):
                     continue
                 return following.startswith("      - ")
             return False
-    return False
+    return True
 
 
 def as_text(value):
@@ -55,11 +55,11 @@ def check_service(service):
     image = service.get("image")
     if not isinstance(image, str) or not image or "<" in image:
         return fail("image must be a concrete repository:tag after substitution; got %r" % image)
-    environment = service.get("environment")
+    environment = service.get("environment", {})
     if not isinstance(environment, dict):
         return fail("environment must render as a mapping of names to values")
-    if "NVM_INITIAL_ADMIN_PASSWORD" not in environment:
-        return fail("NVM_INITIAL_ADMIN_PASSWORD must be set")
+    if "NVM_INITIAL_ADMIN_PASSWORD" in environment:
+        return fail("the container environment must not carry an initial password")
     volumes = service.get("volumes")
     if not isinstance(volumes, list) or not any(
         isinstance(item, dict) and item.get("target") == "/var/lib/nvm" for item in volumes

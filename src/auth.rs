@@ -18,7 +18,7 @@ use sha2::Sha256;
 
 use crate::codes::*;
 use crate::host::{Create, Host};
-use crate::settings::{self, InitialPassword, Settings};
+use crate::settings::{self, Settings};
 use crate::store::{self, JsonRead, Paths, Validate};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -29,10 +29,8 @@ pub const COOKIE_NAME: &str = "nvm_session";
 pub struct Credentials {
     pub username: String,
     pub password_hash: String,
-    pub must_change_password: bool,
     pub session_key: String,
-    /// Registered SSH sign-in keys. Absent in every credentials file written before the
-    /// feature: parsed as an empty table, always written back out.
+    /// Registered SSH sign-in keys, defaulting to an empty table.
     #[serde(default)]
     pub ssh_keys: Vec<crate::ssh_login::SshKey>,
 }
@@ -72,18 +70,12 @@ impl Validate for Credentials {
         {
             return Err("bad session key".into());
         }
-        // SSH sign-in keys: at most five, each fully validated (id, fingerprint, canonical
-        // line, whitelist, weak-key gate), and none while the initial password still must be
-        // changed. A single violation fails the whole file closed (credentials-unreadable
-        // notice).
+        // Validate the entire SSH key table before accepting the credentials.
         if self.ssh_keys.len() > SSH_MAX_KEYS {
             return Err("too many ssh keys".into());
         }
         for key in &self.ssh_keys {
             crate::ssh_login::validate_stored_key(key)?;
-        }
-        if self.must_change_password && !self.ssh_keys.is_empty() {
-            return Err("ssh keys present while the password must change".into());
         }
         Ok(())
     }
@@ -157,9 +149,9 @@ impl UnsavedReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialState {
-    Ok { must_change_password: bool },
+    Ok,
+    SetupRequired,
     UsernameInvalid,
-    InitialPasswordUnusable,
     Unreadable(UnreadableReason),
     Unsaved(UnsavedReason),
 }
@@ -167,27 +159,16 @@ pub enum CredentialState {
 impl CredentialState {
     pub fn to_json(&self) -> serde_json::Value {
         match self {
-            CredentialState::Ok { .. } => serde_json::json!("ok"),
+            CredentialState::Ok => serde_json::json!("ok"),
             CredentialState::UsernameInvalid => serde_json::json!("username_invalid"),
-            CredentialState::InitialPasswordUnusable => {
-                serde_json::json!("initial_password_unusable")
-            }
+            CredentialState::SetupRequired => serde_json::json!("setup_required"),
             CredentialState::Unreadable(r) => serde_json::json!({ "unreadable": r.as_str() }),
             CredentialState::Unsaved(r) => serde_json::json!({ "unsaved": r.as_str() }),
         }
     }
 
-    pub fn must_change_password(&self) -> bool {
-        matches!(
-            self,
-            CredentialState::Ok {
-                must_change_password: true
-            }
-        )
-    }
-
     pub fn is_ok(&self) -> bool {
-        matches!(self, CredentialState::Ok { .. })
+        matches!(self, CredentialState::Ok)
     }
 }
 
@@ -197,7 +178,6 @@ pub struct Session {
     pub mac: String,
     pub issued: u64,
     pub nonce: String,
-    pub must_change_password: bool,
 }
 
 /// A newly issued cookie and the request token returned with it.
@@ -228,7 +208,6 @@ pub enum LoginOutcome {
     Ok {
         cookie: String,
         token: String,
-        must_change_password: bool,
     },
     Failed {
         show_reset_help: bool,
@@ -247,6 +226,32 @@ pub enum PasswordChangeError {
     Rule(settings::PasswordRule),
     Credentials(CredentialState),
     Unsaved(UnsavedReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupError {
+    NotAvailable,
+    CodeInvalid { show_help: bool, code_renewed: bool },
+    RateLimited { retry_after_s: u64 },
+    Rule(settings::PasswordRule),
+    Credentials(CredentialState),
+    Unsaved(UnsavedReason),
+}
+
+/// A one-time plaintext handoff to the startup logger or a test caller.
+pub struct IssuedSetupCode {
+    pub code: String,
+    pub reason: &'static str,
+}
+
+impl IssuedSetupCode {
+    pub fn log(&self) {
+        crate::log::info_json(Event::SetupCodeIssued, &[
+            ("msg", serde_json::json!(format!("SETUP CODE: {}. Open the manager page and enter it to create the administrator account. Valid for 24 hours.", self.code))),
+            ("reason", serde_json::json!(self.reason)),
+            ("valid_hours", serde_json::json!(crate::setup_code::VALID_HOURS)),
+        ]);
+    }
 }
 
 /// Global login quota bucket.
@@ -323,6 +328,7 @@ pub struct AuthState {
     /// rebuilt `AuthState` starts with an empty table — challenges never survive a rebuild or
     /// restart.
     pub ssh_challenges: crate::ssh_login::ChallengeState,
+    setup_code: Mutex<Option<crate::setup_code::SetupCode>>,
 }
 
 impl AuthState {
@@ -330,42 +336,132 @@ impl AuthState {
         AuthState::default()
     }
 
-    /// Read or create the credentials file.
-    pub fn load_or_create(&self, h: &dyn Host, p: &Paths, s: &Settings) -> CredentialState {
-        let path = p.credentials();
-        // A publish whose rollback could not be confirmed leaves the previous bytes under the
-        // protected recovery name; those bytes are the value of record, so a failed save
-        // cannot expose the new password or invalidate the issued cookies.
-        match store::read_json_recovering::<Credentials>(h, &path) {
-            JsonRead::Ok(c) => CredentialState::Ok {
-                must_change_password: c.must_change_password,
-            },
+    /// The caller holds credentials_lock. A live code is never replaced or re-logged.
+    pub fn ensure_setup_code(
+        &self,
+        h: &dyn Host,
+        p: &Paths,
+        s: &Settings,
+        reason: &str,
+    ) -> Option<IssuedSetupCode> {
+        let mut guard = self.setup_code.lock().unwrap_or_else(|e| e.into_inner());
+        if self.load_state(h, p, s) != CredentialState::SetupRequired {
+            *guard = None;
+            return None;
+        }
+        let now = h.now();
+        if guard.as_ref().is_some_and(|code| code.live(now)) {
+            return None;
+        }
+        let reason = if guard.is_some() {
+            "expired"
+        } else if reason == "start" {
+            "start"
+        } else {
+            "reset"
+        };
+        let (code, text) = crate::setup_code::SetupCode::issue(now);
+        *guard = Some(code);
+        Some(IssuedSetupCode { code: text, reason })
+    }
+
+    /// Used by the fake-host control plane to exercise lazy expiry.
+    pub fn expire_setup_code(&self) {
+        if let Some(code) = self
+            .setup_code
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            code.expire();
+        }
+    }
+
+    /// The handler holds credentials_lock across the state check, creation and consumption.
+    pub async fn setup(
+        &self,
+        h: std::sync::Arc<dyn Host>,
+        p: Paths,
+        s: Settings,
+        code: String,
+        new_password: String,
+    ) -> Result<IssuedSession, SetupError> {
+        match self.load_state(&*h, &p, &s) {
+            CredentialState::SetupRequired => {}
+            CredentialState::Ok => return Err(SetupError::NotAvailable),
+            state => return Err(SetupError::Credentials(state)),
+        }
+        let mut guard = self.limiter.lock().await;
+        let issued = self.ensure_setup_code(&*h, &p, &s, "reset");
+        let code_renewed = issued
+            .as_ref()
+            .is_some_and(|issued| issued.reason == "expired");
+        if let Some(issued) = issued {
+            issued.log();
+        }
+        let now = h.now();
+        let limiter = guard.get_or_insert_with(|| LoginLimiter::new(now));
+        if !limiter.available(now) {
+            return Err(SetupError::RateLimited {
+                retry_after_s: limiter.retry_after_s(),
+            });
+        }
+        let valid = crate::setup_code::matches(
+            self.setup_code
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref(),
+            &code,
+            now,
+        );
+        if !valid {
+            limiter.consume();
+            limiter.consecutive_failures += 1;
+            let failures = limiter.consecutive_failures;
+            self.failure_count
+                .store(failures, std::sync::atomic::Ordering::SeqCst);
+            crate::log::warn_json(
+                Event::SetupCodeRejected,
+                &[("failures", serde_json::json!(failures))],
+            );
+            return Err(SetupError::CodeInvalid {
+                show_help: failures >= LOGIN_RESET_HELP_AFTER,
+                code_renewed,
+            });
+        }
+        settings::check_password(&new_password).map_err(SetupError::Rule)?;
+        let password_hash = tokio::task::spawn_blocking(move || hash_password(&new_password))
+            .await
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::File))?
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::File))?;
+        let credentials = Credentials {
+            username: s
+                .username
+                .ok_or(SetupError::Credentials(CredentialState::UsernameInvalid))?,
+            password_hash,
+            session_key: store::random_hex(32),
+            ssh_keys: Vec::new(),
+        };
+        create_credentials(&*h, &p, &credentials, || {
+            *self.setup_code.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        })?;
+        limiter.consecutive_failures = 0;
+        self.failure_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.clear_logged_out(&*h, &p);
+        crate::log::info_json(Event::CredentialsCreated, &[]);
+        Ok(issue_session(&credentials.session_key, h.wall_ms()))
+    }
+
+    /// Read the credential state without creating an account.
+    pub fn load_state(&self, h: &dyn Host, p: &Paths, s: &Settings) -> CredentialState {
+        match store::read_json_recovering::<Credentials>(h, &p.credentials()) {
+            JsonRead::Ok(_) => CredentialState::Ok,
             JsonRead::Missing => {
-                let Some(username) = s.username.clone() else {
-                    return CredentialState::UsernameInvalid;
-                };
-                let InitialPassword::Usable(secret) = &s.password else {
-                    return CredentialState::InitialPasswordUnusable;
-                };
-                let hash = match hash_password(secret.expose()) {
-                    Ok(h) => h,
-                    Err(_) => return CredentialState::Unsaved(UnsavedReason::File),
-                };
-                let credentials = Credentials {
-                    username,
-                    password_hash: hash,
-                    must_change_password: true,
-                    session_key: store::random_hex(32),
-                    ssh_keys: Vec::new(),
-                };
-                match write_credentials(h, p, &credentials) {
-                    Ok(()) => {
-                        self.clear_logged_out(h, p);
-                        CredentialState::Ok {
-                            must_change_password: true,
-                        }
-                    }
-                    Err(reason) => CredentialState::Unsaved(reason),
+                if s.username.is_some() {
+                    CredentialState::SetupRequired
+                } else {
+                    CredentialState::UsernameInvalid
                 }
             }
             JsonRead::DirUnreadable(_) => {
@@ -388,11 +484,7 @@ impl AuthState {
         }
     }
 
-    /// One lock-free credentials snapshot for the SSH sign-in paths: the registered key
-    /// table, the must-change state and the `session_key` all come from this single read. The
-    /// read failure keeps its exact reason with the same mapping `load_or_create` uses
-    /// (not_json / field_invalid / the two unreadable states); a missing file is reported as
-    /// an unreadable file instead of creating anything — this path is read-only.
+    /// A read-only credential snapshot for SSH sign-in, preserving the exact failure state.
     pub fn snapshot_credentials(
         &self,
         h: &dyn Host,
@@ -400,7 +492,8 @@ impl AuthState {
     ) -> Result<Credentials, CredentialState> {
         match store::read_json_recovering::<Credentials>(h, &p.credentials()) {
             JsonRead::Ok(c) => Ok(c),
-            JsonRead::Missing | JsonRead::FileUnreadable(_) => Err(CredentialState::Unreadable(
+            JsonRead::Missing => Err(CredentialState::SetupRequired),
+            JsonRead::FileUnreadable(_) => Err(CredentialState::Unreadable(
                 UnreadableReason::FileUnreadable,
             )),
             JsonRead::DirUnreadable(_) => Err(CredentialState::Unreadable(
@@ -430,7 +523,7 @@ impl AuthState {
         user: String,
         pass: String,
     ) -> LoginOutcome {
-        let state = self.load_or_create(&*h, &p, &s);
+        let state = self.load_state(&*h, &p, &s);
         if !state.is_ok() {
             return LoginOutcome::Credentials(state);
         }
@@ -496,7 +589,6 @@ impl AuthState {
         LoginOutcome::Ok {
             cookie: issued.cookie,
             token: issued.token,
-            must_change_password: credentials.must_change_password,
         }
     }
 
@@ -546,7 +638,6 @@ impl AuthState {
             mac: mac.to_string(),
             issued,
             nonce: nonce.to_string(),
-            must_change_password: credentials.must_change_password,
         })
     }
 
@@ -564,19 +655,9 @@ impl AuthState {
                 CredentialState::Unreadable(UnreadableReason::FileUnreadable),
             ));
         };
-        // Only the forced first change refuses a repeat of the current password.
-        // A later voluntary change may reuse it. Argon2 parameters stay as they are.
-        if credentials.must_change_password
-            && verify_password(&credentials.password_hash, new_password)
-        {
-            return Err(PasswordChangeError::Rule(
-                settings::PasswordRule::SameAsInitial,
-            ));
-        }
         let hash = hash_password(new_password)
             .map_err(|_| PasswordChangeError::Unsaved(UnsavedReason::File))?;
         credentials.password_hash = hash;
-        credentials.must_change_password = false;
         credentials.session_key = store::random_hex(32);
         match write_credentials(h, p, &credentials) {
             Ok(()) => {
@@ -644,14 +725,70 @@ impl AuthState {
     }
 }
 
-/// Write the credentials file, classifying failures for credential-save failures.
-///
-/// The previous credentials are snapshotted before anything is published; a
-/// read error of that snapshot stops the write with the file untouched
-///. The publish itself goes through [`store::publish_file`], which
-/// copies the previous bytes to a hidden recovery name before the single
-/// atomic rename, so a post-rename directory-sync failure puts the old
-/// credentials back after reading them back.
+/// Publish complete initial credentials exclusively, without an empty reservation.
+fn create_credentials(
+    h: &dyn Host,
+    p: &Paths,
+    credentials: &Credentials,
+    on_published: impl FnOnce(),
+) -> Result<(), SetupError> {
+    use std::io::Write;
+
+    let path = p.credentials();
+    let dir = path
+        .parent()
+        .ok_or(SetupError::Unsaved(UnsavedReason::Directory))?;
+    h.create_dir(dir, 0o700)
+        .map_err(|_| SetupError::Unsaved(UnsavedReason::Directory))?;
+    let bytes = serde_json::to_vec_pretty(credentials)
+        .map_err(|_| SetupError::Unsaved(UnsavedReason::File))?;
+    // This uses the existing startup-cleanup namespace. A crash before the link leaves
+    // only a temporary file; a crash afterwards leaves complete credentials at the target.
+    let tmp = dir.join(format!(
+        ".web-credentials.json.tmp-{}",
+        store::random_hex(8)
+    ));
+    let mut published = false;
+    let result = (|| {
+        let mut file = h
+            .create(&tmp, Create::New, 0o600)
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::File))?;
+        file.write_all(&bytes)
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::File))?;
+        file.sync_all()
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::File))?;
+        drop(file);
+        // hard_link atomically creates the final name only if absent. Never replace
+        // another successful creator, even if it belongs to a different process.
+        h.hard_link(&tmp, &path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                SetupError::NotAvailable
+            } else {
+                SetupError::Unsaved(UnsavedReason::File)
+            }
+        })?;
+        published = true;
+        // The one-time code is spent as soon as the account exists, even if the
+        // following durability or cleanup steps fail and no session is returned.
+        on_published();
+        // Publication is irreversible here: a later error must not remove a complete
+        // account another reader may already have observed. No session is returned on
+        // failure; startup cleanup removes any retained temporary hard link.
+        h.fsync_dir(dir)
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::Directory))?;
+        h.remove_file(&tmp)
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::Directory))?;
+        h.fsync_dir(dir)
+            .map_err(|_| SetupError::Unsaved(UnsavedReason::Directory))?;
+        Ok(())
+    })();
+    if result.is_err() && !published {
+        let _ = h.remove_file(&tmp);
+    }
+    result
+}
+
+/// Atomically replace credentials, retaining protected recovery material on failed rollback.
 pub fn write_credentials(
     h: &dyn Host,
     p: &Paths,
@@ -931,13 +1068,12 @@ pub fn clear_set_cookie() -> String {
 mod tests {
     use super::*;
     use crate::host::RealHost;
-    use crate::settings::{InitialPassword, Secret, SettingProblem};
+    use crate::settings::SettingProblem;
     use crate::test_support::TestDir;
 
-    fn settings_with(password: &str) -> Settings {
+    fn settings_with() -> Settings {
         Settings {
             username: Some("admin".into()),
-            password: InitialPassword::Usable(Secret::new(password.to_string())),
             port: 8199,
             build_timeout_minutes: None,
             problems: Vec::<SettingProblem>::new(),
@@ -967,46 +1103,36 @@ mod tests {
         )
     }
 
-    #[test]
-    fn creates_and_validates_credentials() {
-        let (_tmp, p) = setup("create");
-        let state = AuthState::new();
-        let s = settings_with("hunter12");
-        let st = state.load_or_create(&RealHost::on_host(), &p, &s);
-        assert!(st.is_ok());
-        assert!(st.must_change_password());
-        let raw = std::fs::read_to_string(p.credentials()).unwrap();
-        let cred: Credentials = serde_json::from_str(&raw).unwrap();
-        assert_eq!(cred.username, "admin");
-        assert!(cred.password_hash.starts_with("$argon2id$"));
-        assert_eq!(cred.session_key.len(), 64);
-        assert!(verify_password(&cred.password_hash, "hunter12"));
-        assert!(!verify_password(&cred.password_hash, "hunter13"));
-        // The mode is 0600.
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(p.credentials())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600);
+    fn create_test_account(state: &AuthState, p: &Paths, s: &Settings) {
+        let credentials = Credentials {
+            username: s.username.clone().unwrap(),
+            password_hash: hash_password("hunter12").unwrap(),
+            session_key: store::random_hex(32),
+            ssh_keys: Vec::new(),
+        };
+        create_credentials(&RealHost::on_host(), p, &credentials, || {}).unwrap();
+        assert!(state.load_state(&RealHost::on_host(), p, s).is_ok());
     }
 
     #[test]
-    fn unusable_states() {
+    fn load_state_is_read_only_and_validates_username() {
         let (_tmp, p) = setup("states");
         let state = AuthState::new();
-        let mut s = settings_with("hunter12");
-        s.password = InitialPassword::Unusable;
+        let mut s = settings_with();
         assert_eq!(
-            state.load_or_create(&RealHost::on_host(), &p, &s),
-            CredentialState::InitialPasswordUnusable
+            state.load_state(&RealHost::on_host(), &p, &s),
+            CredentialState::SetupRequired
         );
+        assert!(!p.credentials().exists());
         s.username = None;
         assert_eq!(
-            state.load_or_create(&RealHost::on_host(), &p, &s),
+            state.load_state(&RealHost::on_host(), &p, &s),
             CredentialState::UsernameInvalid
         );
+        assert!(state
+            .ensure_setup_code(&RealHost::on_host(), &p, &s, "start")
+            .is_none());
+        assert!(!p.credentials().exists());
     }
 
     #[test]
@@ -1016,9 +1142,9 @@ mod tests {
         std::fs::create_dir_all(p.manager().join("secrets")).unwrap();
         std::fs::write(p.credentials(), b"not json").unwrap();
         let before = std::fs::read(p.credentials()).unwrap();
-        let s = settings_with("hunter12");
+        let s = settings_with();
         assert_eq!(
-            state.load_or_create(&RealHost::on_host(), &p, &s),
+            state.load_state(&RealHost::on_host(), &p, &s),
             CredentialState::Unreadable(UnreadableReason::NotJson)
         );
         assert_eq!(std::fs::read(p.credentials()).unwrap(), before);
@@ -1028,8 +1154,8 @@ mod tests {
     async fn six_concurrent_correct_logins_all_succeed() {
         let (_tmp, p) = setup("concurrent");
         let state = AuthState::new();
-        let s = settings_with("hunter12");
-        state.load_or_create(&RealHost::on_host(), &p, &s);
+        let s = settings_with();
+        create_test_account(&state, &p, &s);
         let h: std::sync::Arc<dyn Host> = std::sync::Arc::new(RealHost::on_host());
         let (ra, rb, rc, rd, re, rf) = tokio::join!(
             login_as(&state, &h, &p, &s, "hunter12"),
@@ -1051,8 +1177,8 @@ mod tests {
     fn an_uppercase_mac_is_not_a_valid_session() {
         let (_tmp, p) = setup("upper-mac");
         let state = AuthState::new();
-        let s = settings_with("hunter12");
-        state.load_or_create(&RealHost::on_host(), &p, &s);
+        let s = settings_with();
+        create_test_account(&state, &p, &s);
         let cred: Credentials =
             serde_json::from_slice(&std::fs::read(p.credentials()).unwrap()).unwrap();
         let issued_ms = crate::host::Host::wall_ms(&RealHost::on_host());
@@ -1090,7 +1216,6 @@ mod tests {
         let mut cred = Credentials {
             username: "admin".into(),
             password_hash: hash.clone(),
-            must_change_password: true,
             session_key: "a".repeat(64),
             ssh_keys: Vec::new(),
         };
@@ -1170,8 +1295,8 @@ mod tests {
     async fn login_flow_verifies_and_limits() {
         let (_tmp, p) = setup("login");
         let state = AuthState::new();
-        let s = settings_with("hunter12");
-        state.load_or_create(&RealHost::on_host(), &p, &s);
+        let s = settings_with();
+        create_test_account(&state, &p, &s);
         let h: std::sync::Arc<dyn Host> = std::sync::Arc::new(RealHost::on_host());
         let out = login_as(&state, &h, &p, &s, "hunter12").await;
         assert!(matches!(out, LoginOutcome::Ok { .. }));
@@ -1210,20 +1335,13 @@ mod tests {
     fn change_password_swaps_the_key() {
         let (_tmp, p) = setup("change");
         let state = AuthState::new();
-        let s = settings_with("hunter12");
-        state.load_or_create(&RealHost::on_host(), &p, &s);
-        assert_eq!(
-            state.change_password(&RealHost::on_host(), &p, "hunter12"),
-            Err(PasswordChangeError::Rule(
-                settings::PasswordRule::SameAsInitial
-            ))
-        );
+        let s = settings_with();
+        create_test_account(&state, &p, &s);
         let issued_session = state
             .change_password(&RealHost::on_host(), &p, "newpass99")
             .unwrap();
         let cred: Credentials =
             serde_json::from_slice(&std::fs::read(p.credentials()).unwrap()).unwrap();
-        assert!(!cred.must_change_password);
         let mut parts = issued_session.cookie.split('.');
         let issued = parts.next().unwrap();
         let nonce = parts.next().unwrap();

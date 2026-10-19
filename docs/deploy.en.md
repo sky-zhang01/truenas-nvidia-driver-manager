@@ -4,22 +4,21 @@
 
 The tested platform is **TrueNAS SCALE 25.10.7 / amd64**. Other versions and architectures are
 untested. This App controls the host driver from a privileged container with `pid: host`.
-Read the [security model and limitations](../README.md) before installing. Arrange a maintenance
+Read the [security guide](security.en.md) before installing. Arrange a maintenance
 window and host console access; replacing drivers can interrupt GPU workloads.
 
 ## 1. Install the App
 
-1. In TrueNAS, open **Apps → Discover → Install via YAML** and paste
+1. In TrueNAS, open **Apps → Discover Apps**, then the ⋮ **More Options** next to **Custom App** → **Install via YAML** and paste
    [`deploy/compose.yaml`](../deploy/compose.yaml).
 2. Keep `image: ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:latest`, or choose a published
-   version such as `:0.2.0`. Public GHCR images can be pulled without registry credentials.
+   version for this release. Public GHCR images can be pulled without registry credentials.
 3. Replace `/mnt/<pool>/<dataset>` with a dedicated host directory or dataset. Keep the container
    side `/var/lib/nvm`. Do not put child dataset mounts below this directory: replacement uses
    renames which must stay on the same filesystem. The dataset must allow execution (`exec=on`).
    Paths must not contain `:`, `,`, `"`, or control characters.
-4. Replace `<initial-password>` with a strong initial password. Write every `$` as `$$` so
-   Compose passes it literally. Keep the YAML private: it contains the initial password.
-5. Enable exactly one network section and save the App. The default is bridge.
+4. Enable exactly one network section and save the App. The default is bridge.
+   The YAML contains no password; you choose it on the manager page after reading a setup code.
 
 Optional settings are `NVM_INITIAL_ADMIN_USERNAME=admin`, `NVM_PORT=8199`, and
 `NVM_BUILD_TIMEOUT_MINUTES=30`. If you change `NVM_PORT`, change both port mapping numbers to
@@ -38,11 +37,24 @@ match (for example, `18199:18199`). TrueNAS removes comments when saving; keep t
   protect the backend connection, and configure cookie rewriting if you require `Secure`.
   The application never sets that flag itself, even behind a TLS proxy.
 
-Sign in as `admin` (or your configured username) with the initial password. Change it to a
-different password when prompted; changing actions stay unavailable until then. Once credentials
-exist, editing the initial password does not change the active account. See
-[account reset](operations.en.md) if you lose access. Dedicated SSH public keys for agents can
-be registered after the first password change; see the [agent guide](agent.en.md).
+1. In TrueNAS, open **Apps → Installed → this App**. On the **Workloads** card, click
+   the container row's document icon, **View Logs**.
+2. Find the newest JSON log message containing `SETUP CODE:` and select the whole code from `msg`, such as
+   `7KQ2-M9XD-4TWB-HE6R`, including all four groups.
+3. Open the manager page. Enter the setup code, choose a password of at least 8 characters,
+   repeat it, and click **Create administrator**. The administrator is `admin` unless you set
+   `NVM_INITIAL_ADMIN_USERNAME`. You are signed in immediately.
+
+Each code works once and expires after 24 hours or when the App restarts. Expiry is checked on
+use: reopening the manager page or submitting setup after expiry writes a new code to the logs.
+A wrong code does not replace a live code. If the message is missing, restart the App, copy the
+code from `msg` in the newest log message containing `SETUP CODE:`, and reload the manager page.
+The code is held only in memory; App log readers and log collectors can see the live code. Finish setup promptly and keep App logs private.
+The code and password travel over HTTP unless you provide a TLS front end.
+
+Later visits use your administrator password or a registered SSH key. Keys can be registered
+right after setup; see the [agent guide](agent.en.md). See [account reset](operations.en.md)
+if you lose access.
 
 ## 3. Replace a driver or return to stock
 
@@ -78,8 +90,8 @@ running and after preserving any recovery material you still need.
 On an online amd64 computer, pull the public application image and save it:
 
 ```bash
-docker pull --platform linux/amd64 ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.0
-docker save -o truenas-nvidia-driver-manager.tar ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.0
+docker pull --platform linux/amd64 ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:latest
+docker save -o truenas-nvidia-driver-manager.tar ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:latest
 ```
 
 Transfer that archive to the NAS and load it in the **host** shell:

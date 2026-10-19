@@ -2,6 +2,22 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
+## 0.2.1
+
+- Create the administrator with a one-time setup code from the App logs and a password chosen
+  on the setup page. Deployment YAML and container environment no longer contain an initial
+  password. Codes expire after 24 hours or a restart; expiry renews on the next setup request.
+- `NVM_INITIAL_ADMIN_PASSWORD` is no longer a recognized setting; remove it from App configuration.
+  Returning to 0.2.0 after creating an account through setup is unsupported.
+- Reset access by deleting the credentials file, reloading the page, and reading a new code
+  from the App logs. SSH keys can be registered immediately after setup.
+- Make task status and stage easier to scan, explain unfinished and unavailable readings, and
+  show the task details heading only when details exist.
+- Show concise local-driver column names and sort arrows with accessible sort controls; keep
+  values readable, fit action buttons on desktop, and allow horizontal scrolling on narrow screens.
+- Rewrite the README as a step-by-step guide for first-time users, with screenshots of each step;
+  the security model and known limitations move to `docs/security.en.md`.
+
 ## 0.2.0 — First public release
 
 - Manage NVIDIA drivers through an English or Chinese web UI on the tested TrueNAS SCALE

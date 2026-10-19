@@ -10,7 +10,8 @@ use truenas_nvidia_driver_manager::codes::*;
 async fn setup(password: &str) -> TestApp {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    let app = app(host.clone(), settings(password), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
+    setup_app(&app, password).await;
     let (status, _body, _) = request(&app, Method::GET, "/api/login", None, None).await;
     assert_eq!(status, StatusCode::OK);
     app
@@ -145,21 +146,27 @@ async fn short_password_is_rejected_and_old_one_still_works() {
 }
 
 #[tokio::test]
-async fn deleting_the_credentials_file_rebuilds_the_account() {
+async fn deleting_credentials_requires_setup_and_revokes_sessions() {
     let app = setup("hunter12").await;
     let old_cookie = login(&app, "admin", "hunter12").await;
     app.host
         .remove("/var/lib/nvm/manager/secrets/web-credentials.json");
+    let code = app
+        .ctx
+        .auth
+        .ensure_setup_code(&*app.ctx.host, &app.ctx.paths, &app.ctx.settings, "reset")
+        .unwrap()
+        .code;
     let (status, body) = get(&app, "/api/login", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["credentials"], "ok");
+    assert_eq!(body["credentials"], "setup_required");
     // The old cookie no longer verifies.
     let (status, _) = get(&app, "/api/home", Some(&old_cookie)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let cookie = login(&app, "admin", "hunter12").await;
+    let cookie = setup_with_code(&app, &code, "hunter12").await;
     let (status, body) = get(&app, "/api/login", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["must_change_password"], true);
+    assert!(body.get("must_change_password").is_none());
 }
 
 #[tokio::test]
@@ -238,7 +245,7 @@ async fn an_anonymous_login_read_does_not_reconcile() {
 #[tokio::test]
 async fn a_valid_session_login_read_still_reconciles() {
     let app = setup("hunter12").await;
-    // The initial-password session must still reconcile (and still be told to change the password).
+    // A signed-in session still reconciles task state.
     let cookie = login(&app, "admin", "hunter12").await;
     let id = "20260928T101530Z-3f9a0c12";
     write_state(
@@ -251,7 +258,7 @@ async fn a_valid_session_login_read_still_reconciles() {
     let (status, body) = get(&app, "/api/login", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["logged_in"], true);
-    assert_eq!(body["must_change_password"], true);
+    assert!(body.get("must_change_password").is_none());
     assert!(body["update_blocked"].is_array());
     let new_commands = &app.host.commands()[before..];
     assert!(
@@ -410,22 +417,24 @@ async fn unauthenticated_requests_to_the_unknown_api_are_401_then_404() {
 }
 
 #[tokio::test]
-async fn must_change_gate_blocks_mutations() {
-    let app = setup("hunter12").await;
-    let cookie = login(&app, "admin", "hunter12").await;
+async fn setup_session_can_mutate_immediately() {
+    let host = default_host();
+    let app = app(host.clone(), settings(), healthy_startup(&host));
+    let cookie = setup_app(&app, "hunter12").await;
     let (status, body) = post(&app, "/api/uploads", json!({}), Some(&cookie)).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"], "auth.password_change_required");
-    // Logout is allowed for such a session.
-    let (status, _) = post(&app, "/api/logout", json!({}), Some(&cookie)).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_ne!(body["error"], "auth.password_change_required");
+    assert_eq!(
+        post(&app, "/api/logout", json!({}), Some(&cookie)).await.0,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn password_change_waits_for_the_credentials_lock() {
     // The password change must not interleave with account creation or another password change.
     let app = setup("hunter12").await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = login(&app, "admin", "hunter12").await;
     let guard = app.ctx.auth.credentials_lock.lock().await;
     let pending_app = app.clone();
     let pending = tokio::spawn(async move {
@@ -453,11 +462,11 @@ async fn an_existing_credentials_file_keeps_its_username() {
     // stored username and changed password keep working and the new one is refused.
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    let app1 = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app1 = app(host.clone(), settings(), healthy_startup(&host));
     let _ = get(&app1, "/api/login", None).await;
-    let _ = login_changed(&app1, "hunter12", "longpass99").await;
+    let _ = setup_app(&app1, "longpass99").await;
 
-    let mut second = settings("hunter12");
+    let mut second = settings();
     second.username = Some("root".into());
     let app2 = app(host.clone(), second, healthy_startup(&host));
     let _ = get(&app2, "/api/login", None).await;
@@ -753,16 +762,22 @@ async fn a_deleted_fixed_file_is_rebuilt_and_revokes_the_old_cookie() {
         get(&app, "/api/home", Some(&cookie)).await.0,
         StatusCode::UNAUTHORIZED
     );
+    let code = app
+        .ctx
+        .auth
+        .ensure_setup_code(&*app.ctx.host, &app.ctx.paths, &app.ctx.settings, "reset")
+        .unwrap()
+        .code;
     let (_, body) = get(&app, "/api/login", None).await;
-    assert_eq!(body["credentials"], "ok", "{body}");
+    assert_eq!(body["credentials"], "setup_required", "{body}");
     assert_eq!(
         get(&app, "/api/home", Some(&cookie)).await.0,
         StatusCode::UNAUTHORIZED,
         "the rebuilt account must not accept the pre-deletion cookie"
     );
-    let fresh = login(&app, "admin", "hunter12").await;
+    let fresh = setup_with_code(&app, &code, "hunter12").await;
     let (_, body) = get(&app, "/api/login", Some(&fresh)).await;
-    assert_eq!(body["must_change_password"], true);
+    assert!(body.get("must_change_password").is_none());
 }
 
 #[tokio::test]
@@ -814,16 +829,10 @@ async fn a_non_utf8_configured_username_never_creates_the_default_account() {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
     let s = settings::load(
-        vec![
-            (
-                OsString::from(settings::VAR_USERNAME),
-                OsString::from_vec(vec![0xff]),
-            ),
-            (
-                OsString::from(settings::VAR_PASSWORD),
-                OsString::from("hunter12"),
-            ),
-        ]
+        vec![(
+            OsString::from(settings::VAR_USERNAME),
+            OsString::from_vec(vec![0xff]),
+        )]
         .into_iter(),
     );
     assert_eq!(s.username, None);
@@ -949,7 +958,7 @@ async fn a_rebuilt_auth_state_still_rejects_a_logged_out_session() {
     assert!(stored.contains(mac), "{stored}");
 
     let host = app.host.clone();
-    let restarted = common::app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let restarted = common::app(host.clone(), settings(), healthy_startup(&host));
     restarted
         .ctx
         .auth
@@ -1002,49 +1011,33 @@ async fn a_revocation_write_failure_is_an_error_and_still_revokes() {
 }
 
 #[tokio::test]
-async fn the_forced_password_change_rejects_the_current_password() {
+async fn a_voluntary_password_change_can_repeat_the_current_password() {
     let app = setup("hunter12").await;
     let cookie = login(&app, "admin", "hunter12").await;
     let (status, body) = post(
         &app,
         "/api/password",
-        json!({"new_password": "hunter12"}),
-        Some(&cookie),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(body["error"], "password.rule.same_as_initial");
-    let (status, body) = get(&app, "/api/login", Some(&cookie)).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["logged_in"], true);
-    assert_eq!(body["must_change_password"], true);
-
-    let (status, body, headers) = request(
-        &app,
-        Method::POST,
-        "/api/password",
-        Some(json!({"new_password": "newpass99"})),
+        json!({"new_password":"hunter12"}),
         Some(&cookie),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let next = headers
-        .get(header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .trim_start_matches("nvm_session=")
-        .to_string();
-    let (status, body) = post(
-        &app,
-        "/api/password",
-        json!({"new_password": "newpass99"}),
-        Some(&next),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        get(&app, "/api/home", Some(&cookie)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let next = login(&app, "admin", "hunter12").await;
+    assert_eq!(
+        post(
+            &app,
+            "/api/password",
+            json!({"new_password":"newpass99"}),
+            Some(&next)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 }
 
 const QUEUED_TASK_ID: &str = "20260928T101530Z-3f9a0c12";
@@ -1111,7 +1104,7 @@ async fn assert_task_list_rejected(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queued_task_list_does_nothing_after_logout() {
     let app = setup("hunter12").await;
-    let cookie = login_changed(&app, "hunter12", "newpass99").await;
+    let cookie = login(&app, "admin", "hunter12").await;
     let before = snapshot_running_task(&app);
     // The list is accepted, then waits inside reconcile. Logout revokes that session before the
     // lock is released.
@@ -1132,7 +1125,7 @@ async fn a_queued_task_list_does_nothing_after_logout() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queued_task_list_does_nothing_after_password_change() {
     let app = setup("hunter12").await;
-    let cookie = login_changed(&app, "hunter12", "newpass99").await;
+    let cookie = login(&app, "admin", "hunter12").await;
     let before = snapshot_running_task(&app);
     let guard = app.ctx.process_lock.lock().await;
     let pending = spawn_task_list(&app, &cookie);

@@ -26,7 +26,7 @@
     },
     {
       "path": "src/ssh_login.rs",
-      "sha256": "ed0fd96284107cfc96ce465e24320aa0742c20ccf2327f18938445e18ec1ca53",
+      "sha256": "52461883788b3d386e5e4efdf3bc0e921b6945ea54675d3cbffead40f1659923",
       "rules": [
         "email"
       ],
@@ -34,7 +34,7 @@
     },
     {
       "path": "src/web.rs",
-      "sha256": "ebc09fc843a0e4fe263648d5dd4b3df739911cfc825ba77d88ca49ec7515fdfd",
+      "sha256": "4b12d870faba00db482a3924210f3188ddaa184a60b27b38b1ea3171846856cd",
       "rules": [
         "chinese"
       ],
@@ -42,7 +42,7 @@
     },
     {
       "path": "tests/api_contract.rs",
-      "sha256": "6aab29e3927865997737697e3e5ef579c7437dcfdf6484705c15d9595948d8be",
+      "sha256": "dcb455270fd703a1f0961e06e16a7ee2ff4921c1e4412f3ea2fc70e1a862e144",
       "rules": [
         "chinese"
       ],
@@ -58,7 +58,7 @@
     },
     {
       "path": "tests/ssh_login.rs",
-      "sha256": "132f9e2fa8e7b67ce0493f79c10acb362d0a59d879214e8b1de7c58195bf29a0",
+      "sha256": "05aef74d6f74eb0dc6189eaf7a648d53258555c50bfc5671b614171b5e048955",
       "rules": [
         "email"
       ],
@@ -66,7 +66,7 @@
     },
     {
       "path": "tests/upload.rs",
-      "sha256": "d7a594df6552be88feaa5fd48468239d021c6b4a3f5271c0459e8a0111d6089b",
+      "sha256": "6a65540e8dbfb16cdcc537dc297fa9d2671a6c07b156ac70eccdd9e3adf13d79",
       "rules": [
         "email"
       ],
@@ -82,7 +82,7 @@
     },
     {
       "path": "web/e2e/auth.spec.ts",
-      "sha256": "51b7d03863f95cad1535ff6abc6a86d31534fa1d23855e803ec9591c0c4c5e91",
+      "sha256": "27768dcd5b6f5ced8bf1034ef183d1590662a408f827a39fc8510161eb3ddeba",
       "rules": [
         "chinese"
       ],
@@ -106,7 +106,7 @@
     },
     {
       "path": "web/e2e/drivers.spec.ts",
-      "sha256": "6cf0ddcf262b4820a84753e3b94c1bc7d10cd57c611c2c0269ffbedf7cfbf24f",
+      "sha256": "e519be382cc5a08b3a244471ac2ff2bf93cdf58b49346c2f7341967c94cf61e5",
       "rules": [
         "chinese"
       ],
@@ -130,7 +130,7 @@
     },
     {
       "path": "web/e2e/roles.spec.ts",
-      "sha256": "06367929a751ba35633a00f07bc2bdd7995c6f6ef8ad9bfa6ac7a04caed5c9b7",
+      "sha256": "1cccd05ac6203e8fb2e6f3982fb9bfb637bb751ae94d2820655333e22a245122",
       "rules": [
         "chinese"
       ],
@@ -138,7 +138,7 @@
     },
     {
       "path": "web/e2e/ssh.spec.ts",
-      "sha256": "96d116820dc85051fe55c824becd1635290e41cdc6395f52ac750c85badb40fd",
+      "sha256": "6e0e2f02e68fc2340f636fb26980bf5c0d1778dcb510167196772386c938234c",
       "rules": [
         "chinese"
       ],
@@ -146,7 +146,7 @@
     },
     {
       "path": "web/e2e/themes.spec.ts",
-      "sha256": "7634c89dc630764ffa6a512a613ae1a05e155c769939654a946840cf604973bc",
+      "sha256": "3cc11cd350835f3fac437e71d7014754ff1c7d6399cf12814a383f8684c3bb59",
       "rules": [
         "chinese"
       ],
@@ -162,7 +162,7 @@
     },
     {
       "path": "web/src/messages.ts",
-      "sha256": "ee7f88516ea55350f627dcfbb913f31bd9b1bf005ca5ee039b986e6a8e4a270b",
+      "sha256": "bb2db3ed7b7cdb25175c1ffff524935de0fb2ab1168459b7b63ad369b2aa32cc",
       "rules": [
         "chinese"
       ],
@@ -178,7 +178,7 @@
     },
     {
       "path": "web/test/messages.test.ts",
-      "sha256": "2b6fd22c0e34378612035304a0a73e82a4ad23cda0dc63c086ed591f000d7dcb",
+      "sha256": "9ad8af12640fff9c34d8a28e807e57912fb4aa8f7e53402572fa792c14752f6a",
       "rules": [
         "chinese"
       ],
@@ -186,7 +186,7 @@
     },
     {
       "path": "web/test/render.test.ts",
-      "sha256": "7df9a261d3ee5057c448570d03cedf0b4c2678e93910913ad27fe0af583f64f0",
+      "sha256": "07f9f7ae6f0c5580fcfd606df60daa8837b56ca8dd800ac35c5fa6c349e1db5b",
       "rules": [
         "chinese"
       ],
@@ -202,7 +202,7 @@
     },
     {
       "path": "web/test/ssh-render.test.ts",
-      "sha256": "64a111ed290a6caf006b54f5f5b5d98eaf6aebba429f04c760cf3f29b670e3e1",
+      "sha256": "5aa3d6ac384121c95f6e86fded245faacdcc0c7cd622facf6ffd6347fe9b1de5",
       "rules": [
         "email",
         "chinese"
@@ -219,7 +219,7 @@
     },
     {
       "path": "web/test/text-log-contract.test.ts",
-      "sha256": "1047a3927cc277a7536c27271671566615a14019799f78871cd13a594b9db4cc",
+      "sha256": "74e1224445f1ea7804d376c3b6d2e82c3bb858eba10f755b270b7a7077c097ca",
       "rules": [
         "chinese"
       ],
@@ -395,11 +395,11 @@
     },
     {
       "path": "README.md",
-      "line_sha256": "17bea5e83eaace08751d46a55248f70ca1fb4ee8504e7034bed41f4c47b059f0",
+      "line_sha256": "03c2a75edeb301318a132daa1cf0a8838b470e108edea35456ecc8a6f819198b",
       "rules": [
         "chinese"
       ],
-      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+      "reason": "Chinese-language switch in the public README quick links."
     },
     {
       "path": "docs/deploy.en.md",
@@ -440,6 +440,150 @@
         "chinese"
       ],
       "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    },
+    {
+      "path": "web/e2e/ui-polish.spec.ts",
+      "sha256": "aee7157a9d04a89a350c319f100a605155e34ea057f2e995f19a9c5c5b9c633c",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests."
+    },
+    {
+      "path": "web/test/setup.test.ts",
+      "sha256": "b356ec8b4a837b12ffd5d136d8781b5625c4d4da1aaa4b710b1d4cf59963f34b",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese setup-page log-location assertion in a browser-rendering unit test."
+    },
+    {
+      "path": "web/test/login-help.test.ts",
+      "sha256": "d0b4ac7db9380ec10a45dde3d8e6f35ead76f6ca277734e7d94a4a9802a19c40",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Localized account reset help assertions use a YAML data-directory placeholder."
+    },
+    {
+      "path": "docs/security.en.md",
+      "line_sha256": "eed351693b5840c46f0ceee59dd830c2f6dedf2411eb34d3a0ba7ff73e8d738b",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Exact Chinese-language switch to the corresponding localized public document."
+    },
+    {
+      "path": "docs/images/drivers-en.png",
+      "sha256": "db5be483aa6abb819095834ee1c9095e03823d18dccb52eb249d24396c1e5881",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/drivers-zh.png",
+      "sha256": "7b37b8e924530e1d17db7113a99ab79207c21166dbdb054639aeaed3d24b2f64",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/home-en.png",
+      "sha256": "116fd282c363c60dd9d4f9580caa232cfbfec0fee6b19b80eb0b78ff68d37275",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/home-zh.png",
+      "sha256": "69d704e84993cd798fbabb3ad069bbeed4eb1b3c28d71a275e45018c7bb3fcec",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/plan-en.png",
+      "sha256": "bf824914d38185e109a1b9e509545a6719c69827642d726a5a7016c83046e304",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/plan-zh.png",
+      "sha256": "a71159e30ad54196f6a7f3d19b6a28bfc7916162c8e194f4ec6481eb2c3c304c",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/running-en.png",
+      "sha256": "ae278b4e13d2456f5687604ff10e1361a1cf31b981d911d067c392299ecbb5fc",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/running-zh.png",
+      "sha256": "898bd552882686f52fc67ac3a57a30b252d14c090c0de7a42275eeca5deed250",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/success-en.png",
+      "sha256": "d6df1ae5536892a535340aa0dfa0e6a53eefa950d105fc82489a2ac336749c0d",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/success-zh.png",
+      "sha256": "53a24d351ab0d07afcbb36ce70a22e4fa33fccb07c3373792f6a785a9de8b79f",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/update-en.png",
+      "sha256": "9781d4ee5bd3fca877003fb72c2399721c920b94cfb19535a03d50b11a0dfb9c",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/update-zh.png",
+      "sha256": "10acde8e41061ecc04d766f90bf10bd45f81d06874c0ffb342dde17eaa423ffb",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/setup-en.png",
+      "sha256": "e5e94e0df3d64c6e76999b04c0ba03b5d2accc83d9ef8996b3b5f981d4f150ab",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "docs/images/setup-zh.png",
+      "sha256": "310befd9d84b4f350ceaa9c1e9fd1fc4f0d50cfbc910e253c26a260dc1b2ca1a",
+      "rules": [
+        "binary"
+      ],
+      "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
     }
   ],
   "public_hosts": [

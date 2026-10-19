@@ -397,7 +397,7 @@ thread_local! {
 
 impl Inner {
     /// Recorded commands must omit `--collect`, `CollectMode`, `docker.update` nvidia calls,
-    /// initial-password environment variables, and values forbidden by a test. `concat!` keeps
+    /// setup-code environment variables, and values forbidden by a test. `concat!` keeps
     /// assertion needles out of the production-source scan.
     fn assert_commands(&self, commands: &[CommandRecord]) {
         let forbidden = self.forbidden_in_argv.lock().unwrap().clone();
@@ -413,13 +413,14 @@ impl Inner {
                 "red line: CollectMode in {joined}"
             );
             assert!(
-                !joined.contains(concat!("NVM_INITIAL_ADMIN_", "PASSWORD")),
-                "red line: the initial password variable in {joined}"
+                !joined.contains(concat!("NVM_", "SETUP_CODE")),
+                "red line: the setup code variable in {joined}"
             );
             for value in &forbidden {
                 assert!(
-                    !joined.contains(value.as_str()),
-                    "a forbidden value reached a host command: {joined}"
+                    !joined.contains(value.as_str())
+                        && !c.env.values().any(|entry| entry.contains(value.as_str())),
+                    "a forbidden value reached a host command"
                 );
             }
             if c.program.contains("docker") {
@@ -434,10 +435,10 @@ impl Inner {
             }
         }
         assert!(
-            !commands.iter().any(|c| c
-                .env
-                .contains_key(concat!("NVM_INITIAL_ADMIN_", "PASSWORD"))),
-            "a host command saw NVM_INITIAL_PASSWORD"
+            !commands
+                .iter()
+                .any(|c| c.env.contains_key(concat!("NVM_", "SETUP_CODE"))),
+            "a host command saw a setup code variable"
         );
     }
 
@@ -1166,10 +1167,10 @@ impl FakeHost {
         gate
     }
 
-    /// True when a recorded host command carries the initial-password variable in its environment;
+    /// True when a recorded host command carries the setup-code variable in its environment;
     /// it must never do so.
-    pub fn initial_password_in_env(&self) -> bool {
-        let needle = concat!("NVM_INITIAL_ADMIN_", "PASSWORD");
+    pub fn setup_code_in_env(&self) -> bool {
+        let needle = concat!("NVM_", "SETUP_CODE");
         self.commands()
             .iter()
             .any(|c| c.env.keys().any(|k| k == needle))
@@ -3515,6 +3516,19 @@ impl Host for FakeHost {
             let _ = mode;
             std::fs::create_dir_all(real)
         }
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let from = FakeHost::translate(&from.to_string_lossy());
+        let to = FakeHost::translate(&to.to_string_lossy());
+        self.note("hard_link", &format!("{from} -> {to}"));
+        if refuses(&self.inner.fail_writes, &to) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "link refused by the fake host",
+            ));
+        }
+        std::fs::hard_link(self.resolve(&from, true)?, self.resolve(&to, false)?)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {

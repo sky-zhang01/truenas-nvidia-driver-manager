@@ -6,7 +6,7 @@
 # before handing the file to docker compose. The test values are documentation
 # addresses and a runtime-assembled MAC, never literals in this file.
 #
-# The descriptive comments (the offline image note, `$$`, the
+# The descriptive comments (the offline image note, the setup-code note, the
 # port-change note) are checked as text; the structural keys (privileged/pid/
 # runtime, service count, the environment sequence, the mappings) are proven by
 # the rendered config and the structural checks, so a comment cannot satisfy
@@ -35,10 +35,11 @@ require 'pid: host'
 require 'runtime: runc'
 require 'restart: unless-stopped'
 require '      - "8199:8199"'
-require 'NVM_INITIAL_ADMIN_PASSWORD=<initial-password>'
+require 'copy the code from msg in the newest App log message containing SETUP CODE:'
+if grep -qF 'NVM_INITIAL_ADMIN_PASSWORD' "${template}"; then
+    fail_check 'template must not contain an initial password'
+fi
 require '/mnt/<pool>/<dataset>:/var/lib/nvm'
-require 'Write each $ in the password'
-require 'Write each $ in the password as $$.'
 require 'change both sides of the mapping to that port.'
 require 'If you change NVM_PORT, change both sides of the mapping to that port.'
 require 'image: ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:latest'
@@ -85,7 +86,6 @@ substitute() {
     local sep=':' mac
     mac="02${sep}00${sep}00${sep}00${sep}00${sep}01"
     sed -i.bak \
-        -e 's|<initial-password>|ci-fixture-password-not-a-secret|g' \
         -e 's|<pool>|tank|g' \
         -e 's|<dataset>|nvm|g' \
         -e 's|<container-static-ip>|192.0.2.10|g' \

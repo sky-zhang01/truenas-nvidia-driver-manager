@@ -159,9 +159,9 @@ async fn startup_failure_gives_unknown_readings_and_a_setup_block() {
     startup.pid_host_ok = false;
     startup.host_data_dir = None;
     startup.problems.push(StartupProblem::PidHost);
-    let app = app(host.clone(), settings("hunter12"), startup);
+    let app = app(host.clone(), settings(), startup);
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login(&app, "admin", "hunter12").await;
+    let cookie = setup_app(&app, "hunter12").await;
     let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
     assert_eq!(
         body["canonical"]["sha256"]["unknown"]["key"],
@@ -453,9 +453,9 @@ async fn startup_failure_does_not_scan_gpus() {
     let mut startup = healthy_startup(&host);
     startup.pid_host_ok = false;
     startup.problems.push(StartupProblem::PidHost);
-    let app = app(host, settings("hunter12"), startup);
+    let app = app(host, settings(), startup);
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login(&app, "admin", "hunter12").await;
+    let cookie = setup_app(&app, "hunter12").await;
     app.host.clear_ops();
     let (status, body) = get(&app, "/api/home", Some(&cookie)).await;
     assert_eq!(status, 200, "{body}");
@@ -496,9 +496,9 @@ async fn a_failed_canonical_listing_keeps_the_exit_code() {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
     host.set_unsquashfs_broken(CANONICAL_PATH);
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     let (status, body) = get(&app, "/api/home", Some(&cookie)).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
     assert_eq!(

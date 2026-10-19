@@ -96,7 +96,6 @@ docker run --rm --name "nvmct-${RUN_ID}-curl-version" \
 
 . "${SCRIPT_DIR}/../test-lib.sh"
 
-PASSWORD="ci-fixture-password-not-a-secret"
 NEW_PASSWORD="ci-fixture-password-not-a-secret-2"
 
 # Login setup problems: follow the product schema exactly. A parse error, a missing
@@ -247,7 +246,6 @@ render_base() { # render_base <out> <container-port>
         { print }
     ' "${TEMPLATE}" \
         | sed \
-            -e "s|<initial-password>|${PASSWORD}|g" \
             -e 's|/mnt/<pool>/<dataset>|nvm-data|g' \
             -e 's|<registry>|registry.example|g' \
             -e 's|<tag>|ci|g' \
@@ -266,7 +264,7 @@ render_base() { # render_base <out> <container-port>
 }
 
 modify_variant() { # modify_variant <variant> <file>
-    local variant="$1" file="$2"
+    local variant="$1" file="$2" env_setting=""
     case "${variant}" in
         baseline) ;;
         no-pid-host)
@@ -279,24 +277,19 @@ modify_variant() { # modify_variant <variant> <file>
         runtime-containerd)
             sed -i.bak -e 's|^    runtime: runc$|    runtime: io.containerd.runc.v2|' "${file}"
             ;;
-        extra-env)
-            sed -i.bak -e "/^      - NVM_INITIAL_ADMIN_PASSWORD=/a\\
-      - NVM_FOO=1" "${file}"
-            ;;
-        build-timeout-zero)
-            sed -i.bak -e "/^      - NVM_INITIAL_ADMIN_PASSWORD=/a\\
-      - NVM_BUILD_TIMEOUT_MINUTES=0" "${file}"
-            ;;
-        port-18199)
-            sed -i.bak -e "/^      - NVM_INITIAL_ADMIN_PASSWORD=/a\\
-      - NVM_PORT=18199" "${file}"
-            ;;
-        port-abc)
-            sed -i.bak -e "/^      - NVM_INITIAL_ADMIN_PASSWORD=/a\\
-      - NVM_PORT=abc" "${file}"
-            ;;
+        extra-env) env_setting='NVM_FOO=1' ;;
+        build-timeout-zero) env_setting='NVM_BUILD_TIMEOUT_MINUTES=0' ;;
+        port-18199) env_setting='NVM_PORT=18199' ;;
+        port-abc) env_setting='NVM_PORT=abc' ;;
         *) echo "test.sh: unknown variant ${variant}" >&2; exit 2 ;;
     esac
+    if [ -n "${env_setting}" ]; then
+        awk -v setting="${env_setting}" '
+            /^    # environment:$/ { print "    environment:"; print "      - " setting; next }
+            { print }
+        ' "${file}" >"${file}.settings"
+        mv "${file}.settings" "${file}"
+    fi
     rm -f "${file}.bak"
 }
 
@@ -479,42 +472,52 @@ probe_variant() { # probe_variant <variant> <expected-key|-> <container-port>
         fi
     fi
 
-    # Headers are curl's stderr and the body is stdout. The parent stores each
-    # and parses the files; bodies are never embedded into a `bash -c` string.
-    # Login and the password change both return `token`. Every later request
-    # that needs the session sends `X-NVM-Token`. A password change replaces
-    # both the cookie and the token.
-    local login_hdr pw_hdr login_body pw_body login_code cookie pw_code new_cookie token new_token
-    login_hdr="${WORK}/login.${variant}.hdr"
-    login_body="${WORK}/login.${variant}.json"
+    # Bootstrap the real image using the newest code from its actual log event.
+    # Keep response bodies and headers separate; every authenticated request uses
+    # both the cookie and the request token returned by setup.
+    local setup_code setup_hdr setup_body setup_status cookie token
+    docker logs "${cid}" >"${WORK}/setup-log.${variant}.stdout" 2>"${WORK}/setup-log.${variant}.stderr"
+    setup_code="$(python3 "${SCRIPT_DIR}/setup-code.py" <"${WORK}/setup-log.${variant}.stdout")"
+    if [ "${variant}" = baseline ]; then
+        local preceding_code="${setup_code}" restart_status
+        docker restart "${cid}" >"${WORK}/restart.${variant}.stdout" 2>"${WORK}/restart.${variant}.stderr"
+        for i in $(seq 1 30); do
+            restart_status="$(curl_in_app "${cid}" -s -o /dev/null -w '%{http_code}' "${probe_url}/api/login" || true)"
+            [ "${restart_status}" = 200 ] && break
+            sleep 1
+        done
+        check "${variant}: status responds after restart" test "${restart_status}" = 200
+        docker logs "${cid}" >"${WORK}/setup-log.${variant}.stdout" 2>"${WORK}/setup-log.${variant}.stderr"
+        setup_code="$(python3 "${SCRIPT_DIR}/setup-code.py" <"${WORK}/setup-log.${variant}.stdout")"
+        check "${variant}: restart issues a different code" test "${setup_code}" != "${preceding_code}"
+        restart_status="$(curl_in_app "${cid}" -s -o /dev/null -w '%{http_code}' -X POST \
+            -H "Origin: ${probe_url}" -H 'Content-Type: application/json' \
+            -d "{\"code\":\"${preceding_code}\",\"new_password\":\"${NEW_PASSWORD}\"}" \
+            "${probe_url}/api/setup")"
+        check "${variant}: preceding process code is rejected" test "${restart_status}" = 403
+        restart_before="$(read_restart_count "${cid}")"
+        observed_at="$(date +%s)"
+    fi
+    check "${variant}: GET /api/login never exposes the code" \
+        bash -c '! printf "%s" "$1" | grep -qF "$2"' _ "${login_status}" "${setup_code}"
+    setup_hdr="${WORK}/setup.${variant}.hdr"
+    setup_body="${WORK}/setup.${variant}.json"
     curl_in_app "${cid}" -s -D /dev/stderr -X POST \
         -H "Origin: ${probe_url}" -H 'Content-Type: application/json' \
-        -d "{\"username\":\"admin\",\"password\":\"${PASSWORD}\"}" \
-        "${probe_url}/api/login" >"${login_body}" 2>"${login_hdr}" || true
-    login_code="$(head -1 "${login_hdr}" | awk '{print $2}')" || true
-    check "${variant}: POST /api/login is 200" test "${login_code}" = "200"
-    cookie="$(grep -i '^set-cookie:' "${login_hdr}" | sed 's/^[Ss]et-[Cc]ookie: //' | cut -d';' -f1)" || true
-    check "${variant}: login set a session cookie" test -n "${cookie}"
-    token="$(json_token "${login_body}" 2>"${WORK}/login.${variant}.token.err" || true)"
-    check "${variant}: login returned a request token" test -n "${token}"
-
-    pw_hdr="${WORK}/password.${variant}.hdr"
-    pw_body="${WORK}/password.${variant}.json"
-    curl_in_app "${cid}" -s -D /dev/stderr -X POST \
-        -H "Origin: ${probe_url}" -H "Cookie: ${cookie}" -H "X-NVM-Token: ${token}" \
-        -H 'Content-Type: application/json' -d "{\"new_password\":\"${NEW_PASSWORD}\"}" \
-        "${probe_url}/api/password" >"${pw_body}" 2>"${pw_hdr}" || true
-    pw_code="$(head -1 "${pw_hdr}" | awk '{print $2}')" || true
-    check "${variant}: POST /api/password is 200" test "${pw_code}" = "200"
-    new_cookie="$(grep -i '^set-cookie:' "${pw_hdr}" | sed 's/^[Ss]et-[Cc]ookie: //' | cut -d';' -f1)" || true
-    if [ -n "${new_cookie}" ]; then
-        cookie="${new_cookie}"
-    fi
-    new_token="$(json_token "${pw_body}" 2>"${WORK}/password.${variant}.token.err" || true)"
-    if [ -n "${new_token}" ]; then
-        token="${new_token}"
-    fi
-    check "${variant}: password change returned a request token" test -n "${new_token}"
+        -d "{\"code\":\"${setup_code}\",\"new_password\":\"${NEW_PASSWORD}\"}" \
+        "${probe_url}/api/setup" >"${setup_body}" 2>"${setup_hdr}" || true
+    setup_status="$(awk 'NR == 1 {print $2}' "${setup_hdr}")"
+    check "${variant}: POST /api/setup is 200" test "${setup_status}" = "200"
+    cookie="$(grep -i '^set-cookie:' "${setup_hdr}" | sed 's/^[Ss]et-[Cc]ookie: //' | cut -d';' -f1)" || true
+    check "${variant}: setup set a session cookie" test -n "${cookie}"
+    token="$(json_token "${setup_body}" 2>"${WORK}/setup.${variant}.token.err" || true)"
+    check "${variant}: setup returned a request token" test -n "${token}"
+    local reuse_status
+    reuse_status="$(curl_in_app "${cid}" -s -o /dev/null -w '%{http_code}' -X POST \
+        -H "Origin: ${probe_url}" -H 'Content-Type: application/json' \
+        -d "{\"code\":\"${setup_code}\",\"new_password\":\"${NEW_PASSWORD}\"}" \
+        "${probe_url}/api/setup")"
+    check "${variant}: setup cannot overwrite an account" test "${reuse_status}" = 409
 
     if [ "${expected}" != "-" ]; then
         local authenticated_login_status blocked="" blocked_ok=1

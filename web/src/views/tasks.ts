@@ -46,13 +46,25 @@ import {
 import { startPolling, POLL_MS, type Poller } from "../poll.js";
 import { plannedSteps, type StepPlan } from "../task-steps.js";
 
+function taskTimeText(ms: number | null | undefined, lang: App["lang"]): string {
+  const text = formatTaskTime(ms);
+  return text === "UNKNOWN" ? expandText("tasks.time.unavailable", {}, lang) : text;
+}
+
+function finishedText(status: string, ms: number | null | undefined, lang: App["lang"]): string {
+  if (status === "RUNNING" && (ms === null || ms === undefined)) {
+    return expandText("tasks.time.not_finished", {}, lang);
+  }
+  return taskTimeText(ms, lang);
+}
+
 function discoveredText(
   status: string,
   ms: number | null | undefined,
   lang: App["lang"],
 ): string {
-  if (typeof ms === "number") return formatTaskTime(ms);
-  if (status === "INTERRUPTED") return "UNKNOWN";
+  if (typeof ms === "number") return taskTimeText(ms, lang);
+  if (status === "INTERRUPTED") return expandText("tasks.time.unavailable", {}, lang);
   return expandText("tasks.time.not_interrupted", {}, lang);
 }
 
@@ -75,7 +87,7 @@ const TERMINAL: readonly string[] = ["SUCCEEDED", "STOCK_RESTORED", "FAILED", "I
 
 function sourceText(app: App, source: TaskListItem["source"]): string {
   const lang = app.lang;
-  if (!source) return "UNKNOWN";
+  if (!source) return expandText("task.value.unavailable", {}, lang);
   if (source.kind === "upload") {
     return expandText("tasks.source.upload", { fingerprint: source.fingerprint ?? "" }, lang);
   }
@@ -170,13 +182,13 @@ export function renderTasks(app: App, container: HTMLElement): void {
       tr.append(el("td", { text: expandText(`status.${t.status}`, {}, lang) }));
       tr.append(
         el("td", {
-          text: t.phase ? expandText(`phase.${t.phase}`, {}, lang) : "UNKNOWN",
+          text: t.phase ? expandText(`phase.${t.phase}`, {}, lang) : expandText("task.value.unavailable", {}, lang),
         }),
       );
       tr.append(el("td", { text: sourceText(app, t.source) }));
-      tr.append(el("td", { text: t.version ?? "UNKNOWN" }));
-      tr.append(el("td", { text: formatTaskTime(t.created_at) }));
-      tr.append(el("td", { text: formatTaskTime(t.finished_at) }));
+      tr.append(el("td", { text: t.version ?? expandText("task.value.unavailable", {}, lang) }));
+      tr.append(el("td", { text: taskTimeText(t.created_at, lang) }));
+      tr.append(el("td", { text: finishedText(t.status, t.finished_at, lang) }));
       tr.append(el("td", { text: discoveredText(t.status, t.interrupt_discovered_at, lang) }));
       tbody.append(tr);
       if (t.state_read_error) {
@@ -518,7 +530,10 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
   const statusValue = el("span", { class: "reading-value" });
   const phaseLabel = el("span", { class: "reading-label", text: expandText("task.phase", {}, lang) });
   const phaseValue = el("span", { class: "reading-value" });
-  statusArea.append(statusLabel, statusValue, phaseLabel, phaseValue);
+  statusArea.append(
+    el("div", { class: "reading" }, [statusLabel, statusValue]),
+    el("div", { class: "reading" }, [phaseLabel, phaseValue]),
+  );
   const startedValue = el("span", { class: "reading-value" });
   const finishedValue = el("span", { class: "reading-value" });
   const discoveredValue = el("span", { class: "reading-value" });
@@ -568,7 +583,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
     if (detail.released_by) {
       recoveryArea.append(renderNotice(
         detail.recovery_material_kept ? "task.release.pending" : "task.release.done",
-        { task_id: detail.released_by, time: formatTaskTime(detail.released_at) }, lang,
+        { task_id: detail.released_by, time: taskTimeText(detail.released_at, lang) }, lang,
       ));
     }
     if (!TERMINAL.includes(detail.status) || detail.recovery_material_kept !== true) return;
@@ -683,9 +698,9 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
       app.reportTaskState(detail.status === "RUNNING" ? "running" : null, "task", taskId);
       // An unchanged poll must not rewrite the status live region.
       setText(statusValue, expandText(`status.${detail.status}`, {}, lang));
-      setText(phaseValue, detail.phase ? expandText(`phase.${detail.phase}`, {}, lang) : "UNKNOWN");
-      setText(startedValue, formatTaskTime(detail.created_at));
-      setText(finishedValue, formatTaskTime(detail.finished_at));
+      setText(phaseValue, detail.phase ? expandText(`phase.${detail.phase}`, {}, lang) : expandText("task.value.unavailable", {}, lang));
+      setText(startedValue, taskTimeText(detail.created_at, lang));
+      setText(finishedValue, finishedText(detail.status, detail.finished_at, lang));
       setText(discoveredValue, discoveredText(detail.status, detail.interrupt_discovered_at, lang));
       const restoring =
         (detail.phase ?? "").startsWith("restore_") || detail.restore?.decision === "restore";
@@ -851,8 +866,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
           );
         }
 
-        const details = el("div", { class: "task-details" });
-        details.append(el("h3", { text: expandText("task.details", {}, lang) }));
+        const details = el("div", {});
         // Reconciliation preserves the original read failure in state_note.state_read_error; keep showing it.
         const state_read_error = detail.state_read_error ?? detail.state_note?.state_read_error ?? null;
         if (state_read_error) {
@@ -915,7 +929,11 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
             details.append(el("pre", { class: "raw-output", text: raw }));
           }
         }
-        terminalExtra.append(details);
+        if (details.firstChild) {
+          terminalExtra.append(el("section", { class: "task-details" }, [
+            el("h3", { text: expandText("task.details", {}, lang) }), details,
+          ]));
+        }
       }
 
       if (TERMINAL.includes(detail.status) && poller) {

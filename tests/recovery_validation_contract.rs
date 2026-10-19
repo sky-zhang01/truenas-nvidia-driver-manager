@@ -46,7 +46,7 @@ fn app_with(host: Arc<dyn Host>, fake: FakeHost, static_files: StaticFiles) -> T
     let ctx = Arc::new(Ctx {
         host,
         paths: paths(),
-        settings: settings("hunter12"),
+        settings: settings(),
         startup: Startup {
             problems: Vec::new(),
             pid_host_ok: true,
@@ -61,6 +61,11 @@ fn app_with(host: Arc<dyn Host>, fake: FakeHost, static_files: StaticFiles) -> T
     TestApp {
         host: fake,
         router: router(ctx.clone(), static_files),
+        setup_code: Arc::new(std::sync::Mutex::new(
+            ctx.auth
+                .ensure_setup_code(&*ctx.host, &ctx.paths, &ctx.settings, "start")
+                .map(|issued| issued.code),
+        )),
         ctx,
     }
 }
@@ -279,7 +284,6 @@ fn credentials_require_a_sixteen_byte_salt() {
     let mut credentials = truenas_nvidia_driver_manager::auth::Credentials {
         username: "admin".into(),
         password_hash: valid.clone(),
-        must_change_password: false,
         session_key: "a".repeat(64),
         ssh_keys: Vec::new(),
     };
@@ -336,7 +340,7 @@ async fn version_readings_run_concurrently() {
     let release = ReleaseGate(gate.clone());
     let slow = Arc::new(SlowHost::blocking_on(host, "overlap", gate.clone()));
     let app = app_with(slow.clone(), fake, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     gate.armed.store(true, Ordering::SeqCst);
     let response = tokio::spawn(async move { get(&app, "/api/versions", Some(&cookie)).await });
     wait_until(|| gate.entered.load(Ordering::SeqCst) >= 2).await;
@@ -360,7 +364,7 @@ async fn gpu_reading_over_the_deadline_is_unreadable() {
     let fake = host.clone();
     let slow = Arc::new(SlowHost::advancing_pci(host, Duration::from_secs(16)));
     let app = app_with(slow.clone(), fake, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     let (status, body) = get(&app, "/api/versions", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
     let unreadable = body["unreadable"].as_array().unwrap();
@@ -393,7 +397,7 @@ async fn canonical_hash_deadline_fails_closed() {
     let fake = host.clone();
     let slow = Arc::new(SlowHost::advancing_canonical(host, Duration::from_secs(16)));
     let app = app_with(slow.clone(), fake, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
 
     let (status, body) = get(&app, "/api/drivers", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
@@ -422,8 +426,8 @@ async fn canonical_hash_deadline_fails_closed() {
 async fn invalid_query_and_path_are_json_format_errors() {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let app = app(host.clone(), settings(), healthy_startup(&host));
+    let cookie = setup_app(&app, "longpass99").await;
     // A signed-in request avoids the session layer's 401 for this contract.
     let (status, body) = get(&app, &format!("/api/tasks/{ID}?after=%FF"), Some(&cookie)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -642,7 +646,7 @@ async fn versions_answers_a_blocking_reading_at_its_own_budget() {
     let _release = ReleaseGate(gate.clone());
     let slow = Arc::new(SlowHost::blocking_on(host.clone(), "/class", gate.clone()));
     let app = app_with(slow, host, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     tokio::time::pause();
     gate.armed.store(true, Ordering::SeqCst);
     let response = tokio::spawn(async move { get(&app, "/api/versions", Some(&cookie)).await });
@@ -703,7 +707,7 @@ async fn an_empty_canonical_read_past_the_deadline_blocks_deletion() {
     let fake = host.clone();
     let slow = Arc::new(SlowHost::advancing_canonical(host, Duration::from_secs(16)));
     let app = app_with(slow, fake, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
 
     let (status, body) = get(&app, "/api/drivers", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -788,7 +792,7 @@ async fn home_shows_an_over_budget_shared_fact_as_unknown() {
         Duration::from_secs(16),
     ));
     let app = app_with(slow, fake, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     let (status, body) = get(&app, "/api/home", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
@@ -854,7 +858,7 @@ async fn a_catalog_query_inside_the_catalog_command_budget_is_not_a_reading_time
     let release = ReleaseGate(gate.clone());
     let slow = Arc::new(SlowHost::blocking_on(host.clone(), "curl", gate.clone()));
     let app = app_with(slow, host, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     tokio::time::pause();
     gate.armed.store(true, Ordering::SeqCst);
     let response = tokio::spawn(async move { get(&app, "/api/versions", Some(&cookie)).await });
@@ -891,7 +895,7 @@ async fn a_catalog_query_past_the_catalog_command_budget_reports_20_seconds() {
     let _release = ReleaseGate(gate.clone());
     let slow = Arc::new(SlowHost::blocking_on(host.clone(), "curl", gate.clone()));
     let app = app_with(slow, host, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     tokio::time::pause();
     gate.armed.store(true, Ordering::SeqCst);
     let response = tokio::spawn(async move { get(&app, "/api/versions", Some(&cookie)).await });
@@ -1030,7 +1034,7 @@ async fn plan_checksum_deadline_row(
     id: &str,
 ) -> (axum::http::StatusCode, serde_json::Value) {
     let app = app_with(slow, fake, StaticFiles::default());
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     post_plan(&app, &cookie, json!({"kind": "local", "row_id": id})).await
 }
 
@@ -1072,7 +1076,7 @@ async fn a_local_checksum_read_past_its_deadline_blocks_the_plan() {
         let release = ReleaseGate(gate.clone());
         let slow = Arc::new(SlowHost::blocking_on(host.clone(), &needle, gate.clone()));
         let app = app_with(slow, host, StaticFiles::default());
-        let cookie = login_changed(&app, "hunter12", "longpass99").await;
+        let cookie = setup_app(&app, "longpass99").await;
         gate.armed.store(true, Ordering::SeqCst);
         let response = tokio::spawn(async move {
             post_plan(&app, &cookie, json!({"kind": "local", "row_id": id})).await

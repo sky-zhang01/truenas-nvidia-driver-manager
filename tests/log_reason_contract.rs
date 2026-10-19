@@ -16,7 +16,7 @@ use common::*;
 use serde_json::{json, Value};
 use truenas_nvidia_driver_manager::codes::CATALOG_URL;
 use truenas_nvidia_driver_manager::settings::{
-    self, Settings, VAR_BUILD_TIMEOUT, VAR_PASSWORD, VAR_PORT, VAR_USERNAME,
+    self, Settings, VAR_BUILD_TIMEOUT, VAR_PORT, VAR_USERNAME,
 };
 use truenas_nvidia_driver_manager::{log, web};
 
@@ -115,8 +115,8 @@ fn assert_reason_object(line: &Value, context: &str) {
 #[tokio::test]
 async fn non_utf8_setting_invalid_carries_the_mandated_rule_field() {
     let _guard = lock().await;
-    for var in [VAR_USERNAME, VAR_PASSWORD, VAR_PORT, VAR_BUILD_TIMEOUT] {
-        let mut vars = vec![(OsString::from(VAR_PASSWORD), OsString::from("hunter12"))];
+    for var in [VAR_USERNAME, VAR_PORT, VAR_BUILD_TIMEOUT] {
+        let mut vars = Vec::new();
         vars.retain(|(key, _)| key != var);
         vars.push((OsString::from(var), OsString::from_vec(vec![0xff, 0xfe])));
         let mut set = settings::load(vars.into_iter());
@@ -133,13 +133,8 @@ async fn non_utf8_setting_invalid_carries_the_mandated_rule_field() {
         assert!(line.get("value").is_none(), "{line}");
     }
     // A legal UTF-8 value with an unusable port keeps its real rule (control).
-    let mut set = settings::load(
-        vec![
-            (OsString::from(VAR_PORT), OsString::from("abc")),
-            (OsString::from(VAR_PASSWORD), OsString::from("hunter12")),
-        ]
-        .into_iter(),
-    );
+    let mut set =
+        settings::load(vec![(OsString::from(VAR_PORT), OsString::from("abc"))].into_iter());
     set.port = 0;
     let lines = serve_lines(healthy(), set).await;
     let line = event(&lines, "setting_invalid");
@@ -163,7 +158,7 @@ async fn startup_check_failed_reasons_are_objects() {
             "data_mapping" => host.set_docker_inspect(&inspect_json("runc", &[])),
             _ => unreachable!(),
         }
-        let mut set = settings("hunter12");
+        let mut set = settings();
         set.port = 0;
         let lines = serve_lines(host, set).await;
         let matching: Vec<&Value> = lines
@@ -197,7 +192,7 @@ async fn startup_command_signal_log_keeps_the_real_signal() {
                 delay: Duration::ZERO,
             },
         );
-        let mut set = settings("hunter12");
+        let mut set = settings();
         set.port = 0;
         let lines = serve_lines(host, set).await;
         let line = event(&lines, "startup_check_failed");
@@ -233,7 +228,7 @@ async fn unit_query_signal_log_uses_the_same_general_reason() {
             delay: Duration::ZERO,
         },
     );
-    let mut set = settings("hunter12");
+    let mut set = settings();
     set.port = 0;
     let lines = serve_lines(host, set).await;
     let line = event(&lines, "unit_query_failed");
@@ -252,7 +247,7 @@ async fn credential_and_data_directory_failure_reasons_are_objects() {
         "/var/lib/nvm/manager/secrets/web-credentials.json",
         "not-json",
     );
-    let mut set = settings("hunter12");
+    let mut set = settings();
     set.port = 0;
     let lines = serve_lines(host, set).await;
     let line = event(&lines, "credentials_unreadable");
@@ -263,21 +258,32 @@ async fn credential_and_data_directory_failure_reasons_are_objects() {
     );
 
     let host = healthy();
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     host.fail_write("/var/lib/nvm/manager/secrets/");
-    let mut set = settings("hunter12");
-    set.port = 0;
-    let lines = serve_lines(host, set).await;
+    let sink = SharedBuf::default();
+    log::set_sink(Box::new(sink.clone()));
+    let code = app.setup_code.lock().unwrap().clone().unwrap();
+    let (status, _) = post(
+        &app,
+        "/api/setup",
+        json!({"code":code,"new_password":"longpass99"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let lines = sink_lines(&sink);
+    log::set_sink(Box::new(std::io::sink()));
     let line = event(&lines, "credentials_unsaved");
     assert_reason_object(line, "credentials_unsaved");
     assert_eq!(
-        line["reason"]["key"], "credentials.unsaved_reason.directory",
+        line["reason"]["key"], "credentials.unsaved_reason.file",
         "{line}"
     );
 
     let host = healthy();
     host.remove_tree("/var/lib/nvm");
     host.put_text("/var/lib/nvm", "own sandbox blocking file");
-    let mut set = settings("hunter12");
+    let mut set = settings();
     set.port = 0;
     let lines = serve_lines(host, set).await;
     let line = event(&lines, "data_dirs_failed");
@@ -327,8 +333,8 @@ async fn catalog_failure_reasons_are_objects_and_the_healthy_path_stays_quiet() 
             }
             _ => {}
         }
-        let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
-        let cookie = login_changed(&app, "hunter12", "changed123").await;
+        let app = app(host.clone(), settings(), healthy_startup(&host));
+        let cookie = setup_app(&app, "changed123").await;
         let sink = SharedBuf::default();
         log::set_sink(Box::new(sink.clone()));
         let (_status, body) = get(&app, "/api/versions", Some(&cookie)).await;
@@ -384,7 +390,7 @@ async fn listen_failed_reason_is_an_object() {
     let _guard = lock().await;
     let held = tokio::net::TcpListener::bind(("0.0.0.0", 0)).await.unwrap();
     let port = held.local_addr().unwrap().port();
-    let mut set = settings("hunter12");
+    let mut set = settings();
     set.port = port;
     let lines = serve_lines(healthy(), set).await;
     let line = event(&lines, "listen_failed");
@@ -887,8 +893,8 @@ async fn plan_gpu_failure_reason_is_an_object() {
     host.put_text(&format!("{base}/class"), "0x030000\n");
     host.put_text(&format!("{base}/device"), "0x2684\n");
     host.fail_read(&format!("{base}/vendor"));
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
-    let cookie = login_changed(&app, "hunter12", "changed123").await;
+    let app = app(host.clone(), settings(), healthy_startup(&host));
+    let cookie = setup_app(&app, "changed123").await;
 
     let sink = SharedBuf::default();
     log::set_sink(Box::new(sink.clone()));

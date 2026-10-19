@@ -562,6 +562,11 @@ label {
     margin-left: 0;
     padding: 1rem 0.875rem calc(5.75rem + env(safe-area-inset-bottom));
   }
+
+  .driver-actions-cell {
+    /* Narrow layouts scroll the table, preserving room for readable action labels. */
+    min-width: 12rem;
+  }
 }
 
 /* Auto margins collapse to zero on short screens so centered sign-in content stays reachable from the top. */
@@ -884,6 +889,64 @@ th button {
   padding: 0;
   font-weight: 600;
   color: inherit;
+}
+
+.drivers-scroll {
+  overflow-x: auto;
+}
+
+.drivers {
+  min-width: 64rem;
+}
+
+.drivers th,
+.drivers td {
+  overflow-wrap: normal;
+}
+
+.drivers .driver-version,
+.drivers .driver-source,
+.drivers .driver-size,
+.drivers .driver-status,
+.drivers .driver-keep,
+.drivers .driver-date span,
+.drivers .driver-kernel span {
+  white-space: nowrap;
+}
+
+.drivers th button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.sort-direction {
+  flex: none;
+}
+
+.driver-actions-cell {
+  width: 12rem;
+}
+
+.driver-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.4rem;
+}
+
+.driver-actions button {
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+}
+
+.driver-actions button,
+.driver-actions-cell .notice-body {
+  text-wrap: balance;
+}
+
+.driver-actions-cell .inline-reason {
+  margin: 0.5rem 0 0;
 }
 
 .row-mismatch td {
@@ -1290,4 +1353,31 @@ html[data-theme="plate-dark"] .task-times:not(:empty) {
 
 .ssh-keys-empty {
   color: var(--muted);
+}
+
+.setup-stack {
+  padding-block: 1rem;
+}
+
+.setup-steps {
+  padding-left: 1.3rem;
+  margin: 0 0 1.25rem;
+}
+
+.setup-steps li {
+  margin-block: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.setup-form .hint {
+  margin-block: 0.4rem 0.75rem;
+}
+
+.setup-form input[readonly] {
+  color: var(--muted);
+}
+
+#setup-code::placeholder {
+  color: var(--muted);
+  opacity: 1;
 }

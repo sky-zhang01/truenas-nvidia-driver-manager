@@ -1,4 +1,4 @@
-// Sign-in diagnostics contain fixed phrases only: no external command output or host paths.
+// Sign-in diagnostics omit external command output. Account help uses a generic credentials-file path.
 
 import { postLogin, requestSshChallenge, postSshLogin, ApiError, type LoginInfo, type SetupProblem } from "../api.js";
 import {
@@ -19,6 +19,7 @@ import {
   copyText,
   fileSignCommand,
 } from "../ssh.js";
+import { renderSetup } from "./setup.js";
 import type { App } from "../main.js";
 import type { Lang } from "../messages.js";
 
@@ -64,9 +65,6 @@ export function credentialsProblemNode(state: unknown, lang: Lang): HTMLElement 
       },
       lang,
     );
-  }
-  if (state === "initial_password_unusable") {
-    return renderNotice("credentials.initial_password_unusable", {}, lang);
   }
   if (typeof state === "object" && state !== null && "unreadable" in state) {
     const reason = String((state as { unreadable: unknown }).unreadable);
@@ -118,14 +116,37 @@ export function setupHasUsernameProblem(problems: readonly SetupProblem[]): bool
   return false;
 }
 
-// Account guidance follows the form and contains only variable names and generic wording.
+async function refreshSetupView(app: App, owner: () => boolean): Promise<void> {
+  try {
+    await app.refreshLogin(owner);
+  } catch {
+    // refreshLogin keeps the failed status read visible in the shell.
+  }
+  if (owner()) app.render();
+}
+
+function resetLocationNode(lang: Lang): HTMLElement {
+  const location = el("p");
+  location.append(
+    el("code", { text: expandText("login.help.reset_path", {}, lang) }),
+    el("span", { text: ` ${expandText("login.help.reset_location_unknown", {}, lang)}` }),
+  );
+  return location;
+}
+
+function resetHelpNode(lang: Lang, alert = true): HTMLElement {
+  const node = renderNotice("help.reset_account", {}, lang, { role: alert ? "alert" : "none" });
+  node.append(resetLocationNode(lang));
+  return node;
+}
+
+// Account guidance uses the YAML data-directory placeholder for every visitor.
 function renderAccountHelp(lang: Lang): HTMLElement {
   const details = el("details", { class: "login-help" });
   details.append(el("summary", { text: expandText("login.help.summary", {}, lang) }));
   const list = el("ul", { class: "login-help-list" });
   for (const key of [
     "login.help.no_account",
-    "login.help.self_hosted",
     "login.help.after_reinstall",
     "login.help.forgot_password",
   ] as const) {
@@ -133,7 +154,7 @@ function renderAccountHelp(lang: Lang): HTMLElement {
     appendInline(item, expand(key, {}, lang).segments.flatMap((s) => s.nodes));
     list.append(item);
   }
-  details.append(list);
+  details.append(list, resetLocationNode(lang));
   return details;
 }
 
@@ -259,10 +280,14 @@ function renderSshSection(app: App, stack: HTMLElement): void {
         refresh.classList.remove(REFRESH_ATTENTION);
         challengeCopy.disabled = false;
       })
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         if (!sequencer.isCurrent(seq) || !details.isConnected) return;
         clear(errorBox);
         if (err instanceof ApiError) {
+          if (err.key === "login.setup_required") {
+            await refreshSetupView(app, () => details.isConnected);
+            return;
+          }
           if (err.key === "ssh.challenge_invalid") emphasizeRefresh();
           errorBox.append(renderNotice(err.key, { ...err.params }, lang, { role: "none" }));
         } else {
@@ -372,9 +397,8 @@ function renderSshSection(app: App, stack: HTMLElement): void {
       try {
         await postSshLogin(challengeId, signature.value);
         if (!details.isConnected) return;
-        const next = await app.refreshLogin(() => details.isConnected);
+        await app.refreshLogin(() => details.isConnected);
         if (!details.isConnected) return;
-        app.setMustChangePassword(Boolean(next.must_change_password));
         app.clearLogoutDone();
         app.clearSessionExpired();
         app.clearLogoutError();
@@ -385,6 +409,10 @@ function renderSshSection(app: App, stack: HTMLElement): void {
         // A departed page no longer owns the in-flight response.
         if (!details.isConnected) return;
         if (err instanceof ApiError) {
+          if (err.key === "login.setup_required") {
+            await refreshSetupView(app, () => details.isConnected);
+            return;
+          }
           const params: Params = { ...err.params };
           if (err.key === "login.rate_limited" && params["seconds"] === undefined) {
             params["seconds"] = params["retry_after_s"] ?? "UNKNOWN";
@@ -408,7 +436,7 @@ function renderSshSection(app: App, stack: HTMLElement): void {
               problem.removeAttribute("role");
               errorBox.append(problem);
               if (needsResetHelp(params["state"])) {
-                errorBox.append(renderNotice("help.reset_account", {}, lang, { role: "none" }));
+                errorBox.append(resetHelpNode(lang, false));
               }
             } else {
               errorBox.append(renderNotice(err.key, params, lang, { role: "none" }));
@@ -416,7 +444,7 @@ function renderSshSection(app: App, stack: HTMLElement): void {
           } else {
             errorBox.append(renderNotice(err.key, params, lang, { role: "none" }));
             if (err.params["show_reset_help"] === true) {
-              errorBox.append(renderNotice("help.reset_account", {}, lang, { role: "none" }));
+              errorBox.append(resetHelpNode(lang, false));
             }
           }
         } else {
@@ -440,6 +468,10 @@ function renderSshSection(app: App, stack: HTMLElement): void {
 export function renderLogin(app: App, container: HTMLElement): void {
   const lang = app.lang;
   const info: LoginInfo = app.login;
+  if (info.credentials === "setup_required") {
+    renderSetup(app, container);
+    return;
+  }
 
   const stack = el("div", { class: "login-stack" });
   container.append(stack);
@@ -461,7 +493,7 @@ export function renderLogin(app: App, container: HTMLElement): void {
     stack.append(credProblem);
   }
   if (info.show_reset_help) {
-    stack.append(renderNotice("help.reset_account", {}, lang));
+    stack.append(resetHelpNode(lang));
   }
 
   const form = el("form", { class: "login-form" });
@@ -510,8 +542,7 @@ export function renderLogin(app: App, container: HTMLElement): void {
       try {
         await postLogin(user.value, pass.value);
         pass.value = "";
-        const next = await app.refreshLogin();
-        app.setMustChangePassword(Boolean(next.must_change_password));
+        await app.refreshLogin();
         app.clearLogoutDone();
         app.clearSessionExpired();
         app.clearLogoutError();
@@ -521,6 +552,10 @@ export function renderLogin(app: App, container: HTMLElement): void {
         loginBusy = false;
         submit.disabled = false;
         if (err instanceof ApiError) {
+          if (err.key === "login.setup_required") {
+            await refreshSetupView(app, () => stack.isConnected);
+            return;
+          }
           // The catalog expects seconds; the API field is retry_after_s.
           const params: Params = { ...err.params };
           if (err.key === "login.rate_limited" && params["seconds"] === undefined) {
@@ -535,7 +570,7 @@ export function renderLogin(app: App, container: HTMLElement): void {
               errorBox.append(problem);
               if (needsResetHelp(params["state"])) {
                 errorBox.append(
-                  renderNotice("help.reset_account", {}, lang, { role: "none" }),
+                  resetHelpNode(lang, false),
                 );
               }
             } else {
@@ -554,7 +589,7 @@ export function renderLogin(app: App, container: HTMLElement): void {
           } else {
             errorBox.append(renderNotice(err.key, params, lang, { role: "none" }));
             if (err.params["show_reset_help"] === true) {
-              errorBox.append(renderNotice("help.reset_account", {}, lang, { role: "none" }));
+              errorBox.append(resetHelpNode(lang, false));
             }
           }
         } else {

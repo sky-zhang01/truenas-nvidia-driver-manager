@@ -27,15 +27,14 @@ export interface SetupProblem {
 export type CredentialsState =
   | "ok"
   | "username_invalid"
-  | "initial_password_unusable"
+  | "setup_required"
   | { unreadable: string }
   | { unsaved: string };
 
 export interface LoginInfo {
   logged_in: boolean;
-  must_change_password?: boolean;
   update_blocked?: UpdateBlocked[];
-  setup: { problems: SetupProblem[] };
+  setup: { problems: SetupProblem[]; username?: string; valid_hours?: number };
   credentials: CredentialsState;
   show_reset_help: boolean;
   // Show SSH sign-in only when the server explicitly reports ssh_enabled === true.
@@ -471,10 +470,19 @@ export function getLogin(): Promise<LoginInfo> {
 export async function postLogin(
   username: string,
   password: string,
-): Promise<{ must_change_password: boolean }> {
-  const next = await apiFetch<{ must_change_password: boolean; token?: string }>(
+): Promise<{ token?: string }> {
+  const next = await apiFetch<{ token?: string }>(
     "/api/login",
     jsonInit("POST", { username, password }),
+  );
+  rememberToken(next.token);
+  return next;
+}
+
+export async function postSetup(code: string, newPassword: string): Promise<{ token?: string }> {
+  const next = await apiFetch<{ token?: string }>(
+    "/api/setup",
+    jsonInit("POST", { code, new_password: newPassword }),
   );
   rememberToken(next.token);
   return next;
@@ -516,8 +524,8 @@ export function requestSshChallenge(): Promise<SshChallenge> {
 export async function postSshLogin(
   challengeId: string,
   signature: string,
-): Promise<{ must_change_password: boolean }> {
-  const next = await apiFetch<{ must_change_password: boolean; token?: string }>(
+): Promise<{ token?: string }> {
+  const next = await apiFetch<{ token?: string }>(
     "/api/ssh/login",
     jsonInit("POST", { challenge_id: challengeId, signature }),
   );

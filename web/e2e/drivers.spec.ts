@@ -33,9 +33,18 @@ test("the table shows seven sortable columns", async ({ page, request }) => {
   await openDrivers(page, request);
   const heads = page.locator("table.drivers thead th button");
   await expect(heads).toHaveCount(7);
-  for (const label of [/Version|版本/, /Source|来源/, /Build date|构建日期/, /Size|大小/, /Target kernel|目标内核/, /Status|状态/, /Keep|保留/]) {
-    await expect(page.locator("table.drivers thead")).toContainText(label);
+  for (const [index, label] of [/^Version$|^版本$/, /^Source$|^来源$/, /^Build date$|^构建日期$/, /^Size$|^大小$/, /^Target kernel$|^目标内核$/, /^Status$|^状态$/, /^Keep$|^保留$/].entries()) {
+    const button = heads.nth(index);
+    await expect(button.locator(".sort-direction")).toHaveCount(index === 0 ? 1 : 0);
+    const visibleLabel = await button.evaluate((node) => {
+      const copy = node.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll("[aria-hidden=true]").forEach((child) => child.remove());
+      return copy.textContent?.trim();
+    });
+    expect(visibleLabel).toMatch(label);
+    await expect(button).toHaveAccessibleName(new RegExp(`^Sort by ${visibleLabel}$|^按${visibleLabel}排序$`));
   }
+  await expect(page.locator("table.drivers thead th").last()).toHaveText(/^Actions$|^操作$/);
 });
 
 test("sorting is announced and reversible", async ({ page, request }) => {
@@ -43,10 +52,16 @@ test("sorting is announced and reversible", async ({ page, request }) => {
   const first = page.locator("table.drivers thead th button").first();
 
   await expect(page.locator("th[aria-sort='ascending']")).toHaveCount(1);
-  await first.click();
+  await first.focus();
+  await page.keyboard.press("Enter");
   await expect(page.locator("th[aria-sort='descending']")).toHaveCount(1);
-  await first.click();
+  await expect(first).toBeFocused();
+  await expect(first.locator(".sort-direction")).toHaveAttribute("aria-hidden", "true");
+  await expect(first.locator(".sort-direction")).toHaveText("↓");
+  await page.keyboard.press("Enter");
   await expect(page.locator("th[aria-sort='ascending']")).toHaveCount(1);
+  await expect(first).toBeFocused();
+  await expect(first.locator(".sort-direction")).toHaveText("↑");
 });
 
 test("an in-use row has no delete button", async ({ page, request }) => {

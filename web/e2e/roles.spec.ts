@@ -30,7 +30,7 @@ test("the running task and the missing link use the catalog wording", async ({ p
 
   await setScenario(request, "no_link");
   // A new scenario recreates the credentials file, so the old cookie is stale: reload, sign in again
-  // with the initial password, then read home.
+  // with the chosen password, then read home.
   await page.goto("/#/home");
   await page.reload();
   await signIn(page);

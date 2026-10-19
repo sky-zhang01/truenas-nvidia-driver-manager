@@ -1,47 +1,17 @@
-//! The four settings and their validation.
+//! The three settings and their validation.
 //!
 //! All environment variables are read at once; every problem is collected and the process
 //! never exits because of one.
 
 use std::ffi::OsString;
-use std::fmt;
 
 pub const VAR_USERNAME: &str = "NVM_INITIAL_ADMIN_USERNAME";
-pub const VAR_PASSWORD: &str = "NVM_INITIAL_ADMIN_PASSWORD";
 pub const VAR_PORT: &str = "NVM_PORT";
 pub const VAR_BUILD_TIMEOUT: &str = "NVM_BUILD_TIMEOUT_MINUTES";
 
 pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PORT: u16 = 8199;
 pub const DEFAULT_BUILD_TIMEOUT_MINUTES: u32 = 30;
-
-/// An initial or new password; its `Debug` output is `<redacted>`.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret(String);
-
-impl Secret {
-    pub fn new(value: String) -> Secret {
-        Secret(value)
-    }
-
-    /// The only way to read the value; callers must not log it.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-/// State of the initial password.
-#[derive(Debug, Clone)]
-pub enum InitialPassword {
-    Usable(Secret),
-    Unusable,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingProblem {
@@ -67,7 +37,6 @@ pub struct Settings {
     /// `Some` only when the configured name is acceptable; absent means the default. `None`
     /// means the value was set but is invalid.
     pub username: Option<String>,
-    pub password: InitialPassword,
     pub port: u16,
     pub build_timeout_minutes: Option<u32>,
     pub problems: Vec<SettingProblem>,
@@ -80,10 +49,7 @@ impl Settings {
 }
 
 fn is_known(name: &str) -> bool {
-    matches!(
-        name,
-        VAR_USERNAME | VAR_PASSWORD | VAR_PORT | VAR_BUILD_TIMEOUT
-    )
+    matches!(name, VAR_USERNAME | VAR_PORT | VAR_BUILD_TIMEOUT)
 }
 
 /// Read all environment variables and collect every problem.
@@ -91,7 +57,6 @@ pub fn load(vars: impl Iterator<Item = (OsString, OsString)>) -> Settings {
     let mut problems = Vec::new();
     let mut username = None;
     let mut username_seen = false;
-    let mut password = InitialPassword::Unusable;
     let mut port = DEFAULT_PORT;
     let mut port_seen = false;
     let mut timeout = None;
@@ -100,7 +65,7 @@ pub fn load(vars: impl Iterator<Item = (OsString, OsString)>) -> Settings {
     for (key, value) in vars {
         let key_str = key.to_string_lossy().into_owned();
         if !is_known(&key_str) {
-            // Only the four documented settings are our business; an unrelated variable
+            // Only the three documented settings are our business; an unrelated variable
             // (UTF-8 or not) never blocks the process.
             if key_str.starts_with("NVM_") {
                 problems.push(SettingProblem::Unknown { variable: key_str });
@@ -127,15 +92,6 @@ pub fn load(vars: impl Iterator<Item = (OsString, OsString)>) -> Settings {
                         rule: RULE_USERNAME,
                     });
                 }
-            }
-            VAR_PASSWORD => {
-                password = if text.starts_with('<') && text.ends_with('>') {
-                    InitialPassword::Unusable
-                } else if check_password(&text).is_ok() {
-                    InitialPassword::Usable(Secret::new(text))
-                } else {
-                    InitialPassword::Unusable
-                };
             }
             VAR_PORT => {
                 port_seen = true;
@@ -177,7 +133,6 @@ pub fn load(vars: impl Iterator<Item = (OsString, OsString)>) -> Settings {
 
     Settings {
         username,
-        password,
         port,
         build_timeout_minutes: timeout,
         problems,
@@ -204,8 +159,6 @@ pub enum PasswordRule {
     TooLong,
     Whitespace,
     Placeholder,
-    /// The forced first change repeated the current password.
-    SameAsInitial,
 }
 
 impl PasswordRule {
@@ -215,7 +168,6 @@ impl PasswordRule {
             PasswordRule::TooLong => "password.rule.too_long",
             PasswordRule::Whitespace => "password.rule.whitespace",
             PasswordRule::Placeholder => "password.rule.placeholder",
-            PasswordRule::SameAsInitial => "password.rule.same_as_initial",
         }
     }
 }
@@ -255,7 +207,6 @@ mod tests {
         assert_eq!(s.username.as_deref(), Some("admin"));
         assert_eq!(s.port, 8199);
         assert_eq!(s.build_timeout_minutes, None);
-        assert!(matches!(s.password, InitialPassword::Unusable));
         assert!(s.problems.is_empty());
     }
 
@@ -264,7 +215,6 @@ mod tests {
         let s = load(
             vars(&[
                 ("NVM_INITIAL_ADMIN_USERNAME", "ops.1"),
-                ("NVM_INITIAL_ADMIN_PASSWORD", "correct horse"),
                 ("NVM_PORT", "9000"),
                 ("NVM_BUILD_TIMEOUT_MINUTES", "60"),
             ])
@@ -273,7 +223,6 @@ mod tests {
         assert_eq!(s.username.as_deref(), Some("ops.1"));
         assert_eq!(s.port, 9000);
         assert_eq!(s.build_timeout_minutes, Some(60));
-        assert!(matches!(s.password, InitialPassword::Usable(_)));
         assert!(s.problems.is_empty());
     }
 
@@ -299,13 +248,22 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_and_short_passwords_are_unusable_but_not_problems() {
-        let s = load(vars(&[("NVM_INITIAL_ADMIN_PASSWORD", "<initial-password>")]).into_iter());
-        assert!(matches!(s.password, InitialPassword::Unusable));
-        assert!(s.problems.is_empty());
-        let s = load(vars(&[("NVM_INITIAL_ADMIN_PASSWORD", "short")]).into_iter());
-        assert!(matches!(s.password, InitialPassword::Unusable));
-        assert!(s.problems.is_empty());
+    fn password_variable_is_unknown_and_never_retains_the_value() {
+        use std::os::unix::ffi::OsStringExt;
+        for value in [
+            OsString::from("not-retained-value"),
+            OsString::from_vec(vec![0xff]),
+        ] {
+            let s = load(vec![(OsString::from("NVM_INITIAL_ADMIN_PASSWORD"), value)].into_iter());
+            assert!(!s.usable());
+            assert_eq!(
+                s.problems,
+                vec![SettingProblem::Unknown {
+                    variable: "NVM_INITIAL_ADMIN_PASSWORD".into()
+                }]
+            );
+            assert!(!format!("{s:?}").contains("not-retained-value"));
+        }
     }
 
     #[test]
@@ -345,12 +303,5 @@ mod tests {
         assert_eq!(check_password("<12345678>"), Err(PasswordRule::Placeholder));
         let long = format!("{}8", " ".repeat(2000));
         assert_eq!(check_password(&long), Err(PasswordRule::TooLong));
-    }
-
-    #[test]
-    fn secret_debug_is_redacted() {
-        let s = Secret::new("hunter123".to_string());
-        assert_eq!(format!("{s:?}"), "<redacted>");
-        assert_eq!(s.expose(), "hunter123");
     }
 }

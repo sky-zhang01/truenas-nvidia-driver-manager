@@ -21,16 +21,10 @@ import type { App } from "../main.js";
 import type { Lang } from "../messages.js";
 import { writeReasonField } from "./login.js";
 
-export function renderPassword(app: App, container: HTMLElement, voluntary: boolean): void {
+export function renderPassword(app: App, container: HTMLElement): void {
   const lang = app.lang;
-  const titleKey = voluntary ? "password.title_voluntary" : "password.title";
-
-  container.append(el("h2", { text: expandText(titleKey, {}, lang) }));
-  if (voluntary) {
-    container.append(el("h3", { text: expandText("password.section", {}, lang) }));
-  } else {
-    container.append(el("p", { text: expandText("password.intro", {}, lang) }));
-  }
+  container.append(el("h2", { text: expandText("password.title_voluntary", {}, lang) }));
+  container.append(el("h3", { text: expandText("password.section", {}, lang) }));
 
   const form = el("form", { class: "password-form" });
   const newLabel = el("label", { for: "pass-new", text: expandText("password.new", {}, lang) });
@@ -74,12 +68,10 @@ export function renderPassword(app: App, container: HTMLElement, voluntary: bool
         await postPassword(newInput.value);
         newInput.value = "";
         repeatInput.value = "";
-        app.setMustChangePassword(false);
         doneBox.append(renderNotice("password.changed", {}, lang));
 
         app.setPasswordChanged();
-        const next = await app.refreshLogin();
-        app.setMustChangePassword(Boolean(next.must_change_password));
+        await app.refreshLogin();
         app.go("#/home");
       } catch (err) {
         passwordBusy = false;
@@ -110,9 +102,7 @@ export function renderPassword(app: App, container: HTMLElement, voluntary: bool
     })();
   });
 
-  if (voluntary) {
-    renderSshKeys(app, container);
-  }
+  renderSshKeys(app, container);
 }
 
 function addedAtText(addedAt: number): string {

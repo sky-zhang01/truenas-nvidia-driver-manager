@@ -6,7 +6,6 @@ import { FakeElement, FakeText } from "./dom-shim.js";
 
 const allowed: LoginInfo = {
   logged_in: true,
-  must_change_password: false,
   update_blocked: [],
   setup: { problems: [] },
   credentials: "ok",

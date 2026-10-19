@@ -139,9 +139,9 @@ async fn an_interrupted_receive_writes_idle_or_disconnected_and_a_cancel_cleans_
     let _serial = SERIAL.lock().await;
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "changed123").await;
+    let cookie = setup_app(&app, "changed123").await;
     let (status, body) = post(&app, "/api/uploads", json!({}), Some(&cookie)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let group = body["group_id"].as_str().unwrap().to_string();
@@ -408,6 +408,9 @@ impl Host for StallingHost {
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.inner.rename(from, to)
     }
+    fn hard_link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.hard_link(from, to)
+    }
     fn remove_file(&self, p: &Path) -> std::io::Result<()> {
         self.inner.remove_file(p)
     }
@@ -442,7 +445,7 @@ async fn a_slow_writer_bounds_the_queue_and_holds_the_receiving_flag() {
     let (stalling, gate) = StallingHost::gated(fake.clone());
     let app = app_with_host(Arc::new(stalling), fake.clone());
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "changed123").await;
+    let cookie = setup_app(&app, "changed123").await;
     let (status, body) = post(&app, "/api/uploads", json!({}), Some(&cookie)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let group = body["group_id"].as_str().unwrap().to_string();
