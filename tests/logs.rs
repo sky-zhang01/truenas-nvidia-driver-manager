@@ -7,7 +7,7 @@ use serde_json::json;
 use truenas_nvidia_driver_manager::codes::Event;
 use truenas_nvidia_driver_manager::log;
 
-const APPROVED: [(Event, &str); 38] = [
+const APPROVED: [(Event, &str); 39] = [
     (Event::Starting, "starting"),
     (Event::SettingUnknown, "setting_unknown"),
     (Event::SettingInvalid, "setting_invalid"),
@@ -16,10 +16,8 @@ const APPROVED: [(Event, &str); 38] = [
     (Event::StartupCheckFailed, "startup_check_failed"),
     (Event::StartupChecksPassed, "startup_checks_passed"),
     (Event::CredentialsCreated, "credentials_created"),
-    (
-        Event::CredentialsInitialPasswordUnusable,
-        "credentials_initial_password_unusable",
-    ),
+    (Event::SetupCodeIssued, "setup_code_issued"),
+    (Event::SetupCodeRejected, "setup_code_rejected"),
     (Event::CredentialsUnreadable, "credentials_unreadable"),
     (Event::CredentialsUnsaved, "credentials_unsaved"),
     (Event::Listening, "listening"),
@@ -63,7 +61,8 @@ fn event_wire_names_match_the_required_table() {
             | Event::StartupCheckFailed
             | Event::StartupChecksPassed
             | Event::CredentialsCreated
-            | Event::CredentialsInitialPasswordUnusable
+            | Event::SetupCodeIssued
+            | Event::SetupCodeRejected
             | Event::CredentialsUnreadable
             | Event::CredentialsUnsaved
             | Event::Listening
@@ -110,8 +109,25 @@ async fn log_lines_are_ascii_json_of_known_events_without_secrets() {
         200,
         b"<a href=\"580.178.04/\">580.178.04</a>\n",
     );
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
-    let _ = get(&app, "/api/login", None).await;
+    let app = app(host.clone(), settings(), healthy_startup(&host));
+    let code = app.setup_code.lock().unwrap().clone().unwrap();
+    app.host.forbid_in_argv(&code);
+    truenas_nvidia_driver_manager::auth::IssuedSetupCode {
+        code: code.clone(),
+        reason: "start",
+    }
+    .log();
+    let (_, status_body) = get(&app, "/api/login", None).await;
+    assert!(!status_body.to_string().contains(&code));
+    let (status, _) = post(
+        &app,
+        "/api/setup",
+        json!({"code":"untrusted setup input","new_password":"longpass99"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    let cookie = setup_app(&app, "longpass99").await;
     let _ = post(
         &app,
         "/api/login",
@@ -119,7 +135,6 @@ async fn log_lines_are_ascii_json_of_known_events_without_secrets() {
         None,
     )
     .await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
     // A successful version-index query must not write the failure event.
     let (versions_status, _) = get(&app, "/api/versions", Some(&cookie)).await;
     assert_eq!(versions_status, axum::http::StatusCode::OK);
@@ -144,13 +159,23 @@ async fn log_lines_are_ascii_json_of_known_events_without_secrets() {
             panic!("log line is not JSON ({e}): {line}");
         });
         let level = value["level"].as_str().unwrap();
-        assert!(matches!(level, "INFO" | "ERROR"), "{line}");
+        assert!(matches!(level, "INFO" | "WARN" | "ERROR"), "{line}");
         let event = value["event"].as_str().unwrap();
         assert!(
             APPROVED.iter().any(|(_, name)| *name == event),
             "unknown event {event}: {line}"
         );
         assert!(value["msg"].as_str().is_some(), "{line}");
+        let mut safe_fields = value.clone();
+        if event == "setup_code_issued" {
+            assert!(value["msg"].as_str().unwrap().contains(&code));
+            safe_fields.as_object_mut().unwrap().remove("msg");
+        }
+        assert!(
+            !safe_fields.to_string().contains(&code),
+            "a setup code escaped its designated log message"
+        );
+        assert!(value.get("setup_code").is_none());
         assert!(value["ts_ms"].is_number(), "{line}");
     }
     assert!(
@@ -166,6 +191,14 @@ async fn log_lines_are_ascii_json_of_known_events_without_secrets() {
     assert!(!text.contains("hunter12"));
     assert!(!text.contains("longpass99"));
     assert!(!text.contains("definitelywrong"));
+    assert!(!text.contains("untrusted setup input"));
+    let rejected = text
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|entry| entry["event"] == "setup_code_rejected")
+        .unwrap();
+    assert_eq!(rejected["level"], "WARN");
+    assert_eq!(rejected["failures"], 1);
     let credentials = app
         .host
         .file_text("/var/lib/nvm/manager/secrets/web-credentials.json")
@@ -173,5 +206,6 @@ async fn log_lines_are_ascii_json_of_known_events_without_secrets() {
     assert!(!credentials.contains("hunter12"));
     assert!(!credentials.contains("longpass99"));
     assert!(credentials.contains("$argon2id$"));
+    assert!(!app.host.setup_code_in_env());
     app.host.assert_red_lines();
 }

@@ -433,7 +433,8 @@ pub enum Event {
     StartupCheckFailed,
     StartupChecksPassed,
     CredentialsCreated,
-    CredentialsInitialPasswordUnusable,
+    SetupCodeIssued,
+    SetupCodeRejected,
     CredentialsUnreadable,
     CredentialsUnsaved,
     Listening,
@@ -476,7 +477,8 @@ impl Event {
             Event::StartupCheckFailed => "startup_check_failed",
             Event::StartupChecksPassed => "startup_checks_passed",
             Event::CredentialsCreated => "credentials_created",
-            Event::CredentialsInitialPasswordUnusable => "credentials_initial_password_unusable",
+            Event::SetupCodeIssued => "setup_code_issued",
+            Event::SetupCodeRejected => "setup_code_rejected",
             Event::CredentialsUnreadable => "credentials_unreadable",
             Event::CredentialsUnsaved => "credentials_unsaved",
             Event::Listening => "listening",
@@ -518,10 +520,9 @@ impl Event {
             Event::DataDirsFailed => "could not create data directories",
             Event::StartupCheckFailed => "startup check did not pass",
             Event::StartupChecksPassed => "startup checks passed",
-            Event::CredentialsCreated => "administrator account created from the initial password",
-            Event::CredentialsInitialPasswordUnusable => {
-                "credentials file missing and the initial password is not usable"
-            }
+            Event::CredentialsCreated => "administrator account created through the setup code",
+            Event::SetupCodeIssued => "setup code issued",
+            Event::SetupCodeRejected => "setup code rejected",
             Event::CredentialsUnreadable => "credentials file could not be read",
             Event::CredentialsUnsaved => "credentials file could not be saved",
             Event::Listening => "listening",

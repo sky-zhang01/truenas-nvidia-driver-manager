@@ -5,7 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const PORT = 18109;
 const DATA_DIR = process.env["NVM_E2E_DATA_DIR"] ?? "/tmp/nvm-e2e-data";
-const SERVER_LOG = process.env["NVM_E2E_SERVER_LOG"];
+const SERVER_LOG = process.env["NVM_E2E_SERVER_LOG"] ?? "/tmp/nvm-e2e-server.log";
 const IN_CI = process.env["CI"] !== undefined || process.env["GITEA_ACTIONS"] !== undefined;
 
 export default defineConfig({

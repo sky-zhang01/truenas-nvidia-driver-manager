@@ -12,6 +12,7 @@
 #[path = "../tests/common/mod.rs"]
 mod common;
 
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -31,7 +32,7 @@ use common::{
 };
 use truenas_nvidia_driver_manager::codes::{CANONICAL_PATH, CATALOG_URL};
 use truenas_nvidia_driver_manager::plan::{Ctx, PlanSlot};
-use truenas_nvidia_driver_manager::settings::{InitialPassword, Secret, Settings};
+use truenas_nvidia_driver_manager::settings::Settings;
 use truenas_nvidia_driver_manager::startup::Startup;
 use truenas_nvidia_driver_manager::store::Paths;
 use truenas_nvidia_driver_manager::upload::UploadState;
@@ -49,6 +50,20 @@ const INDEX: &str = r#"<a href="615.71.09/">615.71.09</a>
 <a href="470.256.02/">470.256.02</a>
 "#;
 
+struct FakeLog(common::SharedBuf);
+
+impl Write for FakeLog {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write_all(bytes)?;
+        std::io::stdout().lock().write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stdout().lock().flush()
+    }
+}
+
 struct ServerState {
     host: FakeHost,
     scenario: Mutex<String>,
@@ -56,6 +71,7 @@ struct ServerState {
     /// login limiter, the logged-out table and the SSH challenge table never leak across
     /// scenes.
     inner: Mutex<Inner>,
+    logs: common::SharedBuf,
 }
 
 struct Inner {
@@ -87,6 +103,7 @@ fn build_routers(
     broken
         .problems
         .push(truenas_nvidia_driver_manager::startup::StartupProblem::PidHost);
+    let auth = Arc::new(truenas_nvidia_driver_manager::auth::AuthState::new());
     let make = |startup: Startup| -> Arc<Ctx> {
         Arc::new(Ctx {
             host: Arc::new(host.clone()),
@@ -96,11 +113,15 @@ fn build_routers(
             process_lock: tokio::sync::Mutex::new(()),
             plan: std::sync::Mutex::new(PlanSlot::new()),
             upload: Arc::new(UploadState::new()),
-            auth: Arc::new(truenas_nvidia_driver_manager::auth::AuthState::new()),
+            auth: auth.clone(),
         })
     };
     let ctx_normal = make(healthy);
     let ctx_setup = make(broken);
+    if let Some(issued) = auth.ensure_setup_code(host, &ctx_normal.paths, &settings, "start") {
+        host.forbid_in_argv(&issued.code);
+        issued.log();
+    }
     let normal = router(ctx_normal.clone(), web_root.clone());
     let setup_problem = router(ctx_setup, web_root);
     (ctx_normal, normal, setup_problem)
@@ -531,6 +552,53 @@ async fn clock(State(state): State<Arc<ServerState>>, Json(body): Json<Value>) -
     Json(json!({"ok": true})).into_response()
 }
 
+async fn setup_code(State(state): State<Arc<ServerState>>) -> Response {
+    let ctx = state.inner.lock().unwrap().ctx.clone();
+    if let Some(issued) =
+        ctx.auth
+            .ensure_setup_code(&state.host, &ctx.paths, &ctx.settings, "reset")
+    {
+        issued.log();
+    }
+    let logs = String::from_utf8_lossy(&state.logs.0.lock().unwrap()).into_owned();
+    let code = logs
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|entry| entry["event"] == "setup_code_issued")
+        .and_then(|entry| {
+            entry["msg"]
+                .as_str()
+                .and_then(|msg| msg.strip_prefix("SETUP CODE: "))
+                .and_then(|msg| msg.split('.').next())
+                .map(str::to_string)
+        });
+    Json(json!({"code": code})).into_response()
+}
+
+async fn expire_setup_code(State(state): State<Arc<ServerState>>) -> Response {
+    state.inner.lock().unwrap().ctx.auth.expire_setup_code();
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn reset_credentials(State(state): State<Arc<ServerState>>) -> Response {
+    state
+        .host
+        .remove("/var/lib/nvm/manager/secrets/web-credentials.json");
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn restart(State(state): State<Arc<ServerState>>) -> Response {
+    let mut inner = state.inner.lock().unwrap();
+    let (ctx, normal, setup_problem) =
+        build_routers(&state.host, inner.settings.clone(), inner.web_root.clone());
+    inner.ctx = ctx;
+    inner.normal = normal;
+    inner.setup_problem = setup_problem;
+    inner.auth_epoch += 1;
+    Json(json!({"ok": true})).into_response()
+}
+
 #[tokio::main]
 async fn main() {
     let mut port: u16 = 18109;
@@ -549,7 +617,7 @@ async fn main() {
                 }
             }
             "--data-dir" => {
-                // Accepted for compatibility; the fake host is virtual.
+                // The fake host stores its data virtually.
                 let _ = args.next();
             }
             _ => {}
@@ -562,17 +630,17 @@ async fn main() {
 
     let settings = Settings {
         username: Some("admin".into()),
-        password: InitialPassword::Usable(Secret::new(
-            std::env::var("NVM_E2E_PASSWORD").unwrap_or_else(|_| "initial-password-1".into()),
-        )),
         port,
         build_timeout_minutes: Some(30),
         problems: Vec::new(),
     };
     let files: StaticFiles = load_static_files(&web_root);
+    let logs = common::SharedBuf::default();
+    truenas_nvidia_driver_manager::log::set_sink(Box::new(FakeLog(logs.clone())));
     let (ctx_normal, normal, setup_problem) = build_routers(&host, settings.clone(), files.clone());
     let state = Arc::new(ServerState {
         host: host.clone(),
+        logs,
         scenario: Mutex::new("fresh".into()),
         inner: Mutex::new(Inner {
             ctx: ctx_normal,
@@ -588,6 +656,10 @@ async fn main() {
         .route("/__fake/state", get(state_view))
         .route("/__fake/clock", post(clock))
         .route("/__fake/driver", post(set_driver))
+        .route("/__fake/setup-code", get(setup_code))
+        .route("/__fake/setup-code/expire", post(expire_setup_code))
+        .route("/__fake/credentials/reset", post(reset_credentials))
+        .route("/__fake/restart", post(restart))
         .with_state(state.clone());
     let app = control.fallback(dispatch).with_state(state);
 

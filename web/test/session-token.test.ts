@@ -51,7 +51,7 @@ test("a password login stores the request token and later API calls send it", as
       contentType: headers.get("Content-Type"),
     });
     if (path === "/api/login") {
-      return new Response(JSON.stringify({ must_change_password: true, token: "abc123" }), {
+      return new Response(JSON.stringify({ token: "abc123" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });

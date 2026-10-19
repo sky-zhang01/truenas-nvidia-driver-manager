@@ -11,6 +11,8 @@ The HTTPS example below assumes a configured reverse proxy. The default App endp
 `Secure` even behind HTTPS unless the deployment rewrites it. SSH-key sign-in grants the same
 administrator privileges as password sign-in, not a separate restricted agent account.
 
+First setup is a human administrator action: they read the setup code from the App logs and create the account in the UI. An agent must not read logs to obtain a setup code, call `POST /api/setup`, or reset the account on its own. After setup, the administrator registers the agent's dedicated SSH public key.
+
 ## 1. Sign in and read the current state
 
 Set the manager's origin URL (scheme, host and published port only; no path or trailing slash) and the registered private key path. Create a private temporary directory for the cookie, token, and responses; never paste their contents into a report.
@@ -54,7 +56,7 @@ jq . "$WORK/home.json" "$WORK/versions.json" "$WORK/drivers.json" "$WORK/tasks.j
 
 `ssh-keygen -Y sign` writes prompts containing the full `WORK` path to stderr. The example captures them in `$WORK/sign.stderr`; inspect that file privately on failure and redact local paths before reporting diagnostics.
 
-The challenge must be signed exactly, with no added newline; `.expires_in_s` gives its lifetime. A challenge is single use. For SSH agent signing, pass the matching registered public-key file to `ssh-keygen -Y sign -f` instead; the matching private key must already be available through the SSH agent. The two public sign-in requests need no session; every later request uses both the cookie and `X-NVM-Token`. If `.must_change_password` is true, stop and have the administrator resolve the account requirement in the UI.
+The challenge must be signed exactly, with no added newline; `.expires_in_s` gives its lifetime. A challenge is single use. For SSH agent signing, pass the matching registered public-key file to `ssh-keygen -Y sign -f` instead; the matching private key must already be available through the SSH agent. The two public sign-in requests need no session; every later request uses both the cookie and `X-NVM-Token`. If the API returns `login.setup_required`, stop and ask the administrator to complete setup in the UI.
 
 Read `.loaded_version`, `.kernel`, `.truenas_version`, `.original_saved`, `.active_task`, `.interrupted`, and `.update_blocked` from home. Home GPU addresses are in `.gpus.value.devices[].address`; check for `.gpus.unknown` before reading that array. Versions instead has a flat `.gpus[].address` array alongside `.items`; drivers has `.rows`. A reading has `.value`, `.not_loaded`, or `.unknown` with a stable `.key` and `.params`; unknown is never zero, false, or success. An active or unreadable task blocks a new replacement. Read its details first. Never bypass a setup or host-recovery block.
 
@@ -197,11 +199,12 @@ After interruption or a disconnected session, sign in again and read the known t
 
 <!-- agent-api-contract -->
 
-The following inventory binds this guide to the tested API. Field groups identify their owning response or request shape; `Query` describes the task-log cursor.
+The following inventory binds this guide to the tested API. `POST /api/setup` is included only to document the human-only boundary above; it is never an agent action. Field groups identify their owning response or request shape; `Query` describes the task-log cursor.
 
 ```json
 {
   "endpoints": [
+    "POST /api/setup",
     "POST /api/ssh/challenge",
     "POST /api/ssh/login",
     "GET /api/home",
@@ -225,8 +228,7 @@ The following inventory binds this guide to the tested API. Field groups identif
       "signature"
     ],
     "SshLoginResponse": [
-      "token",
-      "must_change_password"
+      "token"
     ],
     "HomeResponse": [
       "loaded_version",
@@ -416,6 +418,7 @@ The following inventory binds this guide to the tested API. Field groups identif
     "UNKNOWN"
   ],
   "reasons": [
+    "login.setup_required",
     "ssh.challenge_invalid",
     "ssh.key_not_registered",
     "ssh.login_failed",
@@ -458,4 +461,17 @@ The following inventory binds this guide to the tested API. Field groups identif
     "original.skip_warning"
   ]
 }
+```
+
+## Install the skill for Claude Code or Codex
+
+Run these commands from the repository root. For Claude Code use the destination below. For
+Codex, set `DEST` to `"$HOME/.agents/skills/nvidia-driver-replacement"`. Repeat after
+upgrading the skill.
+
+```bash
+DEST="$HOME/.claude/skills/nvidia-driver-replacement"
+mkdir -p "$DEST/docs"
+cp skills/nvidia-driver-replacement/SKILL.md "$DEST/SKILL.md"
+cp docs/agent.en.md "$DEST/docs/agent.en.md"
 ```

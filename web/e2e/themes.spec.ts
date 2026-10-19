@@ -346,7 +346,7 @@ test("on short screens the sign-in page scrolls normally from the top without cl
   }
 });
 
-test("the sign-in page answers 'no account / initial password' without leaking secrets", async ({
+test("the sign-in page explains setup and password reset without exposing secrets", async ({
   page,
   request,
 }) => {
@@ -374,13 +374,13 @@ test("the sign-in page answers 'no account / initial password' without leaking s
 
   await details.locator("summary").click();
   await expect(details).toHaveAttribute("open");
-  await expect(details).toContainText("NVM_INITIAL_ADMIN_USERNAME");
-  await expect(details).toContainText("NVM_INITIAL_ADMIN_PASSWORD");
-  await expect(details).toContainText(/administrator account/);
+  await expect(details).toContainText(/setup page|设置页面/);
+  await expect(details).not.toContainText("NVM_INITIAL_ADMIN_PASSWORD");
+  await expect(details).toContainText("App logs");
 
   await page.locator("#lang-control").selectOption("zh");
   await expect(page.locator("details.login-help summary")).toContainText("没有账号");
-  await expect(page.locator("details.login-help")).toContainText("NVM_INITIAL_ADMIN_USERNAME");
+  await expect(page.locator("details.login-help")).toContainText("设置页面");
   await expect(page.locator(".login-help-hint")).toContainText("联系部署本应用的人");
 
   // The interface never shows the real configured secret, a host path, or the conditioned
@@ -388,7 +388,7 @@ test("the sign-in page answers 'no account / initial password' without leaking s
   const bodyText = await page.locator("body").textContent();
   expect(bodyText).not.toContain("initial-password-1");
   expect(bodyText).not.toContain("/var/lib");
-  expect(bodyText).not.toContain("web-credentials.json");
+  expect(bodyText).toContain("web-credentials.json");
 });
 
 test("a 401 session end lands on the independent sign-in page and keeps the route", async ({

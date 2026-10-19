@@ -216,9 +216,9 @@ async fn setup_problems_block_plans() {
     prime_canonical(&host, "580.173.02");
     let mut startup = healthy_startup(&host);
     startup.problems.push(StartupProblem::PidHost);
-    let app = app(host.clone(), settings("hunter12"), startup);
+    let app = app(host.clone(), settings(), startup);
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     let (status, body) = official_plan(&app, &cookie, "580.178.04").await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"], "setup.blocked");

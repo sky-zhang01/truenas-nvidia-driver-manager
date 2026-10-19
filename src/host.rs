@@ -270,6 +270,14 @@ pub trait Host: Send + Sync {
     fn read_dir(&self, p: &Path) -> io::Result<Vec<OsString>>;
     fn create_dir(&self, p: &Path, mode: u32) -> io::Result<()>;
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    /// Atomically add a name for a complete file, refusing an existing destination.
+    fn hard_link(&self, _from: &Path, _to: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host cannot publish an exclusive hard link",
+        ))
+    }
+
     fn remove_file(&self, p: &Path) -> io::Result<()>;
     fn remove_dir_all(&self, p: &Path) -> io::Result<()>;
     fn fsync_dir(&self, p: &Path) -> io::Result<()>;
@@ -954,6 +962,10 @@ impl Host for RealHost {
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        std::fs::hard_link(from, to)
     }
 
     fn remove_file(&self, p: &Path) -> io::Result<()> {

@@ -318,7 +318,7 @@ test("the sign-in page renders the SSH block only when ssh_enabled is true", asy
   assert.match(allText(enBlock ?? domShim().createElement("div")), /SSH key/);
 });
 
-test("the account page renders the key section only on the voluntary view", async () => {
+test("the account page renders the key section immediately after setup", async () => {
   installDom();
   (globalThis as unknown as { fetch: unknown }).fetch = async () =>
     new Promise<Response>(() => {});
@@ -326,22 +326,10 @@ test("the account page renders the key section only on the voluntary view", asyn
     setTimeout: (): number => 1,
   };
   const { renderPassword } = await import("../src/views/password.js");
-  const required = domShim().createElement("main") as unknown as HTMLElement;
-  renderPassword(
-    { lang: "zh", mustChangePassword: false, addCleanup: () => {} } as never,
-    required,
-    false,
-  );
-  assert.equal(
-    findByClass(required as unknown as FakeElement, "ssh-keys"),
-    undefined,
-    "the must-change view has no key section",
-  );
   const voluntary = domShim().createElement("main") as unknown as HTMLElement;
   renderPassword(
-    { lang: "zh", mustChangePassword: false, addCleanup: () => {} } as never,
+    { lang: "zh", addCleanup: () => {} } as never,
     voluntary,
-    true,
   );
   const section = findByClass(voluntary as unknown as FakeElement, "ssh-keys");
   assert.ok(section, "the voluntary account view carries the key section");
@@ -380,12 +368,10 @@ test("the key list renders rows with a per-key command and no raw comment in com
   renderPassword(
     {
       lang: "zh",
-      mustChangePassword: false,
       addCleanup: () => {},
       syncSshEnabled: (present: boolean) => noted.push(present),
     } as never,
     container,
-    true,
   );
   // The fetch resolves in a microtask; let it run before asserting.
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -416,7 +402,6 @@ test("a successful empty key list clears the sign-in flag, and a late list does 
   const noted: boolean[] = [];
   const app = {
     lang: "zh",
-    mustChangePassword: false,
     addCleanup: () => {},
     syncSshEnabled: (present: boolean) => noted.push(present),
     sessionEnded: () => {
@@ -427,7 +412,7 @@ test("a successful empty key list clears the sign-in flag, and a late list does 
     new Response(JSON.stringify({ items: [] }), { status: 200 });
   const { renderPassword } = await import("../src/views/password.js");
   const empty = domShim().createElement("main") as unknown as HTMLElement;
-  renderPassword(app as never, empty, true);
+  renderPassword(app as never, empty);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(noted, [false]);
   assert.ok(findByClass(empty as unknown as FakeElement, "ssh-keys-empty"));
@@ -444,7 +429,7 @@ test("a successful empty key list clears the sign-in flag, and a late list does 
     });
   };
   const late = domShim().createElement("main") as unknown as HTMLElement;
-  renderPassword(app as never, late, true);
+  renderPassword(app as never, late);
   await fetchStarted;
   const section = findByClass(late as unknown as FakeElement, "ssh-keys");
   assert.ok(section);

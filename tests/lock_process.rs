@@ -7,7 +7,7 @@
 mod common;
 
 use common::{
-    app, default_host, get, healthy_startup, login_changed, post, prime_canonical, settings,
+    app, default_host, get, healthy_startup, post, prime_canonical, settings, setup_app,
     sha256_hex, KERNEL,
 };
 use serde_json::json;
@@ -424,9 +424,9 @@ fn the_host_global_lock_paths_are_reached_through_the_view() {
 async fn driver_deletion_honours_the_global_control_lock() {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
 
     let id = "20260928T101530Z-3f9a0c12-build";
     let bytes = b"payload".to_vec();

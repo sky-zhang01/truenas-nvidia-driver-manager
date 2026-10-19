@@ -314,10 +314,16 @@ export function renderDrivers(app: App, container: HTMLElement): void {
         const th = el("th", { scope: "col" });
         const button = el("button", {
           type: "button",
-          text: expandText("drivers.sort", { column: expandText(c.label, {}, lang) }, lang),
+          text: expandText(c.label, {}, lang),
+          ariaLabel: expandText("drivers.sort", { column: expandText(c.label, {}, lang) }, lang),
         });
         if (sortCol === c.key) {
           th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
+          const direction = el("span", {
+            class: "sort-direction", text: sortDir === "asc" ? "↑" : "↓",
+          });
+          direction.setAttribute("aria-hidden", "true");
+          button.append(direction);
         } else {
           th.setAttribute("aria-sort", "none");
         }
@@ -335,6 +341,7 @@ export function renderDrivers(app: App, container: HTMLElement): void {
         th.append(button);
         head.append(th);
       }
+      head.append(el("th", { scope: "col", text: expandText("drivers.col.actions", {}, lang) }));
       const thead = el("thead", {});
       thead.append(head);
       const tbody = el("tbody", {});
@@ -366,35 +373,45 @@ export function renderDrivers(app: App, container: HTMLElement): void {
         checkCell.append(check);
         tr.append(checkCell);
 
-        tr.append(el("td", { text: row.version ?? row.id }));
-        tr.append(el("td", { text: sourceText(app, row) }));
+        tr.append(el("td", { class: "driver-version", text: row.version ?? row.id }));
+        tr.append(el("td", { class: "driver-source", text: sourceText(app, row) }));
+        const dateCell = el("td", { class: "driver-date" });
+        const dateParts = (row.created_at !== null ? formatDate(row.created_at) : "UNKNOWN").split(" ");
+        for (const [index, part] of dateParts.entries()) {
+          if (index > 0) dateCell.append(" ");
+          dateCell.append(el("span", { text: part }));
+        }
+        tr.append(dateCell);
         tr.append(
           el("td", {
-            text: row.created_at !== null ? formatDate(row.created_at) : "UNKNOWN",
-          }),
-        );
-        tr.append(
-          el("td", {
+            class: "driver-size",
             text:
               row.size !== null
                 ? expandText("drivers.size_value", { size: formatMB(row.size) }, lang)
                 : "UNKNOWN",
           }),
         );
-        tr.append(el("td", { text: row.target_kernel ?? "UNKNOWN" }));
-        tr.append(el("td", { text: expandText(statusKey(row.status), {}, lang) }));
+        const kernelCell = el("td", { class: "driver-kernel" });
+        const kernelParts = (row.target_kernel ?? "UNKNOWN").split("-");
+        for (const [index, part] of kernelParts.entries()) {
+          const hasNext = index < kernelParts.length - 1;
+          kernelCell.append(el("span", { text: part + (hasNext ? "-" : "") }));
+          if (hasNext) kernelCell.append(el("wbr", {}));
+        }
+        tr.append(kernelCell);
+        tr.append(el("td", { class: "driver-status", text: expandText(statusKey(row.status), {}, lang) }));
 
-        const keepCell = el("td", {});
+        const keepCell = el("td", { class: "driver-keep" });
         if (row.kind === "original" && row.delete_blocked !== "unknown") {
           const sw = el("input", { type: "checkbox", checked: row.keep === true, role: "switch" });
-          sw.disabled = app.mustChangePassword || loginReadFailed(app);
+          sw.disabled = loginReadFailed(app);
           if (loginReadFailed(app)) sw.setAttribute("aria-describedby", "login-read-error");
           sw.setAttribute(
             "aria-label",
             expandText(row.keep ? "drivers.keep.on" : "drivers.keep.off", {}, lang),
           );
           sw.addEventListener("change", () => {
-            if (app.mustChangePassword || loginReadFailed(app)) {
+            if (loginReadFailed(app)) {
               sw.checked = row.keep === true;
               return;
             }
@@ -450,17 +467,18 @@ export function renderDrivers(app: App, container: HTMLElement): void {
         }
         tr.append(keepCell);
 
-        const actionCell = el("td", {});
+        const actionCell = el("td", { class: "driver-actions-cell" });
+        const rowActions = el("div", { class: "driver-actions" });
+        actionCell.append(rowActions);
         if (row.delete_blocked !== "in_use") {
           const del = el("button", { type: "button", text: expandText("drivers.delete_row", {}, lang) });
           del.disabled =
             row.delete_blocked !== null ||
             data.delete_unavailable !== null ||
-            app.mustChangePassword ||
             loginReadFailed(app);
           if (loginReadFailed(app)) del.setAttribute("aria-describedby", "login-read-error");
           del.addEventListener("click", () => openDeleteConfirm([row], del));
-          actionCell.append(del);
+          rowActions.append(del);
         }
         const update = el("button", {
           type: "button",
@@ -469,7 +487,6 @@ export function renderDrivers(app: App, container: HTMLElement): void {
         const updateBlockedNow = (): boolean =>
           !row.can_update ||
           (app.login.update_blocked ?? []).length > 0 ||
-          app.mustChangePassword ||
           loginReadFailed(app);
         update.disabled = updateBlockedNow();
         if (loginReadFailed(app)) update.setAttribute("aria-describedby", "login-read-error");
@@ -511,7 +528,7 @@ export function renderDrivers(app: App, container: HTMLElement): void {
             }
           })();
         });
-        actionCell.append(update);
+        rowActions.append(update);
 
         if (row.delete_blocked === "in_use") {
           actionCell.append(
@@ -531,7 +548,7 @@ export function renderDrivers(app: App, container: HTMLElement): void {
 
         if (row.status === "kernel_mismatch") {
           const detail = el("tr", {});
-          const cell = el("td", { colSpan: 8 });
+          const cell = el("td", { colSpan: 9 });
           const variant =
             row.kind === "upload" ? "upload" : row.kind === "original" ? "original" : undefined;
           cell.append(
@@ -547,7 +564,11 @@ export function renderDrivers(app: App, container: HTMLElement): void {
         }
       }
       table.append(thead, tbody);
-      tableArea.append(table);
+      const scroll = el("div", {
+        class: "drivers-scroll", role: "region", ariaLabel: expandText("nav.drivers", {}, lang),
+      }, [table]);
+      scroll.tabIndex = 0;
+      tableArea.append(scroll);
 
       // Only deletable rows participate in select-all and its indeterminate state.
       const allSelected = deletable.length > 0 && deletable.every((r) => selected.has(r.id));
@@ -572,7 +593,7 @@ export function renderDrivers(app: App, container: HTMLElement): void {
       tableArea.prepend(selectAllBox);
 
       deleteSelected.disabled =
-        data.delete_unavailable !== null || app.mustChangePassword || loginReadFailed(app);
+        data.delete_unavailable !== null || loginReadFailed(app);
       if (loginReadFailed(app)) {
         deleteSelected.setAttribute("aria-describedby", "login-read-error");
       } else if (data.delete_unavailable !== null) {

@@ -44,8 +44,7 @@ export function updateBlockedNode(app: App): HTMLElement {
       box.append(renderNotice("extension.missing", {}, lang));
     } else if (item.key === "task_running") {
       box.append(renderNotice("update.disabled_task_running_text", {}, lang));
-    } else if (item.key === "password_change_required") {
-      box.append(renderNotice("auth.password_change_required", {}, lang));
+
     } else if (item.key === "task_state_unreadable") {
       box.append(
         queryFailed(
@@ -275,10 +274,9 @@ export function renderUpdate(app: App, container: HTMLElement): void {
         conflictNow ||
         filtered.noUsableVersion ||
         noneSelected ||
-        chosen === null ||
-        app.mustChangePassword;
+        chosen === null;
       updateBtn.disabled = disabled;
-      uploadBtn.disabled = readFailed || app.mustChangePassword;
+      uploadBtn.disabled = readFailed;
       updateBtn.removeAttribute("title");
       updateBtn.removeAttribute("aria-describedby");
       uploadBtn.removeAttribute("aria-describedby");
@@ -502,8 +500,7 @@ function openUploadDialog(
       versionOk &&
       toolkitOk &&
       !blocked &&
-      !state.busy &&
-      !app.mustChangePassword
+      !state.busy
     );
     if (gpus.length >= 2 && selected.size === 0) {
       updateBtn.setAttribute("aria-describedby", "upload-gpu-select");

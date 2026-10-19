@@ -36,11 +36,11 @@ mount_root="/mnt"
 fixture_pool="tank"
 fixture_data="${mount_root}/${fixture_pool}/nvm"
 cp "${TEMPLATE}" "${WORK}/template.yaml"
-# `environment:` in the mapping form and without it at all.
-sed 's|^      - NVM_INITIAL_ADMIN_PASSWORD=<initial-password>$|      NVM_INITIAL_ADMIN_PASSWORD: <initial-password>|' \
+# Explicit settings must retain the sequence form; the default needs none.
+sed -e 's/^    # environment:$/    environment:/' \
+    -e 's/^      # - NVM_INITIAL_ADMIN_USERNAME=admin$/      NVM_INITIAL_ADMIN_USERNAME: admin/' \
     "${TEMPLATE}" > "${WORK}/template-env-mapping.yaml"
-sed -e '/^    environment:$/d' -e '/^      - NVM_INITIAL_ADMIN_PASSWORD=/d' \
-    "${TEMPLATE}" > "${WORK}/template-no-environment.yaml"
+cp "${TEMPLATE}" "${WORK}/template-no-environment.yaml"
 
 cat > "${WORK}/bridge.json" <<JSON
 {
@@ -52,7 +52,7 @@ cat > "${WORK}/bridge.json" <<JSON
       "privileged": true,
       "pid": "host",
       "runtime": "runc",
-      "environment": {"NVM_INITIAL_ADMIN_PASSWORD": "ci-fixture-password-not-a-secret"},
+      "environment": {"NVM_INITIAL_ADMIN_USERNAME": "admin"},
       "volumes": [
         {"type": "bind", "source": "${fixture_data}", "target": "/var/lib/nvm", "bind": {"create_host_path": true}}
       ],
@@ -76,7 +76,7 @@ cat > "${WORK}/macvlan.json" <<JSON
       "privileged": true,
       "pid": "host",
       "runtime": "runc",
-      "environment": {"NVM_INITIAL_ADMIN_PASSWORD": "ci-fixture-password-not-a-secret"},
+      "environment": {"NVM_INITIAL_ADMIN_USERNAME": "admin"},
       "volumes": [
         {"type": "bind", "source": "${fixture_data}", "target": "/var/lib/nvm"}
       ],
@@ -106,10 +106,28 @@ expect 0 "the rendered bridge config passes" bridge "${WORK}/template.yaml" "${W
 expect 0 "the rendered macvlan config passes" macvlan "${WORK}/template.yaml" "${WORK}/macvlan.json"
 expect 0 "the rendered ipvlan config passes" ipvlan "${WORK}/template.yaml" "${WORK}/ipvlan.json"
 
+python3 - "${WORK}/bridge.json" "${WORK}/no-env.json" <<'PYCODE'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["services"]["nvidia-driver-manager"].pop("environment")
+json.dump(doc, open(sys.argv[2], "w"))
+PYCODE
+expect 0 "the default rendered config needs no environment" bridge \
+    "${WORK}/template.yaml" "${WORK}/no-env.json"
+
+python3 - "${WORK}/bridge.json" "${WORK}/password-env.json" <<'PYCODE'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["services"]["nvidia-driver-manager"]["environment"]["NVM_INITIAL_ADMIN_PASSWORD"] = "fixture"
+json.dump(doc, open(sys.argv[2], "w"))
+PYCODE
+expect 1 "a password in the container environment is rejected" bridge \
+    "${WORK}/template.yaml" "${WORK}/password-env.json"
+
 # ── negative controls (each must be rejected) ────────────────────────────────
 expect 1 "environment: as a mapping is rejected" bridge \
     "${WORK}/template-env-mapping.yaml" "${WORK}/bridge.json"
-expect 1 "a template without environment: is rejected" bridge \
+expect 0 "a template without environment: passes" bridge \
     "${WORK}/template-no-environment.yaml" "${WORK}/bridge.json"
 
 python3 - "${WORK}/bridge.json" "${WORK}/two-services.json" <<'PY'

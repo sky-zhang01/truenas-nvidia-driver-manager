@@ -339,7 +339,6 @@ pub enum SshLoginOutcome {
     Ok {
         cookie: String,
         token: String,
-        must_change_password: bool,
         /// The public fingerprint and algorithm of the verified registered key, carried from
         /// the same snapshot that authorized the grant: the only values the success log line
         /// may name.
@@ -392,7 +391,7 @@ fn record_failure(
     failures
 }
 
-/// Read the registered keys, password gate and session key from one credentials snapshot.
+/// Read the registered keys and session key from one credentials snapshot.
 /// SSH and password failures share a quota bucket. Consume the challenge before parsing
 /// or verifying the signature so every attempted grant spends that one-time challenge.
 /// A successful grant signs the cookie with the snapshot's session key and spends no quota.
@@ -515,7 +514,6 @@ pub async fn ssh_login(
     SshLoginOutcome::Ok {
         cookie: issued.cookie,
         token: issued.token,
-        must_change_password: snapshot.must_change_password,
         fingerprint: registered.fingerprint.clone(),
         algorithm: verified_algorithm,
     }

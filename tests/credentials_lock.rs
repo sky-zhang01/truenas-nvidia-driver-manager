@@ -17,10 +17,10 @@ use truenas_nvidia_driver_manager::codes::LINK_PATH;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_blocked_link_read_does_not_delay_a_password_change() {
     let host = default_host();
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     // A real sign-in first: password change needs a session cookie, and the initial credentials
     // must be in place before the barrier goes up.
-    let cookie = login(&app, "admin", "hunter12").await;
+    let cookie = setup_app(&app, "hunter12").await;
 
     // The host stalls the next `lstat` of the extension link, the way a busy runner stalls an I/O
     // inside login status. The fake host records the view-relative path, which is the host path

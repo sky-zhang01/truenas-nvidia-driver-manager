@@ -38,6 +38,7 @@ pub struct TestApp {
     pub host: FakeHost,
     pub ctx: Arc<Ctx>,
     pub router: Router,
+    pub setup_code: Arc<Mutex<Option<String>>>,
 }
 
 /// Build a web process. `startup` problems can be injected by the caller.
@@ -54,7 +55,19 @@ pub fn app(host: FakeHost, settings: Settings, startup: Startup) -> TestApp {
         auth: Arc::new(truenas_nvidia_driver_manager::auth::AuthState::new()),
     });
     let router = router(ctx.clone(), StaticFiles::default());
-    TestApp { host, ctx, router }
+    let setup_code = ctx
+        .auth
+        .ensure_setup_code(&*ctx.host, &ctx.paths, &ctx.settings, "start")
+        .map(|issued| issued.code);
+    if let Some(code) = &setup_code {
+        host.forbid_in_argv(code);
+    }
+    TestApp {
+        host,
+        ctx,
+        router,
+        setup_code: Arc::new(Mutex::new(setup_code)),
+    }
 }
 
 /// Build a web process whose `Host` is a wrapper around the fake host (for delays or clock
@@ -64,7 +77,7 @@ pub fn app_with_host(host: Arc<dyn Host>, fake: FakeHost) -> TestApp {
     let ctx = Arc::new(Ctx {
         host,
         paths,
-        settings: settings("hunter12"),
+        settings: settings(),
         startup: healthy_startup(&fake),
         process_lock: tokio::sync::Mutex::new(()),
         plan: std::sync::Mutex::new(PlanSlot::new()),
@@ -72,8 +85,16 @@ pub fn app_with_host(host: Arc<dyn Host>, fake: FakeHost) -> TestApp {
         auth: Arc::new(truenas_nvidia_driver_manager::auth::AuthState::new()),
     });
     let router = router(ctx.clone(), StaticFiles::default());
+    let setup_code = ctx
+        .auth
+        .ensure_setup_code(&*ctx.host, &ctx.paths, &ctx.settings, "start")
+        .map(|issued| issued.code);
+    if let Some(code) = &setup_code {
+        fake.forbid_in_argv(code);
+    }
     TestApp {
         host: fake,
+        setup_code: Arc::new(Mutex::new(setup_code)),
         ctx,
         router,
     }
@@ -89,13 +110,10 @@ pub fn healthy_startup(_host: &FakeHost) -> Startup {
     }
 }
 
-/// Settings with an initial password and the default username.
-pub fn settings(password: &str) -> Settings {
+/// Settings with the default administrator name.
+pub fn settings() -> Settings {
     Settings {
         username: Some("admin".into()),
-        password: truenas_nvidia_driver_manager::settings::InitialPassword::Usable(
-            truenas_nvidia_driver_manager::settings::Secret::new(password.to_string()),
-        ),
         port: 8199,
         build_timeout_minutes: Some(30),
         problems: Vec::new(),
@@ -353,23 +371,36 @@ pub fn write_state(
     state
 }
 
-/// Sign in, change the initial password, and return the new session cookie.
-pub async fn login_changed(app: &TestApp, old: &str, new: &str) -> String {
-    let cookie = login(app, "admin", old).await;
+/// Complete setup through the public endpoint and return its session cookie.
+pub async fn setup_app(app: &TestApp, password: &str) -> String {
+    let code = {
+        let _guard = app.ctx.auth.credentials_lock.lock().await;
+        app.setup_code.lock().unwrap().take().unwrap_or_else(|| {
+            app.ctx
+                .auth
+                .ensure_setup_code(&*app.ctx.host, &app.ctx.paths, &app.ctx.settings, "start")
+                .expect("setup code already issued")
+                .code
+        })
+    };
+    setup_with_code(app, &code, password).await
+}
+
+pub async fn setup_with_code(app: &TestApp, code: &str, password: &str) -> String {
     let (status, body, headers) = request(
         app,
         Method::POST,
-        "/api/password",
-        Some(serde_json::json!({"new_password": new})),
-        Some(&cookie),
+        "/api/setup",
+        Some(serde_json::json!({"code":code,"new_password":password})),
+        None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "password change failed: {body}");
-    let set_cookie = headers
+    assert_eq!(status, StatusCode::OK, "setup failed: {body}");
+    headers
         .get(header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .expect("no Set-Cookie after the password change");
-    set_cookie
+        .unwrap()
+        .to_str()
+        .unwrap()
         .split(';')
         .next()
         .unwrap()
@@ -377,12 +408,12 @@ pub async fn login_changed(app: &TestApp, old: &str, new: &str) -> String {
         .to_string()
 }
 
-/// Build a healthy process and complete the initial password change.
+/// Build a healthy process and complete setup.
 pub async fn signed_in_app(host: FakeHost) -> (TestApp, String) {
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let (status, _) = get(&app, "/api/login", None).await;
     assert_eq!(status, StatusCode::OK);
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     (app, cookie)
 }
 
@@ -583,6 +614,9 @@ pub trait Decorate: Send + Sync {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         self.inner().rename(from, to)
     }
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.inner().hard_link(from, to)
+    }
     fn remove_file(&self, p: &Path) -> io::Result<()> {
         self.inner().remove_file(p)
     }
@@ -651,6 +685,9 @@ impl<D: Decorate> Host for Wrap<D> {
     }
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         self.0.rename(from, to)
+    }
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.0.hard_link(from, to)
     }
     fn remove_file(&self, p: &Path) -> io::Result<()> {
         self.0.remove_file(p)

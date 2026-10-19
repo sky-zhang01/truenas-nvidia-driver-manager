@@ -42,7 +42,7 @@ test("the empty form reports before a request, a wrong password answers on the f
 test("signing out ends the session on both sides", async ({ page, request }) => {
   await setScenario(request, "fresh");
   await page.goto("/");
-  await signIn(page, { changePassword: false });
+  await signIn(page);
   await expect(page.locator("#login-pass")).toHaveCount(0);
 
   const logout = page.getByRole("button", { name: /Sign out|退出登录/ });
@@ -123,7 +123,7 @@ test("a same-site, other-port page carries the Strict cookie and the Origin chec
 }) => {
   await setScenario(request, "fresh");
   await page.goto("/");
-  await signIn(page, { changePassword: false });
+  await signIn(page);
 
   // The attacker page sits on the same host and another port: the cookies of 127.0.0.1 are not
   // port-scoped, so SameSite=Strict still attaches them (the site is the same). Only the Origin

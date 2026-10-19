@@ -71,7 +71,7 @@ fn assert_required_shape(body: &serde_json::Value, label: &str) {
 
 async fn logged_in_login_status(app: &TestApp) -> (StatusCode, serde_json::Value, String) {
     let _ = get(app, "/api/login", None).await;
-    let cookie = login_changed(app, "hunter12", "changed123").await;
+    let cookie = setup_app(app, "changed123").await;
     let (status, body) = get(app, "/api/login", Some(&cookie)).await;
     (status, body, cookie)
 }
@@ -154,7 +154,7 @@ async fn every_startup_counterexample_has_the_required_login_status_key_set() {
             !checked.problems.is_empty(),
             "case {case}: the input did not fail a check: {checked:?}"
         );
-        let app = app(host.clone(), settings("hunter12"), checked);
+        let app = app(host.clone(), settings(), checked);
 
         let (_, public) = get(&app, "/api/login", None).await;
         assert_required_shape(&public, &format!("{case} public"));
@@ -214,7 +214,7 @@ async fn outside_command_output_is_publicly_hidden_and_signed_in_present() {
         FakeOutput::code(2).with_stderr("docker: external text"),
     );
     let checked = startup::check(&host, &Paths::new(CONTAINER_DATA_DIR));
-    let app = app(host.clone(), settings("hunter12"), checked);
+    let app = app(host.clone(), settings(), checked);
     let (_, public) = get(&app, "/api/login", None).await;
     assert_required_shape(&public, "inspect public");
     assert_eq!(
@@ -247,7 +247,7 @@ async fn several_failed_checks_still_make_one_startup_failure_and_three_passes_m
     host.set_docker_inspect(&inspect.to_string());
     let checked = startup::check(&host, &Paths::new(CONTAINER_DATA_DIR));
     assert_eq!(checked.problems.len(), 2, "{checked:?}");
-    let two = app(host.clone(), settings("hunter12"), checked);
+    let two = app(host.clone(), settings(), checked);
     let (_, body, _) = logged_in_login_status(&two).await;
     assert_required_shape(&body, "two failures");
     let items = startup_item_keys(&body);
@@ -258,13 +258,13 @@ async fn several_failed_checks_still_make_one_startup_failure_and_three_passes_m
         "{body}"
     );
     // Leave only the runtime failure; the items shrink to that one line. A fresh fake host keeps
-    // its own credentials, so the app signs in with the initial password again.
+    // its own credentials, so the app completes setup independently.
     let one_host = default_host();
     prime_canonical(&one_host, "580.173.02");
     one_host.set_docker_inspect(&inspect_json("nvidia", &[(HOST_DATA_DIR, "/var/lib/nvm")]));
     let one = startup::check(&one_host, &Paths::new(CONTAINER_DATA_DIR));
     assert_eq!(one.problems.len(), 1, "{one:?}");
-    let one_app = app(one_host.clone(), settings("hunter12"), one);
+    let one_app = app(one_host.clone(), settings(), one);
     let (_, body_one, _) = logged_in_login_status(&one_app).await;
     assert_eq!(
         startup_item_keys(&body_one),
@@ -275,7 +275,7 @@ async fn several_failed_checks_still_make_one_startup_failure_and_three_passes_m
     prime_canonical(&passed_host, "580.173.02");
     let passed = app(
         passed_host.clone(),
-        settings("hunter12"),
+        settings(),
         healthy_startup(&passed_host),
     );
     let (_, body_passed, _) = logged_in_login_status(&passed).await;
@@ -293,7 +293,7 @@ async fn several_failed_checks_still_make_one_startup_failure_and_three_passes_m
 
 #[tokio::test]
 async fn settings_problems_keep_their_own_keys_next_to_the_startup_failure() {
-    let mut configured = settings("hunter12");
+    let mut configured = settings();
     configured.problems = vec![
         truenas_nvidia_driver_manager::settings::SettingProblem::Unknown {
             variable: "NVM_FOO".into(),
@@ -328,10 +328,10 @@ async fn a_failed_pid_host_check_keeps_the_home_readings_unknown() {
     host.set_same_namespace(true);
     let checked = startup::check(&host, &Paths::new(CONTAINER_DATA_DIR));
     assert_eq!(checked.problems.len(), 1, "{checked:?}");
-    let app = app(host.clone(), settings("hunter12"), checked);
+    let app = app(host.clone(), settings(), checked);
     let cookie = {
         let _ = get(&app, "/api/login", None).await;
-        login_changed(&app, "hunter12", "changed123").await
+        setup_app(&app, "changed123").await
     };
     let (_, home) = get(&app, "/api/home", Some(&cookie)).await;
     for key in ["loaded_version", "truenas_version", "link"] {
@@ -355,36 +355,27 @@ async fn a_failed_pid_host_check_keeps_the_home_readings_unknown() {
 }
 
 /// A known setting whose value is not valid UTF-8 is the invalid setting `setting.invalid` problem
-/// of the outer closed set, marked in its params; the four variables keep one independent problem
+/// of the outer closed set, marked in its params; the three variables keep one independent problem
 /// each, and the default/fallback rules stay valid.
 #[tokio::test]
 async fn login_status_non_utf8_setting_uses_the_required_outer_key_closed_set() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
-    use truenas_nvidia_driver_manager::settings::{self, InitialPassword, SettingProblem};
+    use truenas_nvidia_driver_manager::settings::{self, SettingProblem};
 
     const NON_UTF8: [u8; 2] = [0xff, 0xfe];
     let variables = [
         settings::VAR_USERNAME,
-        settings::VAR_PASSWORD,
         settings::VAR_PORT,
         settings::VAR_BUILD_TIMEOUT,
     ];
 
     for variable in variables {
-        // One non-UTF-8 known variable at a time, with a usable initial password elsewhere; the
-        // password variable carries no value at all.
-        let mut vars = vec![(
-            OsString::from(settings::VAR_PASSWORD),
-            OsString::from("hunter12"),
-        )];
-        if variable == settings::VAR_PASSWORD {
-            vars.clear();
-        }
-        vars.push((
+        // One non-UTF-8 known variable at a time, with a default administrator name unless that name is invalid.
+        let vars = vec![(
             OsString::from(variable),
             OsString::from_vec(NON_UTF8.to_vec()),
-        ));
+        )];
         let configured = settings::load(vars.into_iter());
 
         // Each variable keeps its own problem, and the value is never stored.
@@ -398,10 +389,6 @@ async fn login_status_non_utf8_setting_uses_the_required_outer_key_closed_set() 
         );
         match variable {
             settings::VAR_USERNAME => assert_eq!(configured.username, None, "{variable}"),
-            settings::VAR_PASSWORD => assert!(
-                matches!(configured.password, InitialPassword::Unusable),
-                "{variable}"
-            ),
             settings::VAR_PORT => assert_eq!(
                 configured.port,
                 settings::DEFAULT_PORT,
@@ -433,7 +420,7 @@ async fn login_status_non_utf8_setting_uses_the_required_outer_key_closed_set() 
         );
         assert_required_shape(&public, variable);
 
-        // A non-UTF-8 username or initial password leaves no usable account, so only the port and
+        // A non-UTF-8 username leaves no usable account, so only the port and
         // timeout variables reach the signed-in login status; both phases keep the closed set.
         if matches!(variable, settings::VAR_PORT | settings::VAR_BUILD_TIMEOUT) {
             let (status, signed_in, _) = logged_in_login_status(&app).await;
@@ -461,7 +448,7 @@ async fn login_status_non_utf8_setting_uses_the_required_outer_key_closed_set() 
         host.assert_red_lines();
     }
 
-    // All four at once: four independent lines, none merged or lost.
+    // All three at once: independent lines, none merged or lost.
     let mut vars = Vec::new();
     for variable in variables {
         vars.push((
@@ -470,14 +457,14 @@ async fn login_status_non_utf8_setting_uses_the_required_outer_key_closed_set() 
         ));
     }
     let configured = settings::load(vars.into_iter());
-    assert_eq!(configured.problems.len(), 4, "{configured:?}");
+    assert_eq!(configured.problems.len(), 3, "{configured:?}");
     let host = default_host();
     prime_canonical(&host, "580.173.02");
     let multi = app(host.clone(), configured, healthy_startup(&host));
     let (status, public) = get(&multi, "/api/login", None).await;
     assert_eq!(status, StatusCode::OK, "{public}");
     let problems = public["setup"]["problems"].as_array().unwrap();
-    assert_eq!(problems.len(), 4, "{public}");
+    assert_eq!(problems.len(), 3, "{public}");
     for variable in variables {
         assert!(
             problems.iter().any(|p| p
@@ -485,16 +472,13 @@ async fn login_status_non_utf8_setting_uses_the_required_outer_key_closed_set() 
             "{variable}: {public}"
         );
     }
-    assert_required_shape(&public, "all four");
+    assert_required_shape(&public, "all three");
     host.assert_red_lines();
 
     // Controls: no setting problem and a textual invalid port both keep the closed set and the
     // invalid setting requirement sentence.
     for value in [None, Some("abc")] {
-        let mut vars = vec![(
-            OsString::from(settings::VAR_PASSWORD),
-            OsString::from("hunter12"),
-        )];
+        let mut vars = Vec::new();
         if let Some(v) = value {
             vars.push((OsString::from(settings::VAR_PORT), OsString::from(v)));
         }

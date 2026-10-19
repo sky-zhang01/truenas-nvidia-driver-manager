@@ -145,14 +145,30 @@ const REQUIRED: string[] = [
   "login.rate_limited",
   "logout.done",
 
+  "setup.title",
+  "setup.intro",
+  "setup.step.app",
+  "setup.step.logs",
+  "setup.step.copy",
+  "setup.code",
+  "setup.administrator",
+  "setup.repeat",
+  "setup.password_hint",
+  "setup.submit",
+  "setup.help.summary",
+  "setup.help.body",
+  "setup.note",
+  "setup.code_invalid",
+  "setup.code_renewed",
+  "setup.code_help",
+  "setup.not_available",
   "login.intro",
   "login.help.summary",
   "login.help.hint",
+  "login.help.reset_location_unknown",
   "login.help.no_account",
-  "login.help.self_hosted",
   "login.help.after_reinstall",
   "login.help.forgot_password",
-  "password.title",
   "password.title_voluntary",
   "password.section",
   "password.rule.too_short",
@@ -244,7 +260,6 @@ const REQUIRED: string[] = [
   "original.skip_warning",
   "upload.help",
   "setting.unknown",
-  "credentials.initial_password_unusable",
   "credentials.unreadable",
   "query.failed",
   "query.object.host_task_unit",
@@ -1986,4 +2001,26 @@ test("Rust contract extraction keeps comments, literals and adjacent owners out"
   const response = rustOwner(tokens, "fn", "response");
   assert.deepEqual([...rustJsonKeys(rustLet(response, "body"))], ["renamed", "next"]);
   assert.equal(response.includes("stale"), false);
+});
+
+test("setup log guidance finds the newest JSON message containing the code marker", () => {
+  for (const key of ["setup.step.copy", "setup.note", "setup.code_invalid", "setup.help.body"]) {
+    for (const lang of ["zh", "en"] as const) {
+      const text = MESSAGES[key]![lang];
+      assert.match(text, /SETUP CODE:/, `${key}.${lang} names the exact marker`);
+      assert.match(text, lang === "zh" ? /最新一条包含/ : /newest log message containing/, `${key}.${lang} finds a message by content`);
+      assert.match(text, /msg/, `${key}.${lang} identifies the JSON field`);
+      assert.equal(/开头|starts with|SETUP CODE line/i.test(text), false);
+    }
+  }
+});
+
+
+test("Chinese TrueNAS interface guidance uses the translated menu names", () => {
+  for (const key of messageKeys()) {
+    assert.equal(/\b(?:Shell|Apps|Workloads|View Logs|Discover Apps|More Options|Install via YAML|System Settings)\b/.test(MESSAGES[key]!.zh), false, `${key}.zh uses translated menus`);
+  }
+  assert.match(MESSAGES["login.help.forgot_password"]!.zh, /TrueNAS 的命令行/);
+  assert.match(MESSAGES["help.reset_account"]!.zh, /TrueNAS 的命令行/);
+  assert.match(MESSAGES["extension.missing"]!.zh, /TrueNAS 的应用设置/);
 });

@@ -66,12 +66,16 @@ fn scene() -> FakeHost {
 
 /// An existing data directory with credentials and a finished task, without an admission record.
 fn existing_data_dir(host: &FakeHost) -> truenas_nvidia_driver_manager::settings::Settings {
-    let settings = settings("hunter12");
-    let state = AuthState::new().load_or_create(host, &paths(), &settings);
-    assert!(
-        matches!(state, CredentialState::Ok { .. }),
-        "the fixture must have usable credentials: {state:?}"
-    );
+    let settings = settings();
+    let credentials = truenas_nvidia_driver_manager::auth::Credentials {
+        username: "admin".into(),
+        password_hash: truenas_nvidia_driver_manager::auth::hash_password("longpass99").unwrap(),
+        session_key: "a".repeat(64),
+        ssh_keys: vec![],
+    };
+    truenas_nvidia_driver_manager::auth::write_credentials(host, &paths(), &credentials).unwrap();
+    let state = AuthState::new().load_state(host, &paths(), &settings);
+    assert_eq!(state, CredentialState::Ok);
     write_state(host, OLD_ID, Status::Succeeded, None);
     settings
 }
@@ -128,7 +132,7 @@ async fn an_existing_data_dir_without_a_record_updates_normally() {
     let settings = existing_data_dir(&host);
     let app = app(host.clone(), settings, healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = login(&app, "admin", "longpass99").await;
 
     let (status, login) = get(&app, "/api/login", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK, "{login}");
@@ -154,7 +158,7 @@ async fn a_leftover_paused_record_is_ignored_and_kept() {
     host.put_text(RECORD_PATH, PAUSED_ADMISSION_RECORD);
     let app = app(host.clone(), settings, healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = login(&app, "admin", "longpass99").await;
 
     let (id, state) = complete_one_update(&app, &cookie).await;
     assert_one_completed_update(&app, &id, &state);
@@ -173,7 +177,7 @@ async fn a_corrupt_leftover_record_is_never_read() {
     host.put_text(RECORD_PATH, CORRUPT_RECORD);
     let app = app(host.clone(), settings, healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = login(&app, "admin", "longpass99").await;
 
     let (id, state) = complete_one_update(&app, &cookie).await;
     assert_one_completed_update(&app, &id, &state);

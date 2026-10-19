@@ -42,8 +42,8 @@ without typing the password. The password entrance always stays.
   signatures. If private key material is pasted into the public key box, the comment
   box or the signature box, the client refuses it, clears that input and sends
   nothing to the server.
-- Registration lives in the "SSH sign-in keys" section of the change-password page
-  (the account page); the initial password must be changed first.
+- Registration lives in the "SSH sign-in keys" section of the Account page; keys can be
+  registered immediately after setup.
 - The terminal signing command (replace `<challenge>` with the current challenge on
   the page):
 
@@ -65,14 +65,14 @@ without typing the password. The password entrance always stays.
 - Deleting a key immediately ends every signed-in session (this browser receives a
   replacement cookie and stays online; other devices sign in again); password
   sign-in is unaffected.
-- Failed SSH sign-ins and failed password sign-ins share one rate-limit bucket.
+- Failed SSH sign-ins, failed password sign-ins, and wrong setup codes share one rate-limit bucket.
 
 ## Forgot the password: resetting the administrator account
 
 The credentials file lives in the data directory:
 `<data-directory>/manager/secrets/web-credentials.json`. To reset it:
 
-1. Open the **host's** Shell in the TrueNAS web UI (System Settings → Shell) or log in to the host
+1. Open the **host's** Shell in the TrueNAS web UI (System → Shell) or log in to the host
    over SSH. The app's own **Shell** button cannot be used: the image is empty-base (`scratch`) and
    carries no shell (see the [deployment guide](deploy.en.md)).
 2. Delete the credentials file. This resets the account and removes all registered SSH keys;
@@ -82,26 +82,37 @@ The credentials file lives in the data directory:
    rm '<data-directory>/manager/secrets/web-credentials.json'
    ```
 
-3. **Without restarting the App**, the next time the login page is opened the program rebuilds the
-   administrator account from the compose initial password (`NVM_INITIAL_ADMIN_PASSWORD`). Log in
-   with it and change the password as required.
+3. **Without restarting the App**, reload the manager page. It shows setup and writes a new
+   code to the App logs. In TrueNAS, open **Apps → Installed → this App → Workloads** and click
+   the container row's document icon, **View Logs**. Copy the whole code from `msg` in the newest
+   JSON log message containing `SETUP CODE:`.
+4. Enter that code on the manager page, choose and repeat a new password, and click
+   **Create administrator**. Register any needed SSH public keys again.
 
 Notes:
 
-- If you changed the initial password in compose, **restart the App** in TrueNAS first so the new
-  value takes effect, then do step 3.
-- Deleting the credentials file is enough; the task state, the local driver records and the saved
-  original files in the data directory are unaffected.
-- The initial password, new passwords and password hashes are never written to the logs, the state
-  files or the UI; the SSH sign-in log lines carry only the public key fingerprint, the algorithm
-  and a failure category — never challenges, signatures, full public keys or passwords.
-- Repeated failed logins are rate limited: once the quota is used up, even the correct password is
-  refused for a while; it works again after the refill time. There is no permanent lockout.
-- The message shown on the login page ("reset the account when you cannot log in") describes
-  exactly these steps.
-- Deleting the credentials file also deletes the registered SSH public keys (they live in the same
-  file): the SSH entrance closes, the password flow continues as above, and re-registering the
-  keys after the reset brings the entrance back.
+- Deleting this file removes the account, its SSH keys and all existing sessions. Task state,
+  local driver records and the saved original are unaffected. The data folder is the host directory
+  you entered in the YAML volume mapping; the login page shows a generic credentials path with
+  a data-folder placeholder.
+- A code works once, expires after 24 hours, and is invalidated by an App restart. After expiry,
+  reopening the page or submitting setup writes a new code; copy the code from `msg` in the
+  newest log message containing `SETUP CODE:`. A live code is never replaced just because
+  someone submits a wrong code.
+- The setup code appears only in the `msg` of the `setup_code_issued` App log event. It is never
+  written to task logs or task state. App log readers and collectors can see it while it is live;
+  redact setup-code messages before sharing logs. Passwords, hashes, challenges, signatures,
+  full public keys and session tokens are not logged.
+- Setup, password and SSH sign-in share rate limits. Once the quota is exhausted, a correct
+  code or password is temporarily refused too; wait for the displayed retry time. There is no
+  permanent lockout. A reachable attacker can delay sign-ins by exhausting the quota; restrict
+  access to a trusted management network. Restarting clears the quota and invalidates any
+  pending setup code.
+- Setup codes and passwords need a trusted connection; plain HTTP exposes both in transit.
+  Configure a TLS front end when a trusted management LAN is insufficient.
+
+Returning to 0.2.0 after creating an account through setup is unsupported. Keep the pre-upgrade
+backup if you need to return to that release.
 
 ## Backup and restore
 

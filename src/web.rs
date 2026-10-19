@@ -262,7 +262,8 @@ fn nav_403_response() -> Response {
 /// Session check.
 pub async fn session_check(State(ctx): State<Arc<Ctx>>, mut req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
-    let exempt = path == "/api/login"
+    let exempt = path == "/api/setup"
+        || path == "/api/login"
         || path == "/api/ssh/challenge"
         || path == "/api/ssh/login"
         || !path.starts_with("/api/");
@@ -298,28 +299,6 @@ fn reject_if_session_lost(ctx: &Ctx, headers: &HeaderMap) -> Option<Response> {
     } else {
         Some(ApiError::new(StatusCode::UNAUTHORIZED, "auth.required").into_response())
     }
-}
-
-/// Must-change-password gate.
-pub async fn must_change_gate(req: Request, next: Next) -> Response {
-    let path = req.uri().path().to_string();
-    let method = req.method().clone();
-    let session = req
-        .extensions()
-        .get::<SessionOpt>()
-        .and_then(|s| s.0.clone());
-    if let Some(session) = session {
-        if session.must_change_password
-            && method != Method::GET
-            && method != Method::HEAD
-            && path != "/api/password"
-            && path != "/api/logout"
-        {
-            return ApiError::new(StatusCode::FORBIDDEN, "auth.password_change_required")
-                .into_response();
-        }
-    }
-    next.run(req).await
 }
 
 fn with_common_headers(mut response: Response) -> Response {
@@ -365,6 +344,7 @@ async fn method_not_allowed_json(req: Request, next: Next) -> Response {
 pub fn router(ctx: Arc<Ctx>, static_files: StaticFiles) -> Router {
     let api = Router::new()
         .route("/api/login", get(login_status).post(password_login))
+        .route("/api/setup", post(setup_account))
         .route("/api/password", post(change_password))
         .route("/api/home", get(home))
         .route("/api/versions", get(versions))
@@ -391,10 +371,6 @@ pub fn router(ctx: Arc<Ctx>, static_files: StaticFiles) -> Router {
         .with_state((ctx.clone(), static_state));
 
     router
-        .layer(middleware::from_fn_with_state(
-            ctx.clone(),
-            must_change_gate,
-        ))
         .layer(middleware::from_fn_with_state(ctx.clone(), session_check))
         .layer(middleware::from_fn(origin_guard))
         .layer(middleware::from_fn(method_not_allowed_json))
@@ -501,7 +477,7 @@ fn version_reading_json(reading: &facts::LoadedVersion) -> Value {
 
 fn update_blocked_json(
     ctx: &Ctx,
-    session: &SessionOpt,
+    _session: &SessionOpt,
     link_missing: Option<bool>,
     active: Option<&crate::tasks::ActiveState>,
 ) -> Value {
@@ -522,14 +498,6 @@ fn update_blocked_json(
                 "reason": {"key": reason.key, "params": reason.params},
             })),
         }
-    }
-    if session
-        .0
-        .as_ref()
-        .map(|s| s.must_change_password)
-        .unwrap_or(false)
-    {
-        items.push(json!({"key": "password_change_required"}));
     }
     Value::Array(items)
 }
@@ -691,7 +659,7 @@ fn credentials_state_json(state: &CredentialState) -> Value {
 fn show_reset_help(ctx: &Ctx, cred: &CredentialState) -> bool {
     match cred {
         CredentialState::Unreadable(r) => *r != auth::UnreadableReason::DirectoryUnreadable,
-        CredentialState::Ok { .. } => ctx.auth.consecutive_failures() >= LOGIN_RESET_HELP_AFTER,
+        CredentialState::Ok => ctx.auth.consecutive_failures() >= LOGIN_RESET_HELP_AFTER,
         _ => false,
     }
 }
@@ -760,7 +728,13 @@ fn prepare_login_status(ctx: &Ctx, session: &SessionOpt) -> PreparedLoginStatus 
         problems.push(problem);
     }
     let _guard = ctx.auth.credentials_lock.blocking_lock();
-    let credentials = ctx.auth.load_or_create(h, &ctx.paths, &ctx.settings);
+    let credentials = ctx.auth.load_state(h, &ctx.paths, &ctx.settings);
+    if let Some(issued) = ctx
+        .auth
+        .ensure_setup_code(h, &ctx.paths, &ctx.settings, "reset")
+    {
+        issued.log();
+    }
     // login status always carries the real `ssh_enabled`: true only when the credentials file
     // reads back valid and holds at least one registered key. It is read under the lock, with
     // the credentials it belongs to.
@@ -781,14 +755,18 @@ fn login_status_response(
 ) -> Response {
     let mut body = serde_json::Map::new();
     body.insert("logged_in".into(), json!(session.0.is_some()));
-    if let Some(s) = &session.0 {
-        body.insert("must_change_password".into(), json!(s.must_change_password));
+    if session.0.is_some() {
         body.insert(
             "update_blocked".into(),
             update_blocked_json(ctx, session, prepared.link_missing, active.as_ref()),
         );
     }
-    body.insert("setup".into(), json!({"problems": prepared.problems}));
+    let mut setup = json!({"problems": prepared.problems});
+    if matches!(prepared.credentials, CredentialState::SetupRequired) {
+        setup["username"] = json!(ctx.settings.username);
+        setup["valid_hours"] = json!(24);
+    }
+    body.insert("setup".into(), setup);
     body.insert(
         "credentials".into(),
         credentials_state_json(&prepared.credentials),
@@ -810,6 +788,77 @@ fn login_status_response(
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SetupRequest {
+    code: String,
+    new_password: String,
+}
+
+async fn setup_account(
+    State((ctx, _)): State<AppState>,
+    JsonBody(req): JsonBody<SetupRequest>,
+) -> Response {
+    let _guard = ctx.auth.credentials_lock.lock().await;
+    let result = ctx
+        .auth
+        .setup(
+            ctx.host.clone(),
+            ctx.paths.clone(),
+            ctx.settings.clone(),
+            req.code,
+            req.new_password,
+        )
+        .await;
+    let response = match result {
+        Ok(session) => {
+            let mut response = json_response(json!({"token": session.token}));
+            if let Ok(cookie) = HeaderValue::from_str(&auth::session_set_cookie(&session.cookie)) {
+                response.headers_mut().insert(header::SET_COOKIE, cookie);
+            }
+            response
+        }
+        Err(auth::SetupError::NotAvailable) => {
+            ApiError::new(StatusCode::CONFLICT, "setup.not_available").into_response()
+        }
+        Err(auth::SetupError::CodeInvalid {
+            show_help,
+            code_renewed,
+        }) => ApiError::new(StatusCode::FORBIDDEN, "setup.code_invalid")
+            .params(json!({"show_help": show_help, "code_renewed": code_renewed}))
+            .into_response(),
+        Err(auth::SetupError::RateLimited { retry_after_s }) => {
+            ApiError::new(StatusCode::TOO_MANY_REQUESTS, "login.rate_limited")
+                .params(json!({"retry_after_s":retry_after_s}))
+                .into_response()
+        }
+        Err(auth::SetupError::Rule(rule)) => {
+            ApiError::new(StatusCode::BAD_REQUEST, "password.rule")
+                .params(json!({"rule":rule.key()}))
+                .into_response()
+        }
+        Err(auth::SetupError::Credentials(state)) => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "login.credentials_unusable",
+        )
+        .params(json!({"state":state.to_json()}))
+        .into_response(),
+        Err(auth::SetupError::Unsaved(reason)) => {
+            crate::log::error_json(
+                Event::CredentialsUnsaved,
+                &[("reason", reason.log_reason_object(json!({})))],
+            );
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "login.credentials_unsaved",
+            )
+            .params(json!({"reason":reason.as_str()}))
+            .into_response()
+        }
+    };
+    with_common_headers(response)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LoginRequest {
     username: String,
     password: String,
@@ -823,7 +872,7 @@ async fn password_login(
     let credentials = tokio::task::spawn_blocking(move || {
         let _guard = ctx2.auth.credentials_lock.blocking_lock();
         ctx2.auth
-            .load_or_create(ctx2.host.as_ref(), &ctx2.paths, &ctx2.settings)
+            .load_state(ctx2.host.as_ref(), &ctx2.paths, &ctx2.settings)
     })
     .await
     .unwrap_or(CredentialState::Unreadable(
@@ -831,6 +880,9 @@ async fn password_login(
     ));
     if !credentials.is_ok() {
         let response = match &credentials {
+            CredentialState::SetupRequired => {
+                ApiError::new(StatusCode::CONFLICT, "login.setup_required").into_response()
+            }
             CredentialState::Unsaved(_) => ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "login.credentials_unsaved",
@@ -857,13 +909,9 @@ async fn password_login(
         )
         .await;
     let response = match outcome {
-        auth::LoginOutcome::Ok {
-            cookie,
-            token,
-            must_change_password,
-        } => {
+        auth::LoginOutcome::Ok { cookie, token } => {
             crate::log::info(Event::LoginSucceeded, &[]);
-            let body = json!({"must_change_password": must_change_password, "token": token});
+            let body = json!({"token": token});
             let mut response = Response::new(Body::from(body.to_string()));
             *response.status_mut() = StatusCode::OK;
             response.headers_mut().insert(
@@ -901,6 +949,9 @@ async fn password_login(
                     "show_reset_help": show_reset_help,
                 }))
                 .into_response()
+        }
+        auth::LoginOutcome::Credentials(CredentialState::SetupRequired) => {
+            ApiError::new(StatusCode::CONFLICT, "login.setup_required").into_response()
         }
         auth::LoginOutcome::Credentials(state) => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -999,9 +1050,33 @@ async fn ssh_challenge(
     JsonBody(_req): JsonBody<SshChallengeRequest>,
 ) -> Response {
     let ctx2 = ctx.clone();
-    let result =
-        tokio::task::spawn_blocking(move || ctx2.auth.ssh_challenges.issue(ctx2.host.as_ref()))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = ctx2.auth.credentials_lock.blocking_lock();
+        if matches!(
+            ctx2.auth
+                .load_state(ctx2.host.as_ref(), &ctx2.paths, &ctx2.settings),
+            CredentialState::SetupRequired
+        ) {
+            return Err(CredentialState::SetupRequired);
+        }
+        Ok::<_, CredentialState>(ctx2.auth.ssh_challenges.issue(ctx2.host.as_ref()))
+    })
+    .await;
+    let result = match result {
+        Ok(Err(CredentialState::SetupRequired)) => {
+            return ApiError::new(StatusCode::CONFLICT, "login.setup_required").into_response()
+        }
+        Ok(Err(state)) => {
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login.credentials_unusable",
+            )
+            .params(json!({"state":state.to_json()}))
+            .into_response()
+        }
+        Ok(Ok(result)) => Ok(result),
+        Err(error) => Err(error),
+    };
     let issued = match result {
         Ok(Ok(issued)) => issued,
         Ok(Err(crate::ssh_login::IssueError::Busy)) => {
@@ -1047,7 +1122,6 @@ async fn ssh_login_route(
         crate::ssh_login::SshLoginOutcome::Ok {
             cookie,
             token,
-            must_change_password,
             fingerprint,
             algorithm,
         } => {
@@ -1060,7 +1134,7 @@ async fn ssh_login_route(
                     ("algorithm", json!(algorithm)),
                 ],
             );
-            let body = json!({"must_change_password": must_change_password, "token": token});
+            let body = json!({"token": token});
             let mut response = json_response(body);
             if let Ok(value) = HeaderValue::from_str(&auth::session_set_cookie(&cookie)) {
                 response.headers_mut().insert(header::SET_COOKIE, value);
@@ -1112,6 +1186,9 @@ async fn ssh_login_route(
                     "show_reset_help": show_reset_help,
                 }))
                 .into_response()
+        }
+        crate::ssh_login::SshLoginOutcome::Credentials(CredentialState::SetupRequired) => {
+            ApiError::new(StatusCode::CONFLICT, "login.setup_required").into_response()
         }
         crate::ssh_login::SshLoginOutcome::Credentials(state) => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3468,32 +3545,16 @@ pub async fn serve_with(
     }
 
     let auth_state = std::sync::Arc::new(auth::AuthState::new());
-    {
+    let pending_code = {
         let auth4 = auth_state.clone();
         let host4 = host.clone();
         let paths4 = paths.clone();
         let settings4 = settings.clone();
-        let loaded = tokio::task::spawn_blocking(move || {
-            let existed =
-                store::read_json::<auth::Credentials>(&*host4, &paths4.credentials()).is_ok();
-            let state = auth4.load_or_create(&*host4, &paths4, &settings4);
+        tokio::task::spawn_blocking(move || {
+            let _guard = auth4.credentials_lock.blocking_lock();
+            let state = auth4.load_state(&*host4, &paths4, &settings4);
             auth4.load_logged_out(&*host4, &paths4);
-            (state, existed)
-        })
-        .await;
-        if let Ok((state, existed)) = loaded {
-            match &state {
-                CredentialState::Ok { .. } => {
-                    if !existed {
-                        crate::log::info(
-                            Event::CredentialsCreated,
-                            &[("username", settings.username.as_deref().unwrap_or(""))],
-                        );
-                    }
-                }
-                CredentialState::InitialPasswordUnusable => {
-                    crate::log::error(Event::CredentialsInitialPasswordUnusable, &[])
-                }
+            match state {
                 CredentialState::Unreadable(r) => crate::log::error_json(
                     Event::CredentialsUnreadable,
                     &[("reason", r.log_reason_object(json!({})))],
@@ -3502,10 +3563,14 @@ pub async fn serve_with(
                     Event::CredentialsUnsaved,
                     &[("reason", r.log_reason_object(json!({})))],
                 ),
-                CredentialState::UsernameInvalid => {}
+                _ => {}
             }
-        }
-    }
+            auth4.ensure_setup_code(&*host4, &paths4, &settings4, "start")
+        })
+        .await
+        .ok()
+        .flatten()
+    };
 
     let host5 = host.clone();
     let paths5 = paths.clone();
@@ -3571,6 +3636,9 @@ pub async fn serve_with(
         }
     };
     crate::log::info(Event::Listening, &[("address", &address)]);
+    if let Some(issued) = pending_code {
+        issued.log();
+    }
     axum::serve(listener, app).await
 }
 

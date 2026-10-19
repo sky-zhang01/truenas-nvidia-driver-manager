@@ -11,9 +11,9 @@ use truenas_nvidia_driver_manager::task_state::{OriginalChoice, Phase, Status};
 async fn setup() -> (TestApp, String) {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     (app, cookie)
 }
 
@@ -442,9 +442,9 @@ async fn driver_deletion_is_refused_when_pid_host_failed() {
         host_data_dir: Some(std::path::PathBuf::from(HOST_DATA_DIR)),
         image_id: Some(format!("sha256:{}", "a".repeat(64))),
     };
-    let app = app(host.clone(), settings("hunter12"), startup);
+    let app = app(host.clone(), settings(), startup);
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     let (status, body) = post(
         &app,
         "/api/drivers/delete",

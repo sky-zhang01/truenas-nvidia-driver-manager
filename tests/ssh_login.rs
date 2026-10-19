@@ -66,7 +66,7 @@ fn sign_armor(key: &TestKey, namespace: &str, message: &[u8]) -> String {
         .expect("armor")
 }
 
-/// A fresh app with the initial password already changed, plus its cookie.
+/// A fresh configured account and its session cookie.
 async fn setup_changed() -> (TestApp, String) {
     let host = default_host();
     signed_in_app(host).await
@@ -229,36 +229,15 @@ async fn registration_enforces_session_limit_and_duplicates() {
 }
 
 #[tokio::test]
-async fn a_must_change_session_can_read_but_not_register() {
+async fn a_new_administrator_can_register_ssh_keys_immediately() {
     let host = default_host();
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
-    let cookie = login(&app, "admin", "hunter12").await;
-    // GET is allowed by the must-change gate (read-only).
+    let app = app(host.clone(), settings(), healthy_startup(&host));
+    let cookie = setup_app(&app, "hunter12").await;
     let (status, body) = get(&app, "/api/ssh/keys", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["items"].as_array().unwrap().len(), 0);
-    // POST is blocked before any write.
     let (status, body) = register_key(&app, &cookie, &make_key(4).public_line).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "auth.password_change_required");
-    // The invariant holds on disk too: no key while the password must change. A hand-edited
-    // violation fails the whole file closed.
-    let mut file: Value = serde_json::from_slice(&read_credentials_file(&app)).unwrap();
-    file["ssh_keys"] = json!([{
-        "id": "0123456789abcdef",
-        "public_key": make_key(4).public_line,
-        "fingerprint": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "comment": "",
-        "added_at": 1,
-    }]);
-    app.host.put_text(CREDENTIALS, &file.to_string());
-    let (status, body) = get(&app, "/api/login", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body["credentials"],
-        json!({"unreadable": "field_invalid"}),
-        "keys while the password must change must fail closed"
-    );
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
 #[tokio::test]
@@ -350,7 +329,7 @@ async fn a_valid_signature_signs_in_without_touching_the_file() {
     let before = read_credentials_file(&app);
     let (status, body, ssh_cookie) = ssh_login_attempt(&app, &key).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["must_change_password"], false);
+    assert!(body.get("must_change_password").is_none());
     let cookie = ssh_cookie.expect("a session cookie");
     let (status, body) = get(&app, "/api/home", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK, "the ssh session works: {body}");
@@ -664,7 +643,7 @@ async fn a_failed_registration_write_changes_nothing() {
 #[tokio::test]
 async fn credentials_without_ssh_keys_allow_password_login_and_key_registration() {
     let host = default_host();
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     // The optional key list is absent.
     let credentials_without_keys = json!({
         "username": "admin",
@@ -1125,7 +1104,7 @@ async fn unreadable_attempt(app: &TestApp, expected: &str, context: &str) {
 #[tokio::test]
 async fn an_unreadable_snapshot_keeps_its_exact_reason_and_side_effects_free() {
     let host = default_host();
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     app.host.put_text(CREDENTIALS, "not json");
     unreadable_attempt(&app, "not_json", "plain text").await;
     app.host.put_text(CREDENTIALS, r#"{"username": "adm"#);
@@ -1148,7 +1127,7 @@ async fn a_refused_secrets_read_reports_file_or_directory_deterministically() {
         if refuse_dir {
             host.fail_read_dir("/var/lib/nvm/manager/secrets");
         }
-        let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+        let app = app(host.clone(), settings(), healthy_startup(&host));
         unreadable_attempt(&app, expected, context).await;
     }
 }
@@ -1156,11 +1135,12 @@ async fn a_refused_secrets_read_reports_file_or_directory_deterministically() {
 #[tokio::test]
 async fn a_missing_file_never_creates_credentials_and_keeps_the_challenge() {
     let host = default_host();
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     // No login status/password login call happened: there is no credentials file yet, and the SSH
     // read-only path must not create one.
     let key = make_key(30);
-    let challenge = issue_challenge(&app).await;
+    let issued = app.ctx.auth.ssh_challenges.issue(&app.host).unwrap();
+    let challenge = json!({"challenge_id":issued.id,"challenge":issued.message});
     let (status, body, _) = request(
         &app,
         Method::POST,
@@ -1172,12 +1152,8 @@ async fn a_missing_file_never_creates_credentials_and_keeps_the_challenge() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(
-        body["params"]["state"],
-        json!({"unreadable": "file_unreadable"}),
-        "a missing file is an unreadable file on the SSH path"
-    );
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "login.setup_required");
     assert_eq!(
         secrets_mutations(&app),
         Vec::new(),
@@ -1197,7 +1173,6 @@ async fn a_missing_file_never_creates_credentials_and_keeps_the_challenge() {
     let credentials = Credentials {
         username: "admin".into(),
         password_hash: auth::hash_password("longpass99").unwrap(),
-        must_change_password: false,
         session_key: store::random_hex(32),
         ssh_keys: vec![ssh_login::SshKey {
             id: store::random_hex(8),

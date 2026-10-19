@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
-use truenas_nvidia_driver_manager::settings::{self, VAR_PASSWORD, VAR_PORT};
+use truenas_nvidia_driver_manager::settings::{self, VAR_PORT};
 use truenas_nvidia_driver_manager::{log, web};
 
 /// Run the real `serve_with` until the startup path is past the checks, then stop it and return the
@@ -33,8 +33,8 @@ async fn serve_log(vars: Vec<(OsString, OsString)>) -> String {
     ));
     for _ in 0..600 {
         let text = String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned();
-        if text.contains("\"event\":\"startup_checks_passed\"")
-            || text.contains("\"event\":\"startup_check_failed\"")
+        if text.contains("\"event\":\"setup_code_issued\"")
+            || text.contains("\"event\":\"listen_failed\"")
             || task.is_finished()
         {
             break;
@@ -62,6 +62,7 @@ fn event_line(text: &str, event: &str) -> Option<serde_json::Value> {
 
 #[tokio::test]
 async fn invalid_port_falls_back_and_logs_port_fallback() {
+    setup_code_is_last_after_listening_and_absent_on_bind_failure().await;
     // A text-invalid value and an invalid-UTF-8 value both listen on 8199 and write the ERROR line
     // with the message and the port field.
     for label in ["text", "non-utf8"] {
@@ -71,11 +72,7 @@ async fn invalid_port_falls_back_and_logs_port_fallback() {
             use std::os::unix::ffi::OsStringExt;
             OsString::from_vec(vec![0xff, 0xfe])
         };
-        let text = serve_log(vec![
-            (OsString::from(VAR_PASSWORD), OsString::from("hunter12")),
-            (OsString::from(VAR_PORT), value),
-        ])
-        .await;
+        let text = serve_log(vec![(OsString::from(VAR_PORT), value)]).await;
         let fallback = event_line(&text, "port_fallback")
             .unwrap_or_else(|| panic!("{label}: no port_fallback in {text}"));
         assert_eq!(fallback["level"], "ERROR", "{label}: {text}");
@@ -91,11 +88,8 @@ async fn invalid_port_falls_back_and_logs_port_fallback() {
     }
     // The default and a legal port never write the fallback (or the invalid setting line).
     for vars in [
-        vec![(OsString::from(VAR_PASSWORD), OsString::from("hunter12"))],
-        vec![
-            (OsString::from(VAR_PASSWORD), OsString::from("hunter12")),
-            (OsString::from(VAR_PORT), OsString::from("9000")),
-        ],
+        vec![],
+        vec![(OsString::from(VAR_PORT), OsString::from("9000"))],
     ] {
         let text = serve_log(vars).await;
         assert!(
@@ -107,4 +101,35 @@ async fn invalid_port_falls_back_and_logs_port_fallback() {
             "unexpected setting_invalid: {text}"
         );
     }
+}
+
+async fn setup_code_is_last_after_listening_and_absent_on_bind_failure() {
+    let text = serve_log(vec![(OsString::from(VAR_PORT), OsString::from("0"))]).await;
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let issued = lines
+        .iter()
+        .position(|line| line["event"] == "setup_code_issued")
+        .expect("a setup code line");
+    let listening = lines
+        .iter()
+        .position(|line| line["event"] == "listening")
+        .expect("listening");
+    assert_eq!(issued, listening + 1, "{text}");
+    assert_eq!(issued, lines.len() - 1, "{text}");
+    assert_eq!(lines[issued]["reason"], "start");
+    assert!(lines[issued]["msg"]
+        .as_str()
+        .unwrap()
+        .starts_with("SETUP CODE: "));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let text = serve_log(vec![(
+        OsString::from(VAR_PORT),
+        OsString::from(listener.local_addr().unwrap().port().to_string()),
+    )])
+    .await;
+    assert!(event_line(&text, "listen_failed").is_some(), "{text}");
+    assert!(event_line(&text, "setup_code_issued").is_none(), "{text}");
 }

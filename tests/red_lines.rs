@@ -21,9 +21,9 @@ async fn setup() -> (TestApp, String) {
         "int pci_resize_resource(struct pci_dev *dev, int resno, int size,\n                        u32 exclude_bars);\n",
     );
     host.put_text("/data/manifest.json", r#"{"version":"25.10.7"}"#);
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     (app, cookie)
 }
 

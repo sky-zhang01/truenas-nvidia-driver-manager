@@ -321,11 +321,6 @@ export function openConfirmDialog(
     control.addEventListener("click", () => void submit(choice.button));
     buttons.append(control);
   }
-  if (app.mustChangePassword) {
-
-    submitBtn.disabled = true;
-    if (skipBtn) skipBtn.disabled = true;
-  }
   buttons.append(back, closeBtn);
   dlg.append(buttons);
 

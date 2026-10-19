@@ -731,7 +731,7 @@ test("scenario reset clears sessions, SSH challenges and login failures", async 
   // and one failed SSH login raises the failure counter — everything the next switch must wipe.
   const login = await request.post(`${BASE}/api/login`, {
     headers: { ...ORIGIN, "Content-Type": "application/json" },
-    data: { username: "admin", password: "initial-password-1" },
+    data: { username: "admin", password: "changed-password-1" },
   });
   expect(login.status()).toBe(200);
   const loginBody = (await login.json()) as { token?: string };

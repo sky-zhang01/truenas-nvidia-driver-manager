@@ -3,14 +3,13 @@ import assert from "node:assert/strict";
 
 import { installDom, FakeElement, FakeText } from "./dom-shim.js";
 import { MESSAGES } from "../src/messages.js";
-import { expand, expandText } from "../src/dom.js";
+import { expand, expandText, formatTaskTime } from "../src/dom.js";
 import { refreshObserved } from "../src/rules.js";
 import { gpuBlockNode } from "../src/views/plan.js";
 import { logParams, renderTask } from "../src/views/tasks.js";
 
 installDom();
-// `poll.ts` needs `window`; the test never lets the interval fire. The task-detail page stops its
-// poller itself because every fixture is terminal.
+// `poll.ts` needs `window`; the rendering fixtures never fire the interval.
 (globalThis as unknown as { window: unknown }).window = {
   setInterval: (): number => 1,
   clearInterval: (): void => {},
@@ -409,6 +408,70 @@ async function renderDetail(detail: unknown): Promise<FakeElement> {
   assert.ok(area, "the task notice area was rendered");
   return area;
 }
+
+test("task status keeps each label paired with its value in both languages", async () => {
+  for (const lang of ["en", "zh"] as const) {
+    const container = await renderDetailContainer(taskDetail([], "task"), lang);
+    const status = allElements(container).find((node) => node.className === "task-state");
+    assert.ok(status);
+    assert.equal(status.getAttribute("role"), "status");
+    const readings = status.children.filter((node) => node instanceof FakeElement) as FakeElement[];
+    assert.equal(readings.length, 2);
+    for (const [index, key] of ["task.status", "task.phase"].entries()) {
+      const reading = readings[index]!;
+      assert.equal(reading.className, "reading");
+      const [label, value] = reading.children as FakeElement[];
+      assert.equal(label!.className, "reading-label");
+      assert.equal(label!.textContent, expandText(key, {}, lang));
+      assert.equal(value!.className, "reading-value");
+      assert.ok(value!.textContent.length > 0);
+    }
+  }
+});
+
+test("task times distinguish running tasks from missing or invalid recorded times", async () => {
+  for (const lang of ["en", "zh"] as const) {
+    for (const status of ["RUNNING", "SUCCEEDED", "FAILED", "STOCK_RESTORED", "INTERRUPTED"]) {
+      for (const time of [null, undefined, NaN, Infinity, 9e20, 1_760_000_060_000]) {
+        const container = await renderDetailContainer({
+          ...taskDetail([], "task"), status, phase: null,
+          created_at: time, finished_at: time, interrupt_discovered_at: time,
+        }, lang);
+        const times = allElements(container).find((node) => node.className === "task-times")!;
+        const values = allElements(times).filter((node) => node.className === "reading-value");
+        const valid = time === 1_760_000_060_000;
+        const missing = time === null || time === undefined;
+        assert.equal(values[0]!.textContent, valid
+          ? formatTaskTime(time)
+          : lang === "en" ? "Not recorded" : "未记录");
+        assert.equal(values[1]!.textContent, valid
+          ? formatTaskTime(time)
+          : status === "RUNNING" && missing
+            ? lang === "en" ? "Not finished yet" : "尚未结束"
+            : lang === "en" ? "Not recorded" : "未记录");
+        assert.equal(values[2]!.textContent.includes("UNKNOWN"), false);
+        const state = allElements(container).find((node) => node.className === "task-state")!;
+        assert.equal(state.textContent.includes("UNKNOWN"), false);
+      }
+    }
+  }
+});
+
+test("task details only appear when there is additional content", async () => {
+  for (const lang of ["en", "zh"] as const) {
+    const detail = { ...taskDetail([], "task"), error: null, notice: null };
+    const empty = await renderDetailContainer(detail, lang);
+    assert.equal(allElements(empty).some((node) => node.className === "task-details"), false);
+    assert.equal(empty.textContent.includes(expandText("task.details", {}, lang)), false);
+    const filled = await renderDetailContainer({
+      ...detail, state_note: { kept_as: "state-unreadable.json" },
+    }, lang);
+    const section = allElements(filled).find((node) => node.className === "task-details");
+    assert.ok(section);
+    assert.equal(section.children[0]!.textContent, expandText("task.details", {}, lang));
+    assert.match(section.textContent, /state-unreadable.json/);
+  }
+});
 
 test("the task-detail unreadable notice keeps Action and List and never the Note", async () => {
   const nonEmpty = await renderDetail(taskDetail([{ name: "media-service", type: "docker" }], "task_unreadable"));

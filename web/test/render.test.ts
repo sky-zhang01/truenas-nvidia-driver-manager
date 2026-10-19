@@ -33,12 +33,13 @@ test("placeholders are filled inside code spans", () => {
   assert.equal(expandText("log.cmd", params, "zh").includes("{command}"), false);
 });
 
-test("account-reset help keeps its three steps in the action segment", () => {
-  const exp = expand("help.reset_account", {}, "zh");
-  const action = seg(exp, "action");
-  assert.match(action, /^1\. /);
-  assert.ok(action.indexOf("2. ") < action.indexOf("3. "));
-  assert.equal(seg(exp, "body").includes("2. "), false);
+test("account-reset help describes setup code renewal and the data that stays", () => {
+  for (const lang of ["en", "zh"] as const) {
+    const exp = expandText("help.reset_account", {}, lang);
+    assert.match(exp, lang === "en" ? /new setup code appears in the App logs/ : /新的设置码/);
+    assert.match(exp, lang === "en" ? /tasks and drivers stay/ : /任务和驱动不受影响/);
+    assert.equal(exp.includes("NVM_INITIAL_ADMIN_PASSWORD"), false);
+  }
 });
 
 test("runner log field names map to the catalog placeholders", () => {
@@ -505,7 +506,7 @@ test("the sign-in page carries the usage line and the collapsed account guidance
   const intro = els[1];
   assert.ok(intro, "the usage line is missing");
   assert.equal(intro.tagName, "P");
-  assert.match(intro.textContent, /部署本应用时设置的管理员账号/);
+  assert.match(intro.textContent, /用你的管理员账号登录/);
 
   // One collapsed guidance group, placed after the form (never a tutorial wall before it), with the
   // short next step visible even when collapsed.
@@ -524,14 +525,11 @@ test("the sign-in page carries the usage line and the collapsed account guidance
   const list = elements(details).find((n) => n.tagName === "UL");
   assert.ok(list, "the guidance list is missing");
   const items = elements(list);
-  assert.equal(items.length, 4);
+  assert.equal(items.length, 3);
   const itemText = items.map((n) => n.textContent).join("\n");
-  assert.match(itemText, /部署本应用的人/);
-  assert.match(itemText, /compose|YAML/);
-  assert.match(itemText, /NVM_INITIAL_ADMIN_USERNAME/);
-  assert.match(itemText, /NVM_INITIAL_ADMIN_PASSWORD/);
-  assert.match(itemText, /不会覆盖已有凭据/);
-  assert.match(itemText, /TrueNAS Shell/);
+  assert.match(itemText, /设置页面/);
+  assert.match(itemText, /账号会保留/);
+  assert.match(itemText, /TrueNAS.*命令行/);
 
   const codes: string[] = [];
   const walk = (node: FakeElement | FakeText): void => {
@@ -540,13 +538,12 @@ test("the sign-in page carries the usage line and the collapsed account guidance
     for (const child of node.children) walk(child);
   };
   for (const child of details.children) walk(child);
-  assert.ok(codes.includes("NVM_INITIAL_ADMIN_USERNAME"), codes.join(","));
-  assert.ok(codes.includes("NVM_INITIAL_ADMIN_PASSWORD"), codes.join(","));
+  assert.equal(codes.includes("NVM_INITIAL_ADMIN_PASSWORD"), false);
 
   // The default page carries no conditioned account-reset help file path and no secret value; only
   // variable names and generic wording.
   const pageText = stack.textContent;
-  assert.equal(pageText.includes("web-credentials.json"), false);
+  assert.equal(pageText.includes("NVM_INITIAL_ADMIN_PASSWORD"), false);
   assert.equal(pageText.includes("initial-password"), false);
 
   const containerEn = domShim().createElement("main") as unknown as HTMLElement;
@@ -558,5 +555,5 @@ test("the sign-in page carries the usage line and the collapsed account guidance
   const detailsEn = elements(shimEn).find((n) => n.tagName === "DETAILS");
   assert.ok(detailsEn, "the English guidance is missing");
   assert.match(detailsEn.textContent, /No account|administrator account/);
-  assert.match(elements(shimEn)[1]?.textContent ?? "", /administrator account and password/);
+  assert.match(elements(shimEn)[1]?.textContent ?? "", /administrator account/);
 });

@@ -32,8 +32,6 @@ export interface App {
   go(route: string): void;
 
   sessionEnded(): void;
-  readonly mustChangePassword: boolean;
-  setMustChangePassword(value: boolean): void;
   readonly logoutDone: boolean;
   clearLogoutDone(): void;
   readonly signedIn: boolean;
@@ -80,7 +78,6 @@ export class Shell implements App {
     credentials: "ok",
     show_reset_help: false,
   };
-  must_change_password = false;
   logoutDone = false;
   signedIn = false;
   session_expired = false;
@@ -169,10 +166,6 @@ export class Shell implements App {
     this.logout_error = null;
   }
 
-  get mustChangePassword(): boolean {
-    return this.must_change_password;
-  }
-
   get sessionExpired(): boolean {
     return this.session_expired;
   }
@@ -212,7 +205,6 @@ export class Shell implements App {
     closeAllDialogs();
     this.session_expired = true;
     this.signedIn = false;
-    this.must_change_password = false;
     this.nav_task_active = null;
     this.nav_task_id = null;
     this.homeReads.invalidate();
@@ -235,14 +227,9 @@ export class Shell implements App {
     clearToken();
     closeAllDialogs();
     this.signedIn = false;
-    this.must_change_password = false;
     this.nav_task_active = null;
     this.nav_task_id = null;
     this.homeReads.invalidate();
-  }
-
-  setMustChangePassword(value: boolean): void {
-    this.must_change_password = value;
   }
 
   syncSshEnabled(present: boolean): void {
@@ -257,7 +244,6 @@ export class Shell implements App {
         if (owner && !owner()) return info;
         this.login = info;
         this.signedIn = info.logged_in;
-        this.must_change_password = Boolean(info.must_change_password);
         this.clearLoginError();
         return info;
       })
@@ -636,19 +622,11 @@ function renderShell(app: App): void {
       else renderTasks(app, main);
       break;
     case "password":
-      renderPassword(app, main, !app.mustChangePassword);
+      renderPassword(app, main);
       break;
     case "home":
     default:
-      if (app.mustChangePassword) {
-
-        renderPassword(app, main, false);
-        const readings = el("div", { class: "home-after-password" });
-        main.append(readings);
-        renderHome(app, readings);
-      } else {
-        renderHome(app, main);
-      }
+      renderHome(app, main);
       break;
   }
 }

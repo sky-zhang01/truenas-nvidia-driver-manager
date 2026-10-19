@@ -227,9 +227,9 @@ async fn a_deb_without_the_confirmed_host_mapping_is_rejected_as_unreadable() {
     prime_canonical(&host, "580.173.02");
     let mut startup = healthy_startup(&host);
     startup.host_data_dir = None;
-    let app = app(host.clone(), settings("hunter12"), startup);
+    let app = app(host.clone(), settings(), startup);
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     let group = open_group(&app, &cookie).await;
     app.host.set_dpkg_default(
         "Package: libnvidia-container1\nVersion: 1.20.1-1\nArchitecture: amd64\n",
@@ -262,9 +262,9 @@ async fn the_fields_of_a_real_deb_are_read_by_the_host_program() {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
     host.set_dpkg_passthrough(true);
-    let app = app(host.clone(), settings("hunter12"), healthy_startup(&host));
+    let app = app(host.clone(), settings(), healthy_startup(&host));
     let _ = get(&app, "/api/login", None).await;
-    let cookie = login_changed(&app, "hunter12", "longpass99").await;
+    let cookie = setup_app(&app, "longpass99").await;
     let group = open_group(&app, &cookie).await;
     let (status, body) = upload(
         &app,

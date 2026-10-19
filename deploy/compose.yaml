@@ -1,5 +1,5 @@
 # truenas-nvidia-driver-manager
-# When deploying, choose a published image tag and set the data directory and initial password.
+# When deploying, choose a published image tag and set the data directory.
 # TrueNAS drops comments when saving; the deployment guide repeats the key points.
 services:
   nvidia-driver-manager:
@@ -11,10 +11,9 @@ services:
     privileged: true
     pid: host
     runtime: runc
-    environment:
-      # Write each $ in the password as $$.
-      - NVM_INITIAL_ADMIN_PASSWORD=<initial-password>
-      # The next three are optional; the value after = is the default.
+    # First start: copy the code from msg in the newest App log message containing SETUP CODE:, then create the administrator on the manager page.
+    # Optional settings; uncomment environment and the settings you need. Values below are defaults.
+    # environment:
       # - NVM_INITIAL_ADMIN_USERNAME=admin
       # - NVM_PORT=8199
       # - NVM_BUILD_TIMEOUT_MINUTES=30

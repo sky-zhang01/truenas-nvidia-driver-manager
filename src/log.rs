@@ -2,7 +2,8 @@
 //!
 //! Every line is one JSON object written under a single lock; the event names and English
 //! messages are the table. Fields never carry passwords, password hashes, cookies or session
-//! keys.
+//! keys. The setup_code_issued event deliberately carries the one-time setup code only in
+//! its msg; that bootstrap value becomes unusable after setup, expiry or restart.
 
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
@@ -126,6 +127,11 @@ pub fn error(event: Event, fields: &[(&str, &str)]) {
 /// One INFO line with JSON fields (used for `{key, params}` reasons).
 pub fn info_json(event: Event, fields: &[(&str, serde_json::Value)]) {
     emit("INFO", event, fields);
+}
+
+/// One WARN line with JSON fields.
+pub fn warn_json(event: Event, fields: &[(&str, serde_json::Value)]) {
+    emit("WARN", event, fields);
 }
 
 /// One ERROR line with JSON fields.
