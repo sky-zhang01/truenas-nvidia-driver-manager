@@ -7,7 +7,7 @@
 
 Update the NVIDIA driver on your TrueNAS from a web page. Pick a version, confirm, and let the manager install and check it.
 
-**Jump to:** [Before you start](#before-you-start) · [Install](#install-in-five-steps) · [Update your driver](#update-your-driver) · [Restart GPU Apps](#6-restart-your-gpu-apps) · [If something goes wrong](#if-something-goes-wrong) · [Stay safe](#stay-safe) · [FAQ](#faq) · [简体中文](README.zh-CN.md)
+**Jump to:** [Before you start](#before-you-start) · [Install](#install-in-five-steps) · [Update your driver](#update-your-driver) · [Restart GPU Apps (expand step 6)](#update-your-driver) · [If something goes wrong](#if-something-goes-wrong) · [Stay safe](#stay-safe) · [FAQ](#faq) · [简体中文](README.zh-CN.md)
 
 ![The Home page: the driver loaded in the kernel, the GPU and the saved original driver.](docs/images/home-en.png)
 
@@ -42,19 +42,31 @@ Every change needs your confirmation, and nothing updates by itself. If the chec
 
 ## Install in five steps
 
-### 1. Open the YAML installer
+Open a step for details and screenshots.
+
+<details>
+<summary>1. In TrueNAS, open <strong>Install via YAML</strong> for a Custom App</summary>
 
 In TrueNAS, open **Apps → Discover Apps**. Next to "Custom App", click **⋮** ("More Options") and choose **Install via YAML**. Give the App any name you like.
 
-### 2. Paste the YAML and set the data folder
+</details>
+
+<details>
+<summary>2. Paste the YAML and replace only the data folder path</summary>
 
 Open [`deploy/compose.yaml`](deploy/compose.yaml) on GitHub, click the copy button, and paste the whole text into the YAML box. Replace `/mnt/<pool>/<dataset>` with the dataset folder you prepared (your data folder): `<pool>` is your pool's name and `<dataset>` is the dataset name, such as `nvm`. Keep `:/var/lib/nvm` after it.
 
-### 3. Save and start the App
+</details>
+
+<details>
+<summary>3. Keep the other lines as they are, save, and start the App</summary>
 
 Leave the other lines as they are, and save. The file publishes the manager on port 8199 of your NAS (the "bridge" setting); the [deployment guide](docs/deploy.en.md) covers other network setups. TrueNAS removes the comments from the YAML when it saves, which is normal.
 
-### 4. Copy the setup code from the logs
+</details>
+
+<details>
+<summary>4. Open the App logs and copy the latest setup code</summary>
 
 1. Wait until the App shows as running, then open **Apps → Installed → your App → Workloads** and click the document icon (**View Logs**) on the container's row. If the log is empty, wait a minute and open it again.
 2. Find the latest `setup_code_issued` event: **the newest entry is at the bottom**. Each log entry is JSON, with `SETUP CODE:` inside its `msg` text.
@@ -69,7 +81,10 @@ Other fields and the rest of the message are left out ("..."); the real log entr
 }
 ```
 
-### 5. Create your administrator account
+</details>
+
+<details>
+<summary>5. Open the manager in your browser and create your administrator account (with screenshot)</summary>
 
 For `<nas-ip>`, use the address you use to open TrueNAS; on a home network it usually starts with `192.168.`. If you gave the App its own address (macvlan), use that instead, as explained in the [deployment guide](docs/deploy.en.md).
 
@@ -78,7 +93,7 @@ For `<nas-ip>`, use the address you use to open TrueNAS; on a home network it us
 3. Choose a password of at least 8 characters and type it twice.
 4. Click **Create administrator**. You are signed in and can start updating.
 
-If the code is rejected, see the FAQ entry [The setup code is rejected, expired or missing.](#faq)
+If the code is rejected, see the FAQ entry [Expand "The setup code is rejected, expired or missing."](#faq)
 
 <img src="docs/images/setup-en.png" width="500" alt="The setup page, where you enter the setup code and choose the administrator password.">
 
@@ -86,26 +101,37 @@ If the code is rejected, see the FAQ entry [The setup code is rejected, expired 
 
 The setup code works once and stays valid for 24 hours. Restarting the App before setup makes a new code, so always take the latest one. The setup code is only for the first start. Next time, open the same address and sign in as `admin` with your password. Restarting the App later needs no code.
 
+</details>
+
 ## Update your driver
 
-### 1. Choose a driver version
+Open a step for details and screenshots.
+
+<details>
+<summary>1. Choose your GPUs and an official NVIDIA driver version, then click <strong>Check and continue</strong> (with screenshot)</summary>
 
 1. Open **Update driver** in the menu on the left (at the bottom on a narrow screen). If you have more than one NVIDIA GPU, tick the GPUs that will use the driver.
 2. Click the "Official NVIDIA versions" dropdown to choose a version.
 3. If unsure, open the "NVIDIA website link", find "Latest Production Branch", and choose that version here if listed.
 4. Click **Check and continue**.
 
-The **Upload .run** button is for an installer you downloaded yourself; see [Driver sources](#driver-sources) below.
+The **Upload .run** button is for an installer you downloaded yourself; see [Expand Driver sources](#driver-sources) below.
 
 ![The Update driver page: choose an official NVIDIA driver version and click Check and continue.](docs/images/update-en.png)
 
 *Choose an official NVIDIA version, then check it before continuing.*
 
-### 2. Read the check
+</details>
+
+<details>
+<summary>2. Read the check and stop any Apps it lists as still using the GPU before trying again</summary>
 
 Before asking for confirmation, the manager checks your GPU, kernel and Apps. If it lists Apps still using the GPU, stop those Apps yourself and try again. The manager never stops your Apps for you.
 
-### 3. Save the original and confirm
+</details>
+
+<details>
+<summary>3. Check the version and system, save the original driver, and confirm the update (with screenshot)</summary>
 
 The confirmation window shows the source, version and your system. If it asks whether to save the original driver, choose **Save original and start**; this is the safest choice. If an original is already saved, the button reads **Start update**.
 
@@ -113,7 +139,10 @@ The confirmation window shows the source, version and your system. If it asks wh
 
 *Check the version and system, and save the original driver before starting.*
 
-### 4. Wait for the task
+</details>
+
+<details>
+<summary>4. Wait for the task to finish; it keeps running if you close the browser (with screenshot)</summary>
 
 The task page shows the current stage; the live log is further down the page. Only one update runs at a time, and it keeps running if you close the browser. Downloading and building share a default limit of 30 minutes; if it expires before the driver file is replaced, the update stops and the file stays unchanged.
 
@@ -121,7 +150,10 @@ The task page shows the current stage; the live log is further down the page. On
 
 *The task page highlights the current stage.*
 
-### 5. Check the result
+</details>
+
+<details>
+<summary>5. Confirm <strong>Succeeded</strong> and check that the task and Home show your new driver version (with screenshot)</summary>
 
 The task ends as **Succeeded**, and the post-update check shows your new version. Home shows the same version.
 
@@ -129,9 +161,14 @@ The task ends as **Succeeded**, and the post-update check shows your new version
 
 *Confirm both the successful task status and the version in the post-update check.*
 
-### 6. Restart your GPU Apps
+</details>
+
+<details>
+<summary>6. Restart your GPU Apps, including those listed under "Driver version changed" or failing with "Driver/library version mismatch"</summary>
 
 After an update, restart the Apps that use the GPU. If the Home page lists Apps under "Driver version changed", restart those. If an App fails to start with a message such as "Driver/library version mismatch", restart that App too.
+
+</details>
 
 <details>
 <summary>Local drivers: saved versions and available actions</summary>
@@ -141,9 +178,13 @@ The **Local drivers** page lists the drivers the manager has built or saved. You
 ![The Local drivers page with the driver in use marked.](docs/images/drivers-en.png)
 
 *Local drivers marks the version in use and keeps saved versions available.*
+
 </details>
 
 ### Driver sources
+
+<details>
+<summary>Expand the three driver sources</summary>
 
 You can choose a driver from three places:
 
@@ -151,16 +192,23 @@ You can choose a driver from three places:
 - **A file you upload.** For this, download NVIDIA's Linux installer (a `.run` file) yourself and add the four helper packages the Update driver page names.
 - **A driver you saved before.** Switching to it needs no download.
 
+</details>
+
 ## If something goes wrong
+
+<details>
+<summary>Expand troubleshooting and recovery guidance</summary>
 
 - **The update fails before the driver file is replaced.** The driver file is unchanged. Read the message on the task page, fix the cause, and update again. The driver modules may already have been unloaded, so check that your GPU Apps still start, and restart them if they do not. The Home page shows which driver is loaded.
 - **The new driver fails its check, and an original is saved.** The manager tries to put the original driver back. If the task reads "Original driver restored", the recovery worked. The update itself did not.
 - **No original is saved.** The manager can only report the failure. This is why we suggest saving the original first.
 - **You want the original driver back.** Open **Local drivers**, choose the row whose source is **Original**, and click **Check this version and continue**. This needs no internet.
-- **The setup code is rejected, expired or missing.** See the FAQ entry [The setup code is rejected, expired or missing.](#faq)
+- **The setup code is rejected, expired or missing.** See the FAQ entry [Expand "The setup code is rejected, expired or missing."](#faq)
 - **A task shows "Interrupted"** (power loss, host restart). Open Home. It shows the loaded driver version and which step stopped. Check the version, then update again. If your Apps still cannot use the GPU, switch to the **Original** entry in **Local drivers**. Then, in an idle period, restart the NAS so TrueNAS loads the current driver again. A restart is not a guarantee of recovery.
 
 If recovery fails, you need direct access to the NAS. Logs are on each task page. The [operations guide](docs/operations.en.md) lists every case in detail.
+
+</details>
 
 ## Stay safe
 
@@ -178,24 +226,28 @@ Everything else, such as resource use while building, is in the [security guide]
 <summary>Does it update by itself?</summary>
 
 No. Every change needs your click on the confirmation window.
+
 </details>
 
 <details>
 <summary>Will it work on other TrueNAS versions or on ARM?</summary>
 
 Only TrueNAS SCALE 25.10.7 on amd64 is tested. Other versions and chips are untested. A version in the list does not promise it works with your GPU or Apps. Read the checks and warnings before you confirm.
+
 </details>
 
 <details>
 <summary>The version list is empty, or the download fails.</summary>
 
 The NAS needs to reach NVIDIA's download site, Docker Hub and Debian's package archive. Check your firewall and DNS, then look at the task log. The versions shown also depend on the GPU you ticked. An old GPU only sees the versions it can use.
+
 </details>
 
 <details>
 <summary>An update stopped halfway.</summary>
 
 Open Home and the task page. They show which step stopped and the loaded driver version. The [operations guide](docs/operations.en.md) explains each stage.
+
 </details>
 
 <details>
@@ -205,6 +257,7 @@ Open Home and the task page. They show which step stopped and the loaded driver 
 2. Open the App logs again and copy the code from the newest line that contains `SETUP CODE:`. The newest line is at the bottom. Copy only the four groups, without quotes.
 3. If there is no such line, restart the App from **Apps → Installed**, wait a minute, and read the logs again.
 4. If the page says to try again later, wait for the time it shows. Wrong codes and wrong passwords share one limit.
+
 </details>
 
 <details>
@@ -222,12 +275,14 @@ Open Home and the task page. They show which step stopped and the loaded driver 
 5. Enter the code and choose a new password. You do not need to restart the App. Register your SSH keys again if you use them.
 
 The [operations guide](docs/operations.en.md) has the details.
+
 </details>
 
 <details>
 <summary>The App's Shell button in TrueNAS shows nothing.</summary>
 
 The manager's image has no shell inside. That is expected. Use the task page for diagnostics.
+
 </details>
 
 <details>
@@ -236,9 +291,13 @@ The manager's image has no shell inside. That is expected. Use the task page for
 Back up the data folder first. With the `latest` tag, open **Apps → Installed**, click your App, and on the **Application Info** card choose **⋮ → Update** when a new image is offered. To move to a fixed version instead, click **Edit**, change the image tag to the version number, and save. Changing the App does not change the NVIDIA driver on the NAS. If you want the original driver back, do that in **Local drivers** first. The [deployment guide](docs/deploy.en.md) has the details. A step-by-step guide for removing the manager is not written yet.
 
 The image tag in the YAML is `latest`. To stay on a fixed version, change it to `0.2.1`: `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.1`.
+
 </details>
 
 ## For advanced users
+
+<details>
+<summary>Expand guides, agent access and image verification</summary>
 
 - [Deployment guide](docs/deploy.en.md): networks (bridge, macvlan, ipvlan), App upgrade and revert, offline install and offline builds, online sources.
 - [Operations guide](docs/operations.en.md): return to the original driver, troubleshooting, SSH key sign-in, password reset, backup, interrupted tasks, logs.
@@ -252,6 +311,9 @@ The image tag in the YAML is `latest`. To stay on a fixed version, change it to 
 ```bash
 gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.1 --repo sky-zhang01/truenas-nvidia-driver-manager
 ```
+
+</details>
+
 </details>
 
 ## Help
