@@ -635,6 +635,9 @@ pub trait Decorate: Send + Sync {
     fn now(&self) -> Instant {
         self.inner().now()
     }
+    fn wait(&self, duration: Duration) {
+        self.inner().wait(duration);
+    }
     fn wall_ms(&self) -> u64 {
         self.inner().wall_ms()
     }
@@ -707,6 +710,9 @@ impl<D: Decorate> Host for Wrap<D> {
     fn now(&self) -> Instant {
         self.0.now()
     }
+    fn wait(&self, duration: Duration) {
+        self.0.wait(duration);
+    }
     fn wall_ms(&self) -> u64 {
         self.0.wall_ms()
     }
@@ -740,7 +746,12 @@ pub fn release_scene(host: &FakeHost) {
     });
     x.replace.push(ReplaceRecord {
         pass: Pass::Update,
+        module_version_before: None,
+        file_changed: None,
+        module_correction: None,
         unloaded: vec!["nvidia_uvm".into()],
+        unload_waits: Vec::new(),
+        occupancy_waits: Vec::new(),
         reloaded: vec![],
         refresh_exit: None,
         ldconfig_exit: None,
@@ -782,7 +793,12 @@ pub fn release_scene(host: &FakeHost) {
     });
     l.replace.push(ReplaceRecord {
         pass: Pass::Update,
+        module_version_before: None,
+        file_changed: None,
+        module_correction: None,
         unloaded: vec!["nvidia_uvm".into()],
+        unload_waits: Vec::new(),
+        occupancy_waits: Vec::new(),
         reloaded: vec![ReloadedRecord {
             module: "nvidia_uvm".into(),
             ok: true,
@@ -880,5 +896,27 @@ impl Decorate for ReleaseCleanupFailure {
             return Err(io::Error::other("task directory removal refused"));
         }
         self.host.remove_dir_all(path)
+    }
+}
+
+/// A persisted partial post-write correction, shared by recovery fixtures.
+pub fn partial_module_correction(
+) -> truenas_nvidia_driver_manager::task_state::ModuleCorrectionRecord {
+    use truenas_nvidia_driver_manager::task_state::*;
+    ModuleCorrectionRecord {
+        trigger: ModuleCorrectionTrigger::VersionMismatch,
+        expected: "580.178.04".into(),
+        version_before: ReadingJson::value("old kernel module banner".into()),
+        modules_before: vec!["nvidia_uvm".into(), "nvidia".into()],
+        unloads: vec![ModuleUnloadAttempt {
+            module: "nvidia_uvm".into(),
+            exit: serde_json::json!({"code": 0}),
+            reason: None,
+        }],
+        waits: Vec::new(),
+        occupancy_waits: Vec::new(),
+        reloaded: Vec::new(),
+        stop_reason: None,
+        version_after: None,
     }
 }

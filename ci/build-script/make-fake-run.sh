@@ -128,7 +128,7 @@ src=/tmp/nvm-fake-module.c
     printf 'const char nvm_fake_license[] __attribute__((section(".modinfo"), used)) = "license=MIT";\n'
 } > "${src}"
 for m in nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-peermem; do
-    gcc-12 -c -o "${moddir}/${m}.ko" "${src}"
+    "${CC:?the runner must select a compiler}" -c -o "${moddir}/${m}.ko" "${src}"
 done
 rm -f "${src}"
 

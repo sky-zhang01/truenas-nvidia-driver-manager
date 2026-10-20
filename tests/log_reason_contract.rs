@@ -562,7 +562,12 @@ async fn cleanup_step_failure_reason_is_an_object() {
         state.phase = Some(Phase::ReadLoadedVersionEnd);
         state.replace.push(ReplaceRecord {
             pass: Pass::Update,
+            module_version_before: None,
+            file_changed: None,
+            module_correction: None,
             unloaded: vec!["nvidia".to_string()],
+            unload_waits: Vec::new(),
+            occupancy_waits: Vec::new(),
             reloaded: vec![ReloadedRecord {
                 module: "nvidia".to_string(),
                 ok: true,

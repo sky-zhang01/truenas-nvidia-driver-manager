@@ -5,9 +5,10 @@
 ## Supported versions and environment
 
 Security fixes target the latest published patch in the **0.2.x** series, starting with the
-first public release, **0.2.0**. Earlier development versions are unsupported. The tested
-platform is **TrueNAS SCALE 25.10.7 on amd64**; other TrueNAS versions and architectures are
-untested. Use the latest supported release and read the [security model](docs/security.en.md).
+first public release, **0.2.0**. Earlier development versions are unsupported. The supported
+and tested platforms are **TrueNAS SCALE 25.10.7 and TrueNAS 27.0.0-RC.1 on amd64**;
+other TrueNAS versions and architectures are untested. Use the latest supported release and
+read the [security model](docs/security.en.md).
 
 The App runs privileged with host PID access and can replace host kernel driver code. It is
 intended for a trusted management LAN. It serves HTTP, and its session cookie does not include

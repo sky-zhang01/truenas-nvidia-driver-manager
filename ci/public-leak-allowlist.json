@@ -2,7 +2,7 @@
   "entries": [
     {
       "path": "ci/build-script/make-fake-run.sh",
-      "sha256": "d0af1d16c285d974871b246ae5e0cdc6952d4c8fe1b1a604475851288c85d075",
+      "sha256": "d892f5f968de22e77a68915b207b5d52e22b9e0ec218374a7d7841f322727b80",
       "rules": [
         "email"
       ],
@@ -34,7 +34,7 @@
     },
     {
       "path": "src/web.rs",
-      "sha256": "4b12d870faba00db482a3924210f3188ddaa184a60b27b38b1ea3171846856cd",
+      "sha256": "0693a1edaa6fc3426b879c4cc981b9e8b1e7272fd1398d3409972ac0e36e7e7d",
       "rules": [
         "chinese"
       ],
@@ -42,7 +42,7 @@
     },
     {
       "path": "tests/api_contract.rs",
-      "sha256": "dcb455270fd703a1f0961e06e16a7ee2ff4921c1e4412f3ea2fc70e1a862e144",
+      "sha256": "18e5ce7c8bf1f089039b2372127d93bf9537b398fa88344f6531309e22dd7963",
       "rules": [
         "chinese"
       ],
@@ -50,7 +50,7 @@
     },
     {
       "path": "tests/fake_capabilities.rs",
-      "sha256": "ada84f8febb0443836408761d55f9fa98d38701350e326ab21108a4d43115f3a",
+      "sha256": "d18302322096433aa4dd9adf442ec7b9b26315395d851a20066cb7993b51f260",
       "rules": [
         "email"
       ],
@@ -66,7 +66,7 @@
     },
     {
       "path": "tests/upload.rs",
-      "sha256": "6a65540e8dbfb16cdcc537dc297fa9d2671a6c07b156ac70eccdd9e3adf13d79",
+      "sha256": "3dd6f87ac35aaf0e7e7fc35d21bd61ea78e727d199af6cf60f8f790568de42f4",
       "rules": [
         "email"
       ],
@@ -154,7 +154,7 @@
     },
     {
       "path": "web/e2e/update.spec.ts",
-      "sha256": "c9b5ca3d479e1183a7638829d8f885fe1d6d8f0701c290a3c5424fa4600593a5",
+      "sha256": "95111fc1f14366a50094927fd4308c01c230f27de1b31262d37fa37d010a33d9",
       "rules": [
         "chinese"
       ],
@@ -162,7 +162,7 @@
     },
     {
       "path": "web/src/messages.ts",
-      "sha256": "bb2db3ed7b7cdb25175c1ffff524935de0fb2ab1168459b7b63ad369b2aa32cc",
+      "sha256": "2d61b7ed52d9fb5f8a50ee75f81c32d27f676400070b0f0becd35beacca31db2",
       "rules": [
         "chinese"
       ],
@@ -178,7 +178,7 @@
     },
     {
       "path": "web/test/messages.test.ts",
-      "sha256": "9ad8af12640fff9c34d8a28e807e57912fb4aa8f7e53402572fa792c14752f6a",
+      "sha256": "f5964ce31f7fb24380dc73e5eba7ac169a9da615ea66f8be048603d54e6f1bd5",
       "rules": [
         "chinese"
       ],
@@ -186,7 +186,7 @@
     },
     {
       "path": "web/test/render.test.ts",
-      "sha256": "07f9f7ae6f0c5580fcfd606df60daa8837b56ca8dd800ac35c5fa6c349e1db5b",
+      "sha256": "a068224533258748e1025e876c50bbade5c1c314bacb1d729964e3e3466fed6d",
       "rules": [
         "chinese"
       ],
@@ -194,7 +194,7 @@
     },
     {
       "path": "web/test/rules.test.ts",
-      "sha256": "6c5894864ba3449e7006365f7c563bad58f5912142065e35be01314db5880916",
+      "sha256": "f577c586455ae3b8f5a95e896c40e3a2dc3a46b3cc73726cbcdcffe816ac76bd",
       "rules": [
         "chinese"
       ],
@@ -211,7 +211,7 @@
     },
     {
       "path": "web/test/task-steps.test.ts",
-      "sha256": "b01a402c3c74e8c9e6fbc00d5bfe9d709c7270d5f0cd96eefcd376bb59a8c766",
+      "sha256": "6705784534834747a2c6fdf02601547b747ff1909497200383864023ab684ec1",
       "rules": [
         "chinese"
       ],
@@ -219,7 +219,7 @@
     },
     {
       "path": "web/test/text-log-contract.test.ts",
-      "sha256": "74e1224445f1ea7804d376c3b6d2e82c3bb858eba10f755b270b7a7077c097ca",
+      "sha256": "085d4f39f32821bb209d7914719c112b7cb4be1372c5a4606bafb36592730301",
       "rules": [
         "chinese"
       ],
@@ -395,7 +395,7 @@
     },
     {
       "path": "README.md",
-      "line_sha256": "132387b0e92b0de5c4a5319ea7dd34fb30fb1aa8a8f60231c18f6218680b1dc6",
+      "line_sha256": "43bf92799c30ca9658032aca81efdd6e6d178c7d46ac34f50b94a4324a13e122",
       "rules": [
         "chinese"
       ],
@@ -475,7 +475,7 @@
     },
     {
       "path": "docs/images/drivers-en.png",
-      "sha256": "db5be483aa6abb819095834ee1c9095e03823d18dccb52eb249d24396c1e5881",
+      "sha256": "2466c809d29f9609315489a9d826611a9b010da911ef77705e9ab1dd563bec19",
       "rules": [
         "binary"
       ],
@@ -483,23 +483,23 @@
     },
     {
       "path": "docs/images/drivers-zh.png",
-      "sha256": "7b37b8e924530e1d17db7113a99ab79207c21166dbdb054639aeaed3d24b2f64",
+      "sha256": "cce13120c30e0f5c6c91698d1037464e9fa0665a07cbbde0c7439e71c91ac14f",
       "rules": [
         "binary"
       ],
       "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
     },
     {
-      "path": "docs/images/home-en.png",
-      "sha256": "116fd282c363c60dd9d4f9580caa232cfbfec0fee6b19b80eb0b78ff68d37275",
+      "path": "docs/images/home-landing-en.png",
+      "sha256": "57ae9f8e78b7570a624d275c0cc63460c636f301aea389b8b338ce48807f1070",
       "rules": [
         "binary"
       ],
       "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
     },
     {
-      "path": "docs/images/home-zh.png",
-      "sha256": "69d704e84993cd798fbabb3ad069bbeed4eb1b3c28d71a275e45018c7bb3fcec",
+      "path": "docs/images/home-landing-zh.png",
+      "sha256": "2f474326c8d16735d5329d74c0a98b654778ecaa5fa0abcf24cbce821b30f6c9",
       "rules": [
         "binary"
       ],
@@ -507,7 +507,7 @@
     },
     {
       "path": "docs/images/plan-en.png",
-      "sha256": "bf824914d38185e109a1b9e509545a6719c69827642d726a5a7016c83046e304",
+      "sha256": "b7cbcc794e62c727bf2fa7a0529f9bec1c98e608e462fd016b3639c2a6ce30a0",
       "rules": [
         "binary"
       ],
@@ -515,7 +515,7 @@
     },
     {
       "path": "docs/images/plan-zh.png",
-      "sha256": "a71159e30ad54196f6a7f3d19b6a28bfc7916162c8e194f4ec6481eb2c3c304c",
+      "sha256": "f3c1cccd725e1ff9b1eaf62626e4ec8e37c6e05c5efff09f885c34ed11927c1d",
       "rules": [
         "binary"
       ],
@@ -523,7 +523,7 @@
     },
     {
       "path": "docs/images/running-en.png",
-      "sha256": "ae278b4e13d2456f5687604ff10e1361a1cf31b981d911d067c392299ecbb5fc",
+      "sha256": "c794874ab419926f9371ec7b275f9b01d6ced22cdef313dcfa7aa0b9c750a3be",
       "rules": [
         "binary"
       ],
@@ -531,7 +531,7 @@
     },
     {
       "path": "docs/images/running-zh.png",
-      "sha256": "898bd552882686f52fc67ac3a57a30b252d14c090c0de7a42275eeca5deed250",
+      "sha256": "f2ec90ff2cf99edccddc4b7282fe4c32dbe2bd1d80407960c7bd85dd7410ef55",
       "rules": [
         "binary"
       ],
@@ -539,7 +539,7 @@
     },
     {
       "path": "docs/images/success-en.png",
-      "sha256": "d6df1ae5536892a535340aa0dfa0e6a53eefa950d105fc82489a2ac336749c0d",
+      "sha256": "762d5bbaa0a8d3cd577a417f285edc80757b23998edbfbcf70366e0e9a2d4662",
       "rules": [
         "binary"
       ],
@@ -547,7 +547,7 @@
     },
     {
       "path": "docs/images/success-zh.png",
-      "sha256": "53a24d351ab0d07afcbb36ce70a22e4fa33fccb07c3373792f6a785a9de8b79f",
+      "sha256": "08a5d5250569743a02c3f43e92c2bae04d7f541a659f5a621bd16fdf86222ab7",
       "rules": [
         "binary"
       ],
@@ -555,7 +555,7 @@
     },
     {
       "path": "docs/images/update-en.png",
-      "sha256": "9781d4ee5bd3fca877003fb72c2399721c920b94cfb19535a03d50b11a0dfb9c",
+      "sha256": "4e71d7fba8e2b8d0a1f9a871207e41b114dbcf60a179300d08b19d7b4b62501c",
       "rules": [
         "binary"
       ],
@@ -563,7 +563,7 @@
     },
     {
       "path": "docs/images/update-zh.png",
-      "sha256": "10acde8e41061ecc04d766f90bf10bd45f81d06874c0ffb342dde17eaa423ffb",
+      "sha256": "06e979335e1dd328bada9b2735198677cf5afe06407002a5ee53f193f3f0e1b8",
       "rules": [
         "binary"
       ],
@@ -571,7 +571,7 @@
     },
     {
       "path": "docs/images/setup-en.png",
-      "sha256": "e5e94e0df3d64c6e76999b04c0ba03b5d2accc83d9ef8996b3b5f981d4f150ab",
+      "sha256": "9d6abd44cf3102327aa32a574c48c3e4bf76f6ac501e9ca7a22fd83808a24c2c",
       "rules": [
         "binary"
       ],
@@ -579,11 +579,19 @@
     },
     {
       "path": "docs/images/setup-zh.png",
-      "sha256": "310befd9d84b4f350ceaa9c1e9fd1fc4f0d50cfbc910e253c26a260dc1b2ca1a",
+      "sha256": "a1151d77bed2a6ec0ba542b4a4517e4f76d47138133ad35b6b879b82d45473d0",
       "rules": [
         "binary"
       ],
       "reason": "README screenshot of the web UI captured from the local fake test host; synthetic data only."
+    },
+    {
+      "path": "web/e2e/readme-shots.spec.ts",
+      "sha256": "9bdf96cb2345e580dc3e0b90ff5149e2a7cb3e38de15c7cfecd2f6044a272a43",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Assertions on bilingual screenshot capture using the local fake host and synthetic data."
     }
   ],
   "public_hosts": [

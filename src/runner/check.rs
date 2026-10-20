@@ -69,6 +69,53 @@ pub fn nvidia_smi_version(ctx: &RunCtx) -> (Reading<String>, Option<ReasonValue>
     (reading, None)
 }
 
+/// Names and PCI addresses are diagnostic facts, separate from the version check.
+fn nvidia_smi_gpus(ctx: &RunCtx) -> ReadingJson<Vec<crate::task_state::ObservedGpu>> {
+    let cmd = crate::host::Cmd::new(crate::host::At::Host, "nvidia-smi", HOST_CMD_TIMEOUT)
+        .arg("--query-gpu=name,pci.bus_id")
+        .arg("--format=csv,noheader");
+    let out = ctx.cmd(&cmd);
+    if !out.exit.ok() {
+        return ReadingJson::Unknown {
+            unknown: command_reason(HOST_CMD_TIMEOUT, &out),
+        };
+    }
+    match parse_smi_gpus(&out.stdout_text()) {
+        Some(gpus) => ReadingJson::value(gpus),
+        None => ReadingJson::unknown(REASON_FORMAT_UNRECOGNIZED),
+    }
+}
+
+fn parse_smi_gpus(text: &str) -> Option<Vec<crate::task_state::ObservedGpu>> {
+    let gpus: Option<Vec<_>> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            // Split from the right: a model name may itself contain a comma.
+            let (name, pci) = line.rsplit_once(',')?;
+            let (name, pci) = (name.trim(), pci.trim());
+            let parts: Vec<_> = pci.split([':', '.']).collect();
+            if name.is_empty()
+                || parts.len() != 4
+                || !matches!(parts[0].len(), 4 | 8)
+                || parts[1].len() != 2
+                || parts[2].len() != 2
+                || parts[3].len() != 1
+                || !parts
+                    .iter()
+                    .all(|p| p.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
+                return None;
+            }
+            Some(crate::task_state::ObservedGpu {
+                name: name.to_string(),
+                pci_address: pci.to_string(),
+            })
+        })
+        .collect();
+    gpus.filter(|gpus| !gpus.is_empty())
+}
+
 /// The command-failure reason of as a stored `{key, params}` value.
 fn command_reason(timeout: std::time::Duration, out: &crate::host::Output) -> ReasonValue {
     match out.exit {
@@ -144,6 +191,7 @@ pub fn check(
     };
     let (smi, smi_reason) = nvidia_smi_version(ctx);
     let proc = proc_version(ctx);
+    ctx.state.nvidia_smi_gpus = Some(nvidia_smi_gpus(ctx));
     let version_ok = smi.value().map(|v| v == expected).unwrap_or(false)
         && proc.value().map(|v| v == expected).unwrap_or(false);
     let record = CheckRecord {
@@ -196,5 +244,24 @@ mod tests {
             &Some(ReasonValue::new(REASON_TIMED_OUT, json!({"seconds": 180}))),
         );
         assert!(matches!(v, ReadingJson::Unknown { .. }));
+    }
+
+    #[test]
+    fn gpu_diagnostic_requires_names_and_valid_pci_addresses() {
+        for text in [
+            "",
+            "\n",
+            "No devices were found",
+            "GPU, not-a-pci-address",
+            ", 0000:01:00.0",
+            "GPU, 0000:01:00.0\nbroken",
+        ] {
+            assert_eq!(parse_smi_gpus(text), None, "{text}");
+        }
+        let gpus =
+            parse_smi_gpus("GPU, Special Edition, 00000000:01:00.0\nOther GPU, 0000:02:00.0\n")
+                .unwrap();
+        assert_eq!(gpus[0].name, "GPU, Special Edition");
+        assert_eq!(gpus[1].pci_address, "0000:02:00.0");
     }
 }

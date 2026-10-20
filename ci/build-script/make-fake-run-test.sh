@@ -133,5 +133,25 @@ PY_CHECK
     unset -f docker
 fi
 
+# Run the real input-seeding helper with no boot config fixture. Compiler
+# selection is supplied by the host, so removed config inputs must not be copied.
+awk '/^seed_inputs\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' \
+    "${SCRIPT_DIR}/test.sh" > "${WORK}/seed-inputs.sh"
+mkdir -p "${WORK}/headers" "${WORK}/inputs"
+if (
+    export WORK TAR_BIN
+    export HDR="${WORK}/headers" IN="${WORK}/inputs" SEED_INPUTS=seed KERNEL=fixture
+    bash -euo pipefail -c '
+        . "$1"
+        . "$2"
+        docker() { cat >/dev/null; }
+        seed_inputs
+    ' bash "${WORK}/seed-root.sh" "${WORK}/seed-inputs.sh"
+) >"${WORK}/seed-inputs.out" 2>"${WORK}/seed-inputs.err"; then
+    pass "input seeding works without a boot compiler config"
+else
+    fail "input seeding still depends on removed compiler config inputs"
+fi
+
 finish_tests "make-fake-run-test: ${FAILURES} control(s) failed" \
     "make-fake-run-test: all controls passed"

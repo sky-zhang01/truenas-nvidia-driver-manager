@@ -362,6 +362,29 @@ impl PlanSlot {
     }
 }
 
+fn gpu_busy(h: &dyn Host) -> GpuState {
+    let users = crate::gpu_users::list(h, HOST_QUERY_TIMEOUT);
+    GpuState {
+        state: "busy",
+        users: users.users.iter().map(Into::into).collect(),
+        errors: users.errors.iter().map(Into::into).collect(),
+        read_reason: None,
+    }
+}
+
+fn gpu_unreadable(h: &dyn Host, reason: &'static str) -> GpuState {
+    let users = crate::gpu_users::list(h, HOST_QUERY_TIMEOUT);
+    GpuState {
+        state: "unreadable",
+        users: users.users.iter().map(Into::into).collect(),
+        errors: users.errors.iter().map(Into::into).collect(),
+        read_reason: Some(crate::task_state::general_reason_json(
+            reason,
+            READING_TIMEOUT.as_secs(),
+        )),
+    }
+}
+
 /// Read `/proc/modules`.
 pub fn read_modules(h: &dyn Host) -> Reading<Vec<facts::ModuleLine>> {
     let start = h.now();
@@ -878,37 +901,26 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
         }
     }
 
-    // Occupancy.
-    let modules = match modules_for_occupancy {
-        Some(m) => m,
-        None => read_modules(h),
-    };
-    let gpu_state = match &modules {
-        Reading::Value(list) => {
-            if facts::occupancy(list) {
-                let users = crate::gpu_users::list(h, HOST_QUERY_TIMEOUT);
-                Some(GpuState {
-                    state: "busy",
-                    users: users.users.iter().map(Into::into).collect(),
-                    errors: users.errors.iter().map(Into::into).collect(),
-                    read_reason: None,
-                })
-            } else {
-                None
-            }
-        }
-        Reading::Unknown(reason) => {
-            let users = crate::gpu_users::list(h, HOST_QUERY_TIMEOUT);
-            Some(GpuState {
-                state: "unreadable",
-                users: users.users.iter().map(Into::into).collect(),
-                errors: users.errors.iter().map(Into::into).collect(),
-                read_reason: Some(crate::task_state::general_reason_json(
-                    reason,
-                    READING_TIMEOUT.as_secs(),
-                )),
-            })
-        }
+    // Occupancy. A cached idle or unreadable reading is the decision. A busy or missing
+    // cache is read again and, when the GPU is in use, waited out on this host's clock.
+    let gpu_state = match modules_for_occupancy {
+        Some(Reading::Unknown(reason)) => Some(gpu_unreadable(h, reason)),
+        Some(Reading::Value(list)) if !facts::occupancy(&list) => None,
+        _ => match facts::wait_until_gpu_idle(
+            h,
+            None,
+            |host| match read_modules(host) {
+                Reading::Value(list) => Ok(list),
+                Reading::Unknown(reason) => Err(reason),
+            },
+            || true,
+        ) {
+            facts::OccupancyDecision::Idle(_) | facts::OccupancyDecision::Released { .. } => None,
+            facts::OccupancyDecision::StillInUse { .. }
+            | facts::OccupancyDecision::Deadline { .. }
+            | facts::OccupancyDecision::NotPersisted => Some(gpu_busy(h)),
+            facts::OccupancyDecision::Unreadable(reason) => Some(gpu_unreadable(h, reason)),
+        },
     };
 
     if !failures.is_empty() || gpu_state.is_some() {

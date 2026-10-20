@@ -441,7 +441,7 @@ export function checkReasonText(detail: TaskDetail, pass: "update" | "restore", 
 
 function reloadFailed(detail: TaskDetail, pass: "update" | "restore"): boolean {
   const rec = detail.replace.find((r) => r.pass === pass);
-  return rec ? rec.reloaded.some((x) => !x.ok) : false;
+  return rec ? (rec.module_correction?.reloaded ?? rec.reloaded).some((x) => !x.ok) : false;
 }
 
 function unloadedEmpty(detail: TaskDetail, pass: "update" | "restore"): boolean {
@@ -451,7 +451,7 @@ function unloadedEmpty(detail: TaskDetail, pass: "update" | "restore"): boolean 
 
 function reloadReason(detail: TaskDetail, pass: "update" | "restore"): unknown {
   const rec = detail.replace.find((r) => r.pass === pass);
-  return rec?.reloaded.find((x) => !x.ok)?.reason ?? "UNKNOWN";
+  return (rec?.module_correction?.reloaded ?? rec?.reloaded)?.find((x) => !x.ok)?.reason ?? "UNKNOWN";
 }
 
 // Keep restore stderr nested until splitRawOutput so it never enters an alert region.
@@ -487,7 +487,10 @@ export function taskNoticeParams(detail: TaskDetail, lang: Lang): Params {
   const original = detail.restore?.original?.version ?? "UNKNOWN";
   const check = checkReasonText(detail, "update", lang);
   const reloadFields = (pass: "update" | "restore"): void => {
-    if (params["reload_failed"] === true || reloadFailed(detail, pass)) {
+    const correction = detail.replace.find((r) => r.pass === pass)?.module_correction;
+    const failed = correction ? reloadFailed(detail, pass) : params["reload_failed"] === true || reloadFailed(detail, pass);
+    if (correction) params["reload_failed"] = failed;
+    if (failed) {
       params["reload_failed"] = true;
       params["reload_reason"] = reloadReason(detail, pass);
     } else if (unloadedEmpty(detail, pass)) {

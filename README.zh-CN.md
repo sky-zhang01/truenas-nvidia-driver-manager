@@ -5,107 +5,79 @@
   </picture>
 </p>
 
-在网页上给你的 TrueNAS 更新 NVIDIA 驱动。选好版本，点确认，剩下的安装和检查交给管理器。
+TrueNAS 自己没有换 NVIDIA 驱动的按钮。这个应用补上了这个按钮：在浏览器里选好版本，点确认，管理器就会安装驱动并检查结果。
 
-**快速跳转：**[开始之前](#开始之前) · [安装](#五步安装) · [更新驱动](#更新你的驱动) · [重启显卡应用（展开第 6 步）](#更新你的驱动) · [出了问题怎么办](#出了问题怎么办) · [安全使用](#安全使用) · [常见问题](#常见问题) · [English](README.md)
+**快速跳转：**[安装](#安装) · [更新驱动](#更新你的驱动) · [排障](#排障) · [安全使用](#安全使用) · [常见问题](#常见问题) · [English](README.md)
 
-![主页：内核里加载的驱动、显卡，以及原版驱动是否已保存。](docs/images/home-zh.png)
+<img src="docs/images/home-landing-zh.png" width="900" alt="登录后的完整主页：页头、导航、内核里加载的驱动、显卡，以及已保存的原版驱动。">
 
-*主页显示当前加载的驱动、你的显卡，以及原版驱动是否已保存。*
+- **选择版本。** 可以选 NVIDIA 官网驱动、自己上传的驱动，或之前保存的驱动。
+- **一次确认。** 每次改动都等你点确认，不会自动更新。
+- **核对结果。** 管理器会检查新驱动是否真的加载成功。
+- **留有退路。** 管理器保存 TrueNAS 自带的驱动（“原版驱动”），检查失败时尝试换回原版。恢复也可能失败，所以之后一定要在主页确认结果。
 
-## 它能帮你做什么
+支持 TrueNAS SCALE **25.10.7** 和 TrueNAS **27.0.0-RC.1**（amd64），两个版本均已在真实主机上测试。
 
-你新买了 NVIDIA 显卡，或者某个游戏、AI 工具、媒体应用需要比 TrueNAS SCALE 自带更新的驱动。TrueNAS 自己没有换驱动的按钮。
+## 安装
 
-这个工具补上了这个按钮。它是一个普通的 TrueNAS 应用，你在浏览器里使用。下文把它叫作“管理器”。
+**1. 准备 TrueNAS。**
 
-1. 列出你可以选择的驱动版本。
-2. 为你的 NAS 准备好驱动并安装。
-3. 检查新驱动是否真的加载成功。
-4. 保存 TrueNAS 自带的驱动（下文叫“原版驱动”），需要时可以换回去。
+- NAS 里需要有 NVIDIA 显卡。先在 TrueNAS 启用 NVIDIA 驱动，管理器要在它的基础上替换驱动，所以它得先存在。没有启用时，主页会提示你。
+  - **25.10.7：**打开**应用 → 已安装 → 配置 → 设置**，勾选**安装 NVIDIA 驱动程序**，点**保存**。
+  - **27.0.0-RC.1：**打开**系统 → 高级设置**，在 **NVIDIA Drivers** 卡片点**配置**，勾选 **Enable NVIDIA GPU Support**，点**保存**。
+- 为管理器单独准备一个数据集（存储池里的一个存储目录）：打开**数据集**，选中存储池，点**添加数据集**，起名例如 `nvm`，目录为 `/mnt/<pool>/nvm`。在**高级选项**里确认允许运行程序（`exec=on`）。具体要求见[部署说明](docs/deploy.zh-CN.md)。
+- NAS 需要能联网，访问 NVIDIA 下载站、Docker Hub 和 Debian 软件包存档。离线使用请看[部署说明](docs/deploy.zh-CN.md)。
 
-每一步改动都要你确认，不会自动更新。如果更新后的检查没通过，而且已经保存了原版驱动，管理器会尝试把原版换回来。这个恢复也可能失败，所以更新后一定要在主页确认结果。
+**2. 通过 YAML 安装应用。** 打开**应用 → 探索应用**，点“自定义应用”旁边的 **⋮**（“更多选项”），选择**通过YAML进行安装**，应用名称随便起。粘贴下面的内容，只把数据目录换成你准备的数据集目录（保留后面的 `:/var/lib/nvm`），然后保存：
 
-## 开始之前
-
-- TrueNAS SCALE **25.10.7**，常见的 64 位 x86 电脑（amd64）。这是目前唯一测试过的环境。
-- NAS 里有一张 NVIDIA 显卡。
-- 已在 TrueNAS 启用 NVIDIA 驱动：在**应用 → 已安装**页面点**配置 → 设置**，勾选**安装 NVIDIA 驱动程序**。管理器要在这个基础上替换驱动，所以它得先存在。如果没有启用，管理器的主页会提示你。
-- 为管理器单独准备一个数据集（存储池里的一个存储目录）。在 TrueNAS 打开**数据集**，选中你的存储池，点**添加数据集**，起个名字，例如 `nvm`。它的目录就是 `/mnt/<pool>/nvm`，其中 `<pool>` 是你的存储池名字。数据集要允许运行程序（ZFS 设置 `exec=on`），可在新数据集的**高级选项**里确认。具体要求见[部署说明](docs/deploy.zh-CN.md)。
-- NAS 能访问互联网，能够访问 NVIDIA 下载站、Docker Hub 和 Debian 软件包存档。没有网络时，请看[部署说明](docs/deploy.zh-CN.md)里的离线方式。
-- 选一个没人用 NAS 的空闲时段，并确保能直接操作 NAS：TrueNAS 的命令行，或者接在 NAS 上的键盘和显示器。
-
-> [!WARNING]
-> 换驱动会中断所有使用显卡的应用。请选空闲时段。第一次更新前先保存原版驱动，并准备好直接操作 NAS 的方式，以防显卡没有恢复。
->
-> 安装用的 YAML 文件会申请扩展权限（`privileged: true` 和 `pid: host`）。管理器要靠它们来更换 NAS 本机的驱动。所以请先读一下[安全使用](#安全使用)。
-
-## 五步安装
-
-点开每一步可以看详细说明和截图。
-
-<details>
-<summary>1. 在 TrueNAS 打开自定义应用的<strong>通过YAML进行安装</strong></summary>
-
-在 TrueNAS 中打开**应用 → 探索应用**。点「自定义应用」旁边的 **⋮**（「更多选项」），选择**通过YAML进行安装**。应用名称随便起。
-
-</details>
-
-<details>
-<summary>2. 粘贴 YAML，只把数据目录路径换成你准备的目录</summary>
-
-在 GitHub 上打开 [`deploy/compose.yaml`](deploy/compose.yaml)，点复制按钮，把全部内容粘贴到 YAML 框里。把 `/mnt/<pool>/<dataset>` 换成你准备的数据集目录（数据目录）：`<pool>` 是存储池名字，`<dataset>` 是数据集名字，例如 `nvm`。后面的 `:/var/lib/nvm` 保持不变。
-
-</details>
-
-<details>
-<summary>3. 其余行保持原样，保存并启动应用</summary>
-
-其余行保持原样，保存。这个文件会把管理器发布在 NAS 的 8199 端口（“bridge”方式），其他网络方式见[部署说明](docs/deploy.zh-CN.md)。TrueNAS 保存时会去掉 YAML 里的注释，这是正常的。
-
-</details>
-
-<details>
-<summary>4. 打开应用日志，复制最新的设置码</summary>
-
-1. 等应用显示为运行中，打开**应用 → 已安装 → 你的应用 → 工作负载**，在容器那一行点文档图标（**查看日志**）。如果日志是空的，等一分钟再打开。
-2. 找最新的 `setup_code_issued` 事件：**最新的日志在最下面**。每条日志都是 JSON，设置码在它的 `msg` 文字里，以 `SETUP CODE:` 引出。
-3. 只复制 `SETUP CODE:` 后面的四组设置码，不带引号和句号。你的设置码与下面的示例不同。
-
-其余字段和 msg 后面的内容已省略（“...”）；实际日志是单独一行。
-
-```json
-{
-  "event": "setup_code_issued",
-  "msg": "SETUP CODE: 7KQ2-M9XD-4TWB-HE6R. ..."
-}
+```yaml
+services:
+  nvidia-driver-manager:
+    image: ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:latest
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    runtime: runc
+    volumes:
+      - /mnt/<pool>/<dataset>:/var/lib/nvm
+    ports:
+      - "8199:8199"
 ```
 
-</details>
+> [!WARNING]
+> `privileged: true` 和 `pid: host` 让应用能够控制 NAS 本机；管理器需要这些权限来更换主机驱动。安装前请先读[安全使用](#安全使用)。
 
-<details>
-<summary>5. 在浏览器打开管理器，创建管理员账号（含截图）</summary>
+管理器会发布在 NAS 的 8199 端口（bridge 方式）。macvlan、ipvlan、其他端口或离线使用方式见 [`deploy/compose.yaml`](deploy/compose.yaml) 和[部署说明](docs/deploy.zh-CN.md)。TrueNAS 保存时会去掉 YAML 注释，这是正常的。
 
-`<nas-ip>` 是平时打开 TrueNAS 用的地址，家庭网络里通常以 `192.168.` 开头。如果给应用单独分配了地址（macvlan），则用那个地址，见[部署说明](docs/deploy.zh-CN.md)。
+**3. 复制设置码。** 等应用显示为运行中，打开**应用 → 已安装 → 你的应用 → 工作负载**，在容器那一行点文档图标（**查看日志**）。最新的日志在最下面；日志为空时等一分钟再打开。找最新的 `setup_code_issued` 事件，每条日志都是 JSON，设置码在 `msg` 文字里。只复制 `SETUP CODE:` 后面的四组设置码，不带引号和句号。你的设置码与示例不同（其余字段和消息后面的内容已省略，实际日志是单独一行）：
 
-1. 在浏览器打开 `http://<nas-ip>:8199/`。
-2. 输入设置码，保留已填好的用户名 `admin`。
-3. 设定至少 8 个字符的密码，并输入两次。
-4. 点**创建管理员**。你就登录了，可以开始更新。
+```json
+{ "event": "setup_code_issued", "msg": "SETUP CODE: 7KQ2-M9XD-4TWB-HE6R. ..." }
+```
 
-如果设置码被拒绝，请看常见问题里的[展开“设置码被拒绝、已过期或找不到。”](#常见问题)
+**4. 创建管理员。** 在浏览器打开 `http://<nas-ip>:8199/`（`<nas-ip>` 是平时打开 TrueNAS 用的地址；macvlan 则用应用自己的地址），输入设置码，保留用户名 `admin`，设定至少 8 个字符的密码并输入两次，然后点**创建管理员**。你就登录了。
 
-<img src="docs/images/setup-zh.png" width="500" alt="设置页面：输入设置码并设定管理员密码。">
+<img src="docs/images/setup-zh.png" width="900" alt="设置页面：输入设置码并设定管理员密码。">
 
 *仅为示例。请到应用日志里取你的设置码，输入后设定管理员密码。*
 
-设置码只能使用一次，24 小时内有效。设置完成前重启应用会生成新的设置码，所以请始终用最新的一条。设置码只用于第一次启动。以后打开同一个地址，用 `admin` 和你的密码登录即可。之后重启应用不需要设置码。
-
-</details>
+设置码只能使用一次，24 小时内有效；设置完成前重启应用会生成新的设置码，所以始终用最新的一条。设置码只用于第一次启动，以后打开同一个地址，用 `admin` 和你的密码登录即可。设置完成后重启应用不需要设置码。设置码被拒绝时，请看[常见问题](#常见问题)。
 
 ## 更新你的驱动
 
-点开每一步可以看详细说明和截图。
+> [!WARNING]
+> 换驱动会中断所有使用显卡的应用。请选择空闲时段，第一次更新前先保存原版驱动，并准备好直接操作 NAS 的方式（TrueNAS 的命令行，或接在 NAS 上的键盘和显示器），以防显卡没有恢复。
+
+1. 打开**更新驱动**，勾选显卡，选择 NVIDIA 官网版本，点**检查并继续**。
+2. 自己停掉检查结果里列出的占用显卡的应用，管理器不会替你停止应用。
+3. 选择**保存原版并开始**，确认更新。
+4. 等待任务完成，关掉浏览器也不影响任务继续运行。
+5. 确认任务**成功**，并核对任务页和主页上的新驱动版本。
+6. **重启使用显卡的应用**，尤其是主页“驱动版本已变更”下列出的应用，以及提示 “Driver/library version mismatch” 的应用。
+
+每一步的截图和详细说明见下面的更新指南。
+
+## 更新指南
 
 <details>
 <summary>1. 选择显卡和 NVIDIA 官网驱动版本，点<strong>检查并继续</strong>（含截图）</summary>
@@ -117,7 +89,7 @@
 
 **上传 .run** 按钮用于你自己下载的安装包，见下文的[展开驱动来源](#驱动来源)。
 
-![更新驱动页面：选择 NVIDIA 官网版本，然后点“检查并继续”。](docs/images/update-zh.png)
+<img src="docs/images/update-zh.png" width="900" alt="更新驱动页面：选择 NVIDIA 官网版本，然后点“检查并继续”。">
 
 *选好 NVIDIA 官网版本，先检查再继续。*
 
@@ -135,7 +107,7 @@
 
 弹窗会显示来源、版本和你的系统信息。如果问你是否保存原版驱动，请选**保存原版并开始**，这样最稳妥。如果原版已经保存过，按钮会显示为**开始更新**。
 
-![官网版本的“确认更新”弹窗，按钮有“保存原版并开始”“不保存，直接开始”和“返回选择”。](docs/images/plan-zh.png)
+<img src="docs/images/plan-zh.png" width="900" alt="官网版本的“确认更新”弹窗，按钮有“保存原版并开始”“不保存，直接开始”和“返回选择”。">
 
 *核对版本和系统信息，开始前先保存原版驱动。*
 
@@ -146,7 +118,7 @@
 
 任务页会显示当前阶段；实时日志在页面下方。同一时间只运行一个更新，关掉浏览器也不影响它继续运行。下载和构建默认共用 30 分钟的时限；如果在驱动文件被替换之前超时，更新会停止，驱动文件保持不变。
 
-![进行中的任务，显示当前阶段。](docs/images/running-zh.png)
+<img src="docs/images/running-zh.png" width="900" alt="进行中的任务，显示当前阶段。">
 
 *任务页会突出显示当前阶段。*
 
@@ -157,7 +129,7 @@
 
 任务状态为**成功**，更新后的检查会显示你的新版本。主页显示的版本也一致。
 
-![已完成的任务，提示更新完成。](docs/images/success-zh.png)
+<img src="docs/images/success-zh.png" width="900" alt="已完成的任务，提示更新完成。">
 
 *确认任务成功，并核对更新后检查里的版本。*
 
@@ -170,18 +142,20 @@
 
 </details>
 
+## 本地驱动
+
 <details>
 <summary>本地驱动：已保存的版本与可用操作</summary>
 
 **本地驱动**页列出管理器构建或保存过的驱动。在它们之间切换，不用重新下载。
 
-![本地驱动页，正在使用的驱动有标记。](docs/images/drivers-zh.png)
+<img src="docs/images/drivers-zh.png" width="900" alt="本地驱动页，正在使用的驱动有标记。">
 
 *本地驱动页会标出正在使用的版本，并保留已保存的版本供切换。*
 
 </details>
 
-### 驱动来源
+## 驱动来源
 
 <details>
 <summary>展开三种驱动来源</summary>
@@ -194,7 +168,9 @@
 
 </details>
 
-## 出了问题怎么办
+## 排障
+
+失败后务必查看主页，确认当前加载的是哪个驱动。
 
 <details>
 <summary>展开排错与恢复说明</summary>
@@ -232,7 +208,7 @@
 <details>
 <summary>能用在其他 TrueNAS 版本或 ARM 上吗？</summary>
 
-只测试过 TrueNAS SCALE 25.10.7 / amd64，其他版本和芯片都没测试。列表里有某个版本，不等于它一定适合你的显卡和应用。确认前请先看检查结果和警告。
+支持并实测了 TrueNAS SCALE 25.10.7 与 TrueNAS 27.0.0-RC.1 / amd64，其他版本与架构都没测试。Maxwell、Pascal、Volta 显卡在 TrueNAS 27 上尚未实测。列表里有某个版本，不等于它一定适合你的显卡和应用。确认前请先看检查结果和警告。
 
 </details>
 
@@ -290,7 +266,7 @@ NAS 需要能访问 NVIDIA 下载站、Docker Hub 和 Debian 软件包存档。�
 
 先备份数据目录。使用 `latest` 标签时，打开**应用 → 已安装**，点你的应用，有新镜像时在**应用信息**卡片上选 **⋮ → 更新**。想换到固定版本，就点**编辑**，把镜像标签改成版本号后保存。改动应用本身不会改变 NAS 上的 NVIDIA 驱动。如果想换回原版驱动，请先在**本地驱动**里操作。详情见[部署说明](docs/deploy.zh-CN.md)。删除管理器的分步说明还没有写。
 
-YAML 里的镜像标签是 `latest`。想固定在某个版本，可以改成 `0.2.1`：`ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.1`。
+YAML 里的镜像标签是 `latest`。想固定在某个版本，可以改成 `0.3.0`：`ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.0`。
 
 </details>
 
@@ -309,7 +285,7 @@ YAML 里的镜像标签是 `latest`。想固定在某个版本，可以改成 `0
 <summary>可选：验证镜像确实来自本仓库</summary>
 
 ```bash
-gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.1 --repo sky-zhang01/truenas-nvidia-driver-manager
+gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.0 --repo sky-zhang01/truenas-nvidia-driver-manager
 ```
 
 </details>

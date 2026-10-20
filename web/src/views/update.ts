@@ -26,7 +26,7 @@ import {
 import type { App } from "../main.js";
 import { conflict, fileTooLarge, filterVersions, gpuLabel, queryObjectKey, toolkitTooOld, versionFormatOk } from "../rules.js";
 import { closeDialog, openDialog } from "../dialog.js";
-import { openCheckDialog, openConfirmDialog, renderPlanError } from "./plan.js";
+import { armUpdateCheckStatus, openCheckDialog, openConfirmDialog, renderPlanError } from "./plan.js";
 
 // A failed login-status read cannot authorize writes using an earlier result.
 export function loginReadFailed(app: App): boolean {
@@ -319,6 +319,7 @@ export function renderUpdate(app: App, container: HTMLElement): void {
       planInFlight = true;
       updateBtn.disabled = true;
       clear(errorBox);
+      const stopCheckStatus = armUpdateCheckStatus(updateBtn, lang);
       void (async () => {
         try {
           const res = await postPlan({
@@ -376,6 +377,7 @@ export function renderUpdate(app: App, container: HTMLElement): void {
             errorBox.append(apiErrorNotice(err, lang));
           }
         } finally {
+          stopCheckStatus();
           planInFlight = false;
           if (container.isConnected) refreshButton();
         }

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { expand, expandText, messageLine, type Params } from "../src/dom.js";
-import { logParams } from "../src/views/tasks.js";
+import { logParams, gpuDiagnosticText } from "../src/views/tasks.js";
 import { FakeElement, FakeText, domShim, installDom } from "./dom-shim.js";
 
 test("two-failures notice shows only this occurrence's readings", () => {
@@ -40,6 +40,27 @@ test("account-reset help describes setup code renewal and the data that stays", 
     assert.match(exp, lang === "en" ? /tasks and drivers stay/ : /任务和驱动不受影响/);
     assert.equal(exp.includes("NVM_INITIAL_ADMIN_PASSWORD"), false);
   }
+});
+
+test("an in-use unload wait is readable in Chinese and English", () => {
+  const params = logParams("log.module_unload_wait", {
+    module: "nvidia",
+    waited_ms: 2200,
+    retries: 1,
+    result: "unloaded",
+  });
+  assert.deepEqual(params["result"], { key: "log.unload_wait.unloaded", params: {} });
+  const zh = expandText("log.module_unload_wait", params, "zh");
+  const en = expandText("log.module_unload_wait", params, "en");
+  assert.match(zh, /nvidia/);
+  assert.match(zh, /2200/);
+  assert.match(zh, /1/);
+  assert.match(zh, /已卸载/);
+  assert.equal(zh.includes("unloaded"), false);
+  assert.match(en, /nvidia/);
+  assert.match(en, /2200/);
+  assert.match(en, /unloaded/);
+  assert.equal(en.includes("已卸载"), false);
 });
 
 test("runner log field names map to the catalog placeholders", () => {
@@ -106,7 +127,7 @@ test("unload-refused notice: the reload-failed writing", () => {
 
 test("restore-stopped notice: busy, unreadable, unload-refused and reload-failed", () => {
   const busy = expand("notice.restore_stopped", { target: "595.104.02", check_reason: "x", original: "580.178.04", current: "595.104.02" }, "en", "busy");
-  assert.match(seg(busy, "body"), /The GPU was in use/);
+  assert.match(seg(busy, "body"), /The GPU stayed in use/);
 
   const unreadable = expand(
     "notice.restore_stopped",
@@ -347,7 +368,10 @@ test("restore-stopped notice with an empty application list keeps its Local-driv
   };
   const busy = expand("notice.restore_stopped", { ...params }, "en", "busy");
   assert.equal(seg(busy, "list"), "");
-  assert.match(seg(busy, "action"), /Select the original driver 580\.178\.04 in Local drivers and update\./);
+  assert.match(
+    seg(busy, "action"),
+    /Select the original driver in Local drivers and update\. If an app keeps restarting, stop it first\./,
+  );
   assert.equal(seg(busy, "action").includes("Stop the applications below"), false);
   const unreadable = expand(
     "notice.restore_stopped",
@@ -406,7 +430,7 @@ test("runner log records map to the placeholder values", () => {
   });
   assert.match(
     expandText("log.gpu_users", failedCategory, "en"),
-    /Applications that requested the GPU: Incus container query failed\./,
+    /Applications that requested the GPU: TrueNAS container instances query failed\./,
   );
 });
 
@@ -556,4 +580,15 @@ test("the sign-in page carries the usage line and the collapsed account guidance
   assert.ok(detailsEn, "the English guidance is missing");
   assert.match(detailsEn.textContent, /No account|administrator account/);
   assert.match(elements(shimEn)[1]?.textContent ?? "", /administrator account/);
+});
+
+
+test("GPU diagnostic line shows names and PCI addresses or the actual read reason in both languages", () => {
+  for (const lang of ["en", "zh"] as const) {
+    assert.equal(gpuDiagnosticText({ value: [{ name: "NVIDIA Example", pci_address: "00000000:01:00.0" }] }, lang), "NVIDIA Example (00000000:01:00.0)");
+    assert.match(gpuDiagnosticText({ unknown: { key: "reason.exit_status", params: { code: 9 } } }, lang), /9/);
+    assert.equal(gpuDiagnosticText(null, lang), expandText("task.gpus.not_read", {}, lang));
+    assert.equal(gpuDiagnosticText({ value: [] }, lang), expandText("task.gpus.none", {}, lang));
+    assert.match(expandText("task.gpus", {}, lang), /nvidia-smi/);
+  }
 });

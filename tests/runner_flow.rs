@@ -4,8 +4,9 @@ mod common;
 
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
 use truenas_nvidia_driver_manager::codes::*;
@@ -147,6 +148,153 @@ fn run_until_blocked(host: &FakeHost, gate: &Arc<common::fake_host::Gate>) -> Bl
     };
     runner.wait_at(gate);
     runner
+}
+
+/// S6.25. A periodic opener is idle at t=0 (occupancy passes) and busy at the first `rmmod`.
+/// Samples 2s apart stay busy; a 0.2s poll reaches the idle gap. The old single `rmmod` fails.
+#[test]
+fn periodic_opener_waits_for_the_gap_then_finishes_the_update() {
+    let host = scene(false);
+    // Period 3s: busy for 2s (phase <= 2000ms), idle for the following 1s. Phase 2500ms at
+    // offset 0 is idle. The first nvidia rmmod lands 500ms later, on phase 0. Offsets
+    // 500/2500/4500ms are phases 0/2000/1000, all busy; 2700ms is phase 2200, idle.
+    host.periodic_open(
+        "nvidia",
+        Duration::from_secs(2),
+        Duration::from_secs(1),
+        Duration::from_millis(2500),
+    );
+    host.unload_takes("nvidia", Duration::from_millis(500));
+    assert_eq!(
+        host.displayed_refcount_at("nvidia", Duration::ZERO),
+        Some(0)
+    );
+    for at in [500, 2500, 4500] {
+        assert_eq!(
+            host.displayed_refcount_at("nvidia", Duration::from_millis(at)),
+            Some(1),
+            "old 2s grid stays busy at {at}ms"
+        );
+    }
+    assert_eq!(
+        host.displayed_refcount_at("nvidia", Duration::from_millis(2700)),
+        Some(0)
+    );
+    let wall = std::time::Instant::now();
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert!(
+        wall.elapsed() < Duration::from_secs(10),
+        "the wait must use the fake clock, elapsed {:?}",
+        wall.elapsed()
+    );
+    let state = persisted(&host);
+    assert_eq!(
+        state.status,
+        Status::Succeeded,
+        "error {:?} canonical {:?}",
+        state.error.as_ref().map(|error| &error.code),
+        host.file(CANONICAL_PATH).as_deref()
+    );
+    assert!(state.checks[0].passed);
+    assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(NEW_BYTES));
+    let argv = host.argv_log();
+    let mv = argv.iter().position(|cmd| cmd[0] == "mv").expect("mv");
+    let nvidia_rmmods = argv
+        .iter()
+        .enumerate()
+        .filter(|(_, cmd)| cmd.as_slice() == ["rmmod", "nvidia"])
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert!(
+        nvidia_rmmods.iter().all(|index| *index < mv),
+        "canonical replacement ran before nvidia was unloaded: {argv:?}"
+    );
+    let waits = &state.replace[0].unload_waits;
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].module, "nvidia");
+    assert_eq!(
+        waits[0].result,
+        truenas_nvidia_driver_manager::task_state::UnloadWaitResult::Unloaded
+    );
+    assert_eq!(waits[0].retries, 1);
+    assert!(
+        (2_200..10_000).contains(&waits[0].waited_ms),
+        "waited_ms {}",
+        waits[0].waited_ms
+    );
+    assert_eq!(host.count("sleep"), 0);
+}
+
+/// S6.26. The core stays busy for longer than the wait. The task fails, reloads what it
+/// already unloaded, and leaves the permanent file alone.
+#[test]
+fn sustained_open_refuses_the_first_unload_and_keeps_the_file() {
+    let host = scene(false);
+    host.load_module("nvidia_drm", 0, &[]);
+    host.sustain_open("nvidia", Duration::from_millis(1), Duration::from_secs(120));
+    host.unload_takes("nvidia", Duration::from_millis(1));
+    assert_eq!(
+        host.displayed_refcount_at("nvidia", Duration::ZERO),
+        Some(0)
+    );
+    assert_eq!(
+        host.displayed_refcount_at("nvidia", Duration::from_millis(1)),
+        Some(1)
+    );
+    let wall = std::time::Instant::now();
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert!(
+        wall.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        wall.elapsed()
+    );
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Failed);
+    let error = state.error.unwrap();
+    assert_eq!(error.code, "MODULE_UNLOAD_REFUSED");
+    assert_eq!(error.params["module"], "nvidia");
+    assert_eq!(state.replace[0].unloaded, ["nvidia_drm"]);
+    assert_eq!(
+        state.replace[0]
+            .reloaded
+            .iter()
+            .map(|row| row.module.as_str())
+            .collect::<Vec<_>>(),
+        ["nvidia_drm"]
+    );
+    assert!(state.replace[0].reloaded[0].ok);
+    assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(OLD_BYTES));
+    assert_eq!(
+        sha256_hex(host.file(CANONICAL_PATH).as_deref().unwrap()),
+        sha256_hex(OLD_BYTES)
+    );
+    assert_eq!(host.count("mv"), 0);
+    let waits = &state.replace[0].unload_waits;
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].module, "nvidia");
+    assert_eq!(
+        waits[0].result,
+        truenas_nvidia_driver_manager::task_state::UnloadWaitResult::Refused
+    );
+    assert_eq!(waits[0].retries, 0);
+    assert!(waits[0].waited_ms >= 30_000, "{}", waits[0].waited_ms);
+    let argv = host.argv_log();
+    assert!(argv
+        .iter()
+        .any(|cmd| cmd.as_slice() == ["rmmod", "nvidia_drm"]));
+    assert!(argv.iter().any(|cmd| cmd.as_slice() == ["rmmod", "nvidia"]));
+    assert!(argv
+        .iter()
+        .any(|cmd| cmd.as_slice() == ["modprobe", "nvidia_drm"]));
+    assert!(argv
+        .iter()
+        .all(|cmd| !(cmd[0] == "rmmod" && cmd.iter().any(|arg| arg == "-f"))));
+    assert!(argv.iter().all(|cmd| {
+        !(cmd[0] == "systemctl"
+            && cmd
+                .iter()
+                .any(|arg| ["stop", "mask", "disable"].contains(&arg.as_str())))
+    }));
 }
 
 #[test]
@@ -485,7 +633,8 @@ fn signaled_check_restores_original(
         );
         assert!(state.checks[1].passed);
         assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(OLD_BYTES));
-        assert_eq!(host.count("modprobe"), 2);
+        // Only `nvidia` is loaded at the start, so each pass reloads the usual three.
+        assert_eq!(host.count("modprobe"), 6);
         let log = host
             .file_text(paths().state_log(ID).to_str().unwrap())
             .unwrap();
@@ -1092,7 +1241,8 @@ fn invalid_kernel_never_reaches_docker_mount_arguments() {
     for kernel in ["6.12.105,readonly=false", "6.12.105 bad", "6.12.105\nother"] {
         let host = FakeHost::new();
         host.set_uname(kernel);
-        let failure = runner::build::build(&mut build_ctx(&host), &build_env()).unwrap_err();
+        let failure =
+            runner::build::build(&mut build_ctx(&host), &build_env(), "gcc-12").unwrap_err();
         assert_eq!(failure.code.as_str(), "BUILD_FAILED");
         assert_eq!(failure.params["reason"]["key"], BUILD_DOCKER_RUN_FAILED);
         assert!(failure.raw.unwrap().contains(REASON_FORMAT_UNRECOGNIZED));
@@ -1107,7 +1257,7 @@ fn expired_build_budget_never_starts_a_container() {
     ctx.build_deadline = Some(host.now() + std::time::Duration::from_secs(1));
     host.advance(std::time::Duration::from_secs(1));
 
-    let failure = runner::build::build(&mut ctx, &build_env()).unwrap_err();
+    let failure = runner::build::build(&mut ctx, &build_env(), "gcc-12").unwrap_err();
     assert_eq!(failure.code, ErrorCode::BuildTimeout);
     assert!(failure.command.is_none());
     assert!(failure.raw.is_none());
@@ -1127,7 +1277,7 @@ fn signaled_docker_run_reports_a_build_failure_for_stage_fifteen_cleanup() {
     signaled.stdout = b"NVM:STEP:check\nprogress\n".to_vec();
     signaled.stderr = b"terminated\n".to_vec();
     host.preset_once("docker", &["run"], signaled);
-    let failure = runner::build::build(&mut build_ctx(&host), &build_env()).unwrap_err();
+    let failure = runner::build::build(&mut build_ctx(&host), &build_env(), "gcc-12").unwrap_err();
     assert_eq!(failure.code, ErrorCode::BuildFailed);
     assert_eq!(
         failure.params["reason"],
@@ -1143,7 +1293,7 @@ fn signaled_docker_run_reports_a_build_failure_for_stage_fifteen_cleanup() {
 fn valid_newer_kernel_is_used_in_build_mounts() {
     let host = FakeHost::new();
     host.set_uname("6.12.120-production+truenas");
-    let _ = runner::build::build(&mut build_ctx(&host), &build_env());
+    let _ = runner::build::build(&mut build_ctx(&host), &build_env(), "gcc-12");
     let docker = host
         .commands()
         .into_iter()
@@ -1163,7 +1313,7 @@ fn valid_newer_kernel_is_used_in_build_mounts() {
 fn the_build_container_runs_the_pinned_environment() {
     let host = FakeHost::new();
     let env = build_env();
-    let _ = runner::build::build(&mut build_ctx(&host), &env);
+    let _ = runner::build::build(&mut build_ctx(&host), &env, "gcc-12");
     let docker = host
         .commands()
         .into_iter()
@@ -1572,4 +1722,592 @@ fn regular_artifact_files_still_pass_the_check() {
     assert_eq!(artifact.size, payload.len() as u64);
     assert_eq!(artifact.version, "580.178.04");
     assert_eq!(artifact.target_kernel, KERNEL);
+}
+
+#[test]
+fn unsupported_kernel_compiler_stops_both_build_sources_before_any_download() {
+    for source in [
+        PlanSource::Official,
+        PlanSource::Upload {
+            run_sha256: "a".repeat(64),
+            fingerprint: "a".repeat(12),
+            deb_sha256: TOOLKIT_PACKAGES
+                .iter()
+                .map(|p| (p.to_string(), "a".repeat(64)))
+                .collect(),
+        },
+    ] {
+        let host = scene(false);
+        host.put_text(
+            &format!("/boot/config-{KERNEL}"),
+            "CONFIG_CC_VERSION_TEXT=\"gcc (Debian 15.1.0-1) 15.1.0\"\n",
+        );
+        let mut state = persisted(&host);
+        state.plan.as_mut().unwrap().source = source;
+        task_state::write(&host, &paths(), &state).unwrap();
+        assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+        let state = persisted(&host);
+        assert_eq!(state.status, Status::Failed);
+        assert_eq!(
+            state.error.unwrap().params["reason"]["key"],
+            "compiler_missing:gcc-15"
+        );
+        assert_eq!(host.count("curl"), 0);
+        // Terminal cleanup lists/removes task containers; it must never prepare an image.
+        assert!(host
+            .commands()
+            .iter()
+            .filter(|c| c.program == "docker")
+            .all(|c| matches!(c.args.first().map(String::as_str), Some("ps" | "rm"))));
+        assert_eq!(host.count("mv"), 0);
+    }
+}
+
+#[test]
+fn local_replacement_needs_no_kernel_compiler_configuration() {
+    let host = scene(false);
+    host.remove(&format!("/boot/config-{KERNEL}"));
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert_eq!(persisted(&host).status, Status::Succeeded);
+}
+
+#[test]
+fn unreadable_gpu_diagnostic_does_not_fail_or_restore_a_successful_update() {
+    let host = scene(true);
+    host.preset(
+        "nvidia-smi",
+        &["--query-gpu=name,pci.bus_id", "--format=csv,noheader"],
+        FakeOutput::code(9).with_stderr("No devices were found"),
+    );
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    assert_eq!(state.replace.len(), 1);
+    let diagnostic = serde_json::to_value(&state).unwrap();
+    assert_eq!(
+        diagnostic["nvidia_smi_gpus"]["unknown"]["key"],
+        "reason.exit_status"
+    );
+    assert_eq!(
+        diagnostic["nvidia_smi_gpus"]["unknown"]["params"]["code"],
+        9
+    );
+}
+
+#[test]
+fn check_persists_gpu_names_and_pci_addresses() {
+    let host = scene(false);
+    host.preset(
+        "nvidia-smi",
+        &["--query-gpu=name,pci.bus_id", "--format=csv,noheader"],
+        FakeOutput::stdout(
+            "NVIDIA Example GPU, 00000000:01:00.0\nNVIDIA Other GPU, 00000000:02:00.0\n",
+        ),
+    );
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    let diagnostic = serde_json::to_value(&state).unwrap();
+    assert_eq!(
+        diagnostic["nvidia_smi_gpus"]["value"][0]["name"],
+        "NVIDIA Example GPU"
+    );
+    assert_eq!(
+        diagnostic["nvidia_smi_gpus"]["value"][1]["pci_address"],
+        "00000000:02:00.0"
+    );
+}
+
+#[test]
+fn empty_or_malformed_gpu_diagnostics_do_not_change_success() {
+    for text in ["", "GPU, malformed"] {
+        let host = scene(true);
+        host.preset(
+            "nvidia-smi",
+            &["--query-gpu=name,pci.bus_id", "--format=csv,noheader"],
+            FakeOutput::stdout(text),
+        );
+        assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+        let state = persisted(&host);
+        assert_eq!(state.status, Status::Succeeded);
+        assert_eq!(state.replace.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["nvidia_smi_gpus"]["unknown"]["key"],
+            "reason.format_unrecognized"
+        );
+    }
+}
+
+#[test]
+fn recovery_check_records_its_own_latest_gpu_diagnostic() {
+    let host = scene(true);
+    let args = &["--query-gpu=name,pci.bus_id", "--format=csv,noheader"];
+    host.preset(
+        "nvidia-smi",
+        args,
+        FakeOutput::stdout("NVIDIA Restored GPU, 0000:02:00.0\n"),
+    );
+    host.preset_once("nvidia-smi", args, FakeOutput::code(9));
+    host.preset_once(
+        "nvidia-smi",
+        &["--query-gpu=driver_version", "--format=csv,noheader"],
+        FakeOutput::stdout("0.0\n"),
+    );
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::StockRestored);
+    assert_eq!(state.checks.len(), 2);
+    assert_eq!(
+        serde_json::to_value(&state).unwrap()["nvidia_smi_gpus"]["value"][0]["name"],
+        "NVIDIA Restored GPU"
+    );
+}
+
+/// T3: the post-write alignment reading sees a hold of about one second. The update must
+/// wait that hold out, unload and reload, and finish succeeded.
+#[test]
+fn alignment_waits_out_a_brief_hold_then_succeeds() {
+    let host = scene(false);
+    host.autoload_on_write(false);
+    // Reads: (1) start, (2) first-unload occupancy, (3) alignment occupancy.
+    // Jump only the alignment reading into a one-second hold.
+    host.sustain_open("nvidia", Duration::from_secs(1), Duration::from_secs(1));
+    host.advance_on_proc_read(3, Duration::from_secs(1));
+    let started = std::time::Instant::now();
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the wait must use the fake clock, elapsed {:?}",
+        started.elapsed()
+    );
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    assert_eq!(
+        state
+            .loaded_version_end
+            .unwrap()
+            .as_value()
+            .map(String::as_str),
+        Some("580.178.04")
+    );
+    let correction = state.replace[0].module_correction.as_ref().unwrap();
+    assert!(
+        correction.stop_reason.is_none(),
+        "{:?}",
+        correction.stop_reason
+    );
+    assert!(!correction.reloaded.is_empty());
+    assert!(correction.reloaded.iter().all(|row| row.ok));
+    let text = String::from_utf8(host.read(Path::new(NVRM_VERSION_PATH)).unwrap()).unwrap();
+    assert!(text.contains("580.178.04"), "{text}");
+}
+
+/// A start reading that has the other driver modules but not `nvidia_drm` still reloads it.
+#[test]
+fn update_reloads_nvidia_drm_missing_at_start() {
+    let host = scene(false);
+    host.load_module("nvidia_modeset", 0, &[]);
+    host.load_module("nvidia_uvm", 0, &[]);
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    assert_eq!(
+        state.reload_targets.as_ref().unwrap().modules,
+        ["nvidia", "nvidia_uvm", "nvidia_modeset", "nvidia_drm"]
+    );
+    let probes = host
+        .argv_log()
+        .into_iter()
+        .filter(|argv| argv.first().is_some_and(|name| name == "modprobe"))
+        .collect::<Vec<_>>();
+    assert!(
+        probes
+            .iter()
+            .any(|argv| argv == &["modprobe".to_string(), "nvidia_drm".to_string()]),
+        "{probes:?}"
+    );
+    let modules = String::from_utf8(host.read(Path::new("/proc/modules")).unwrap()).unwrap();
+    assert!(
+        modules.lines().any(|line| line.starts_with("nvidia_drm ")),
+        "{modules}"
+    );
+}
+
+fn saw_waiting_gpu(host: &FakeHost) -> Arc<AtomicBool> {
+    let saw = Arc::new(AtomicBool::new(false));
+    host.on_wait({
+        let host = host.clone();
+        let saw = saw.clone();
+        move || {
+            let path = paths().state(ID);
+            if host
+                .file_text(path.to_str().unwrap())
+                .is_some_and(|text| text.contains("\"waiting_gpu\""))
+            {
+                saw.store(true, Ordering::SeqCst);
+            }
+        }
+    });
+    saw
+}
+
+fn state_has_waiting_gpu(host: &FakeHost) -> bool {
+    host.file_text(paths().state(ID).to_str().unwrap())
+        .is_some_and(|text| text.contains("waiting_gpu"))
+}
+
+/// A one-second hold on the first unload is waited out, then the update continues.
+#[test]
+fn brief_occupancy_before_the_first_unload_then_continues() {
+    let host = scene(false);
+    host.sustain_open("nvidia", Duration::ZERO, Duration::from_secs(1));
+    let saw = saw_waiting_gpu(&host);
+    let started = Instant::now();
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(!saw.load(Ordering::SeqCst));
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    assert!(state.waiting_gpu.is_none());
+    assert!(!state_has_waiting_gpu(&host));
+    let wait = &state.replace[0].occupancy_waits;
+    assert_eq!(wait.len(), 1);
+    assert_eq!(wait[0].result, task_state::OccupancyWaitResult::Released);
+    assert!(
+        (1_000..3_000).contains(&wait[0].waited_ms),
+        "{}",
+        wait[0].waited_ms
+    );
+    let log = host
+        .file_text(paths().state_log(ID).to_str().unwrap())
+        .unwrap();
+    assert!(log.contains("log.occupancy_wait"));
+    assert!(log.contains("\"result\":\"released\""));
+    assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(NEW_BYTES));
+    assert!(host.count("rmmod") >= 1);
+}
+
+/// A hold that outlasts 30 seconds stops the update before any module is unloaded.
+#[test]
+fn sustained_occupancy_stops_before_unload_and_keeps_the_file() {
+    let host = scene(false);
+    host.load_module("nvidia", 2, &[]);
+    let saw = saw_waiting_gpu(&host);
+    let started = Instant::now();
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(saw.load(Ordering::SeqCst));
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Failed);
+    assert_eq!(state.error.unwrap().code, "GPU_IN_USE");
+    assert!(state.waiting_gpu.is_none());
+    assert!(!state_has_waiting_gpu(&host));
+    assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(OLD_BYTES));
+    assert_eq!(host.count("rmmod"), 0);
+    let wait = &state.replace[0].occupancy_waits;
+    assert_eq!(wait.len(), 1);
+    assert_eq!(wait[0].result, task_state::OccupancyWaitResult::StillInUse);
+    assert!(wait[0].waited_ms >= 30_000, "{}", wait[0].waited_ms);
+}
+
+/// Alignment stays busy for the whole wait, so that round does not unload. Restore waits again.
+#[test]
+fn alignment_stays_busy_then_restore_waits_and_stops() {
+    let host = scene(true);
+    host.autoload_on_write(false);
+    // Reads: (1) start, (2) first-unload occupancy, (3) alignment occupancy.
+    host.sustain_open("nvidia", Duration::from_secs(1), Duration::from_secs(60));
+    host.advance_on_proc_read(3, Duration::from_secs(1));
+    let started = Instant::now();
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Failed);
+    let error = state.error.unwrap();
+    assert_eq!(error.code, "RESTORE_ABORTED");
+    assert_eq!(error.params["cause"], "busy");
+    assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(NEW_BYTES));
+    assert_eq!(host.count("rmmod"), 1);
+    assert_eq!(state.replace.len(), 2);
+    let correction = state.replace[0].module_correction.as_ref().unwrap();
+    assert!(correction.unloads.is_empty());
+    assert!(correction.reloaded.is_empty());
+    assert_eq!(correction.occupancy_waits.len(), 1);
+    assert_eq!(
+        correction.occupancy_waits[0].result,
+        task_state::OccupancyWaitResult::StillInUse
+    );
+    assert!(state.replace[1].unloaded.is_empty());
+    assert_eq!(state.replace[1].occupancy_waits.len(), 1);
+    assert_eq!(
+        state.replace[1].occupancy_waits[0].result,
+        task_state::OccupancyWaitResult::StillInUse
+    );
+    assert!(state.replace[1].occupancy_waits[0].waited_ms >= 30_000);
+}
+
+/// The four usual modules still reload in reverse unload order.
+#[test]
+fn four_loaded_modules_reload_in_reverse_unload_order() {
+    let host = scene(false);
+    host.load_module("nvidia_uvm", 0, &[]);
+    host.load_module("nvidia_modeset", 0, &[]);
+    host.load_module("nvidia_drm", 0, &[]);
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    assert_eq!(
+        state.reload_targets.as_ref().unwrap().modules,
+        ["nvidia", "nvidia_uvm", "nvidia_modeset", "nvidia_drm"]
+    );
+}
+
+#[test]
+fn external_old_module_during_update_is_corrected_once() {
+    let host = scene(false);
+    host.autoload_on_write(false);
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    assert_eq!(
+        state
+            .loaded_version_end
+            .unwrap()
+            .as_value()
+            .map(String::as_str),
+        Some("580.178.04")
+    );
+    assert_eq!(host.count("mv"), 1);
+    assert_eq!(host.count("systemd-sysext"), 5);
+    assert_eq!(host.count("rmmod"), 3); // first core + current uvm and core
+    assert!(!host
+        .argv_log()
+        .iter()
+        .any(|a| a == &["modprobe", "nvidia_uvm"]));
+}
+
+#[test]
+fn external_new_module_during_restore_is_corrected_once() {
+    let host = scene(true);
+    host.preset_once("nvidia-smi", &[], FakeOutput::code(18));
+    host.autoload_on_write(true);
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::StockRestored);
+    assert_eq!(
+        state
+            .loaded_version_end
+            .unwrap()
+            .as_value()
+            .map(String::as_str),
+        Some("580.173.02")
+    );
+    assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(OLD_BYTES));
+    assert_eq!(host.count("mv"), 2);
+    assert_eq!(host.count("systemd-sysext"), 10);
+}
+
+#[test]
+fn external_same_version_module_from_different_file_is_corrected_once() {
+    let host = scene(false);
+    let row_id = format!("{ID}-build");
+    let row = record(RowKind::Official, "580.173.02", NEW_BYTES);
+    put_row(&host, &row_id, &row, NEW_BYTES);
+    let mut state = persisted(&host);
+    state.plan.as_mut().unwrap().version = "580.173.02".into();
+    task_state::write(&host, &paths(), &state).unwrap();
+    host.autoload_on_write(false);
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    assert_eq!(persisted(&host).status, Status::Succeeded);
+    // First unload of nvidia, then the alignment round unloads drm, modeset, uvm and nvidia.
+    assert_eq!(host.count("rmmod"), 5);
+    let text = String::from_utf8(host.read(Path::new(NVRM_VERSION_PATH)).unwrap()).unwrap();
+    assert!(
+        text.contains(&sha256_hex(NEW_BYTES)),
+        "old module stayed resident: {text}"
+    );
+    assert_eq!(host.count("mv"), 1);
+}
+
+#[test]
+fn correction_refusal_still_runs_f11_and_only_one_restore() {
+    for restore_race in [false, true] {
+        let host = scene(true);
+        host.autoload_on_write(false);
+        if restore_race {
+            host.autoload_on_write(true);
+        }
+        host.refuse_correction_unload("nvidia");
+        let started = std::time::Instant::now();
+        assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "alignment waits on the fake clock, elapsed {:?}",
+            started.elapsed()
+        );
+        let state = persisted(&host);
+        assert_eq!(state.replace.len(), 2);
+        assert_eq!(state.checks.len(), 2);
+        assert!(!state.checks[0].passed);
+        assert_eq!(
+            state.status,
+            if restore_race {
+                Status::Failed
+            } else {
+                Status::StockRestored
+            }
+        );
+        if restore_race {
+            assert_eq!(state.error.unwrap().code, "RESTORE_CHECK_FAILED");
+        }
+        assert_eq!(host.file(CANONICAL_PATH).as_deref(), Some(OLD_BYTES));
+        for r in state
+            .replace
+            .iter()
+            .filter(|r| r.module_correction.is_some())
+        {
+            let c = r.module_correction.as_ref().unwrap();
+            let nvidia_waits = c
+                .waits
+                .iter()
+                .filter(|wait| wait.module == "nvidia")
+                .collect::<Vec<_>>();
+            assert_eq!(nvidia_waits.len(), 1);
+            assert_eq!(
+                nvidia_waits[0].result,
+                truenas_nvidia_driver_manager::task_state::UnloadWaitResult::Refused
+            );
+            assert!(
+                nvidia_waits[0].waited_ms >= 30_000,
+                "{}",
+                nvidia_waits[0].waited_ms
+            );
+            assert!(nvidia_waits[0].retries >= 1);
+            assert!(c.unloads.iter().filter(|a| a.module == "nvidia").count() > 3);
+            assert!(c.reloaded.is_empty());
+        }
+        assert_eq!(host.count("mv"), 2);
+        assert_eq!(host.count("systemd-sysext"), 10);
+        host.assert_red_lines();
+        for cmd in host.argv_log() {
+            assert!(!cmd
+                .iter()
+                .any(|a| a.contains("docker.update") || a == "--collect"));
+            assert!(
+                !(cmd[0] == "systemctl"
+                    && cmd
+                        .iter()
+                        .any(|a| ["stop", "mask", "disable"].contains(&a.as_str())))
+            );
+            assert!(!(cmd[0] == "rmmod" && cmd.iter().any(|a| a == "-f")));
+        }
+        assert!(!host
+            .ops()
+            .iter()
+            .any(|op| op.path.contains("udev/rules") || op.path.contains("docker/daemon.json")));
+    }
+}
+
+#[test]
+fn correct_core_with_failed_drm_obeys_f11_without_extra_unloads() {
+    let host = scene(false);
+    host.load_module("nvidia_drm", 0, &[]);
+    host.fail_reload("nvidia_drm");
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    assert!(state.checks[0].passed);
+    assert!(state.replace[0].module_correction.is_none());
+    assert_eq!(host.count("rmmod"), 2);
+    assert_eq!(
+        state.replace[0]
+            .reloaded
+            .iter()
+            .filter(|r| !r.ok)
+            .map(|r| r.module.as_str())
+            .collect::<Vec<_>>(),
+        ["nvidia_drm"]
+    );
+}
+
+#[test]
+fn ordinary_update_only_adds_version_reads_without_a_corrective_round() {
+    let host = scene(false);
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert!(state.replace[0].module_correction.is_none());
+    assert_eq!(host.count("rmmod"), 1);
+    assert_eq!(host.count("modprobe"), 3);
+    assert_eq!(host.count("mv"), 1);
+    assert_eq!(host.count("systemd-sysext"), 5);
+    assert!(state.replace[0].module_version_before.is_some());
+}
+
+#[test]
+fn corrective_drm_failure_does_not_retry_a_correct_core_or_override_f11() {
+    let host = scene(false);
+    host.load_module("nvidia_drm", 0, &[]);
+    host.fail_reload("nvidia_drm");
+    host.autoload_on_write(false);
+    assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+    let state = persisted(&host);
+    assert_eq!(state.status, Status::Succeeded);
+    let record = &state.replace[0];
+    let c = record.module_correction.as_ref().unwrap();
+    assert_eq!(c.reloaded.len(), 3);
+    assert!(c.reloaded[0].ok);
+    assert_eq!(c.reloaded[0].module, "nvidia");
+    assert!(c.reloaded[1].ok);
+    assert_eq!(c.reloaded[1].module, "nvidia_modeset");
+    assert!(!c.reloaded[2].ok);
+    assert_eq!(c.reloaded[2].module, "nvidia_drm");
+    assert!(state.checks[0].passed);
+    assert_eq!(host.count("mv"), 1);
+    assert_eq!(c.unloads.iter().filter(|a| a.module == "nvidia").count(), 1);
+}
+
+#[test]
+fn no_initial_modules_loads_the_default_targets_with_or_without_a_race() {
+    for race in [false, true] {
+        let host = scene(false);
+        host.unload_module("nvidia");
+        if race {
+            host.autoload_on_write(false);
+        }
+        assert_eq!(run(&host), std::process::ExitCode::SUCCESS);
+        let state = persisted(&host);
+        assert_eq!(state.status, Status::Succeeded);
+        assert_eq!(
+            state.reload_targets.as_ref().unwrap().modules,
+            ["nvidia", "nvidia_drm", "nvidia_modeset"]
+        );
+        assert!(state.replace[0].unloaded.is_empty());
+        assert_eq!(state.replace[0].module_correction.is_some(), race);
+        assert_eq!(host.count("rmmod"), if race { 2 } else { 0 });
+        let probes = host
+            .argv_log()
+            .into_iter()
+            .filter(|a| a[0] == "modprobe")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &probes[..3],
+            &[
+                vec!["modprobe", "nvidia"],
+                vec!["modprobe", "nvidia_drm"],
+                vec!["modprobe", "nvidia_modeset"]
+            ]
+        );
+        assert!(!probes.iter().any(|a| a == &["modprobe", "nvidia_uvm"]));
+    }
 }

@@ -412,3 +412,46 @@ async fn a_refused_slot_restore_keeps_the_old_upload_in_place() {
         replacement
     );
 }
+
+#[test]
+fn unreadable_correction_accounts_survive_reconcile_copy_and_failed_copy() {
+    for phase in [Phase::AlignModules, Phase::RestoreAlignModules] {
+        for fail_copy in [false, true] {
+            let host = default_host();
+            let id = "20261003T010203Z-1234abcd";
+            invalid_state(&host, id);
+            let path = paths().state(id);
+            let mut raw: serde_json::Value =
+                serde_json::from_slice(&host.file(path.to_str().unwrap()).unwrap()).unwrap();
+            raw["phase"] = json!(phase.as_str());
+            raw["replace"] = json!([{
+                "pass": "update", "unloaded": [], "reloaded": [],
+                "module_correction": partial_module_correction(),
+            }]);
+            let before = serde_json::to_vec(&raw).unwrap();
+            host.put_file(path.to_str().unwrap(), before.clone());
+            host.fail_rename_suffix(".json");
+            if fail_copy {
+                host.fail_write("/var/lib/nvm/manager/state/");
+            }
+            for _ in 0..2 {
+                let result = truenas_nvidia_driver_manager::tasks::reconcile(&host, &paths());
+                assert_eq!(
+                    result.state_of(id).unwrap().status,
+                    if fail_copy {
+                        None
+                    } else {
+                        Some(Status::Interrupted)
+                    }
+                );
+                let protected = if fail_copy {
+                    path.clone()
+                } else {
+                    path.with_extension("json.unreadable")
+                };
+                assert_eq!(host.file(protected.to_str().unwrap()).unwrap(), before);
+            }
+            assert_eq!(host.count("systemd-run"), 0);
+        }
+    }
+}

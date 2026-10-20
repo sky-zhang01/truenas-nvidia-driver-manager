@@ -29,6 +29,12 @@ pub const REPLACE_DEADLINE_MINUTES: u64 = 10;
 pub const READING_TIMEOUT: Duration = Duration::from_secs(15);
 pub const HOST_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const HOST_CMD_TIMEOUT: Duration = Duration::from_secs(180);
+/// How often an in-use unload re-reads `/proc/modules`.
+pub const UNLOAD_WAIT_POLL: Duration = Duration::from_millis(200);
+/// Longest one module waits after `rmmod` reports that it is in use.
+pub const UNLOAD_WAIT_LIMIT: Duration = Duration::from_secs(30);
+/// How long a GPU wait runs before the task detail shows that it is still waiting.
+pub const GPU_WAIT_NOTICE: Duration = Duration::from_secs(3);
 pub const CATALOG_CONNECT: Duration = Duration::from_secs(5);
 pub const CATALOG_TOTAL: Duration = Duration::from_secs(15);
 pub const CATALOG_CMD_TIMEOUT: Duration = Duration::from_secs(20);
@@ -350,9 +356,11 @@ pub enum LogKey {
     ArtifactCheckFailed,
     RowCreated,
     Occupancy,
+    OccupancyWait,
     ReloadTargetDefault,
     ModuleUnloaded,
     ModuleUnloadRefused,
+    ModuleUnloadWait,
     RwMountConfirmed,
     TempVerified,
     DeadlineOk,
@@ -397,9 +405,11 @@ impl LogKey {
             LogKey::ArtifactCheckFailed => "log.artifact_check_failed",
             LogKey::RowCreated => "log.row_created",
             LogKey::Occupancy => "log.occupancy",
+            LogKey::OccupancyWait => "log.occupancy_wait",
             LogKey::ReloadTargetDefault => "log.reload_target_default",
             LogKey::ModuleUnloaded => "log.module_unloaded",
             LogKey::ModuleUnloadRefused => "log.module_unload_refused",
+            LogKey::ModuleUnloadWait => "log.module_unload_wait",
             LogKey::RwMountConfirmed => "log.rw_mount_confirmed",
             LogKey::TempVerified => "log.temp_verified",
             LogKey::DeadlineOk => "log.deadline_ok",

@@ -118,11 +118,56 @@ backup if you need to return to that release.
 
 - Back up the data directory: the credentials file, the task state and logs, and the local driver
   records (including the saved original driver file).
-- `<data-dir>/manager/build-kit-cache/` holds the verified build packages (about 53 MiB). It can be
+- `<data-dir>/manager/build-kit-cache/` holds the verified build packages (about 88 MiB). It can be
   deleted at any time; the next build downloads those packages again.
 - To restore, put the whole data directory back in place and start the App with the same compose
   file. The credentials file decides the account and password in use; restore it too and you do not
   have to rebuild the account.
+
+## Loaded module alignment
+
+After reloading modules, each update or original-driver restore reads the loaded kernel version.
+If another host component loaded the previous image's modules during replacement, the task page
+shows **Aligning loaded driver modules**, or **Restoring the original driver · Aligning loaded
+driver modules**. The same stage also covers a missing version file or an unchanged full kernel
+version text after switching to different image bytes with the same version number. Unparseable
+version text goes directly to the normal post-update check.
+
+Before the image is written, again before the alignment round unloads anything, and again before
+a restore unload, the program reads `/proc/modules`. If the GPU is in use it waits, re-reading
+about every 0.2 seconds, for at most about 30 seconds, and continues as soon as every `nvidia*`
+module's reference count drops to the number of modules that depend on it. An unreadable reading
+does not wait. Container start, health checks, and `exec` through the NVIDIA runtime can hold
+the GPU for a moment. On TrueNAS 27, after the `nvidia` module loads, `nvidia-cdi-refresh` holds
+the GPU for about 10 seconds, which is inside that wait. The update stops only when the GPU is
+still in use after the wait: no module is unloaded and the file on the permanent path stays
+unchanged. The alignment round and the restore pass wait the same way. If the alignment round is
+still busy after the wait, that round does not unload or reload, and the normal post-update check
+decides the result.
+
+An `rmmod` that fails because the module is in use uses the same interval and the same cap of
+about 30 seconds, then tries `rmmod` again. Container health checks and `exec` through
+`nvidia-container-runtime` can open an idle GPU for about two seconds, about every three seconds,
+so the occupancy reading can already be idle while the following `rmmod` is still refused. The
+program does not force-unload (`rmmod -f`), stop or mask any service, or change Docker
+configuration. If the first unload is still refused after the wait, the task fails, modules
+already unloaded are loaded again in reverse order, and the file on the permanent path stays
+unchanged. If an alignment-round unload is still refused after the wait, that round stops and
+the normal post-update check decides the result. Each wait is recorded with how long it lasted,
+how many retries it made, and how it ended.
+
+Reload targets are `nvidia`, `nvidia_drm`, and `nvidia_modeset`, plus any other driver module
+that was loaded when the task started, such as `nvidia_uvm`. Modules that others depend on load
+first. The restore pass and the alignment round use that same stored set. When the start reading
+cannot be read, the previous rule stays: an empty unload reloads `nvidia`, then `nvidia_drm`,
+then `nvidia_modeset`.
+
+This stage makes at most one additional unload/reload round from the current module list. If the
+core module cannot be removed, dependent modules are not reloaded. The reload targets stored at
+the start stay fixed; this stage neither rewrites nor refreshes the image. Its actions and version
+readings are recorded separately from the first round. The normal post-update check still decides
+the result: an unsuccessful update can restore the saved original once; an unsuccessful restore
+ends with a restore-check failure.
 
 ## Interrupted tasks
 
@@ -139,6 +184,9 @@ means, and the task page's details give that step and the task id.
 - Stopped while writing, refreshing or reloading, or during the matching unload, write, refresh or
   reload of a restore: this page cannot tell whether the driver file was replaced, and driver modules
   may be unloaded without having been loaded again.
+- Stopped during either module alignment stage: **the driver file has already been written**.
+  Modules may be unloaded without having been loaded again. Reconciliation keeps the stage and
+  its separate attempt records; it does not resume the task or start another update automatically.
 - What to do: check the loaded driver version on the home page and the check records in the task
   details to see the host's current state, then choose a version and update again. If modules did not
   come back and applications cannot use the GPU, check the current image and arrange a maintenance
@@ -157,6 +205,9 @@ means, and the task page's details give that step and the task id.
   id. If directory removal fails after the release is recorded, the next idle refresh retries it.
 - The `<id>-build` image in the local driver library uses separate space. Releasing task inputs
   keeps that image; delete it separately in the local drivers table when it is no longer needed.
+
+GPU-user queries list Docker containers and TrueNAS container instances. The program first calls `container.query` (including its device list), then uses `virt.instance.*` only when the host reports that the first API does not exist. If neither API exists, the instance list is empty. The task page also shows the GPU names and PCI addresses reported by a read-only `nvidia-smi` query during each post-replacement check, or the read failure reason. This is diagnostic only: it does not decide success or trigger recovery. After a recovery check, the row describes that latest check.
+
 
 ## Logs
 

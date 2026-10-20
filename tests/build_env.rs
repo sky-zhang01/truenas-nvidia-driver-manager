@@ -54,7 +54,7 @@ fn upload_source() -> PlanSource {
     }
 }
 
-/// A small manifest of the test's own: the 49 embedded packages have no real bytes inside a test,
+/// A small manifest of the test's own: the embedded packages have no real bytes inside a test,
 /// while every step here (offline hit, download, verification) needs bytes to compare.
 fn kit_manifest(files: &[(&str, &[u8])]) -> Vec<build_kit::KitPackage> {
     files
@@ -486,7 +486,8 @@ fn an_image_that_is_local_under_its_id_only_is_used_without_a_pull_and_is_kept()
     assert!(!has_docker(&host, "pull"));
     assert!(persisted(&host).build_env_pulled_image.is_none());
 
-    let failure = runner::build::build(&mut ctx, &env).expect_err("no artifact is preset");
+    let failure =
+        runner::build::build(&mut ctx, &env, "gcc-12").expect_err("no artifact is preset");
     assert_eq!(failure.params["reason"]["key"], BUILD_ARTIFACT_UNREADABLE);
     let run = docker_argvs(&host)
         .into_iter()
@@ -827,7 +828,7 @@ dpkg: error processing archive /build-kit/binutils_2.40-2_amd64.deb (--install):
     host.preset_once("docker", &["run"], run);
     let mut ctx = ctx(&host, upload_source());
 
-    let failure = runner::build::build(&mut ctx, &prepared_env()).unwrap_err();
+    let failure = runner::build::build(&mut ctx, &prepared_env(), "gcc-12").unwrap_err();
     assert_eq!(failure.code, ErrorCode::BuildFailed);
     assert_eq!(
         failure.params["reason"],
@@ -848,7 +849,7 @@ fn both_compiling_sources_prepare_the_build_environment() {
     for source in [PlanSource::Official, upload_source()] {
         let host = FakeHost::new();
         let mut ctx = ctx(&host, source.clone());
-        let outcome = runner::stage_build(&mut ctx, None);
+        let outcome = runner::stage_build(&mut ctx, None, "gcc-12");
         assert_eq!(outcome, Err(FlowStop::Terminal), "source {source:?}");
 
         assert!(has_docker(&host, "pull"), "source {source:?}");
@@ -1301,4 +1302,92 @@ fn a_symlink_inside_the_cache_is_removed_without_its_target() {
     assert!(!host.exists(&cache_file(link_name)));
     assert_eq!(host.file(&outside).as_deref(), Some(&sentinel[..]));
     assert_eq!(host.file(&cache_file(DEB)).as_deref(), Some(&bytes[..]));
+}
+
+#[test]
+fn real_kernel_scenes_select_the_compiler_passed_to_the_container() {
+    for (kernel, truenas, text, expected) in [
+        (
+            "6.18.52-production+truenas",
+            "27.0.0-RC.1",
+            "gcc (Debian 14.2.0-19) 14.2.0",
+            "gcc-14",
+        ),
+        (
+            KERNEL,
+            TRUENAS_VERSION,
+            "gcc (Debian 12.2.0-14+deb12u1) 12.2.0",
+            "gcc-12",
+        ),
+    ] {
+        let host = FakeHost::new();
+        fake_host::prime_kernel_scene(&host, kernel, truenas, text);
+        let mut ctx = ctx(&host, PlanSource::Official);
+        let compiler = build_env::compiler(&ctx).unwrap();
+        assert_eq!(compiler, expected);
+        assert_eq!(
+            truenas_nvidia_driver_manager::facts::truenas_version(&host)
+                .value()
+                .map(String::as_str),
+            Some(truenas)
+        );
+        let _ = runner::build::build(&mut ctx, &prepared_env(), &compiler);
+        assert!(docker_argvs(&host)
+            .iter()
+            .any(|args| args.contains(&format!("NVM_BUILD_COMPILER={expected}"))));
+        assert_eq!(host.count("curl"), 0);
+    }
+}
+
+#[test]
+fn compiler_config_uses_header_priority_and_boot_fallback() {
+    let host = FakeHost::new();
+    let header = format!("{KERNEL_HEADERS_PATH}/include/config/auto.conf");
+    host.put_text(
+        &header,
+        "CONFIG_CC_VERSION_TEXT=gcc (Debian 14.2.0-19) 14.2.0\n",
+    );
+    assert_eq!(
+        build_env::compiler(&ctx(&host, PlanSource::Official)).unwrap(),
+        "gcc-14"
+    );
+    // Unreadable/absent or non-GCC header text falls back to the boot config.
+    for text in [
+        None,
+        Some("CONFIG_CC_VERSION_TEXT=clang 15.0.0\n"),
+        Some("CONFIG_CC_VERSION_TEXT=gcc unknown\n"),
+    ] {
+        if let Some(text) = text {
+            host.put_text(&header, text);
+        } else {
+            host.remove(&header);
+        }
+        assert_eq!(
+            build_env::compiler(&ctx(&host, PlanSource::Official)).unwrap(),
+            "gcc-12"
+        );
+    }
+    host.put_text(&header, "CONFIG_CC_VERSION_TEXT=gcc 15.1.0\n");
+    let failure = build_env::compiler(&ctx(&host, PlanSource::Official)).unwrap_err();
+    assert_eq!(failure.params["reason"]["key"], "compiler_missing:gcc-15");
+    host.remove(&header);
+    host.remove(&format!("/boot/config-{KERNEL}"));
+    let failure = build_env::compiler(&ctx(&host, PlanSource::Official)).unwrap_err();
+    assert_eq!(failure.params["reason"]["key"], BUILD_KERNEL_GCC_UNKNOWN);
+    assert_eq!(host.count("curl"), 0);
+    assert_eq!(host.count("docker"), 0);
+}
+
+#[test]
+fn compiler_requirement_is_read_from_the_host_view() {
+    let host = FakeHost::new();
+    host.set_view_prefix(Some("/host-view"));
+    host.put_text(
+        &format!("/host-view/boot/config-{KERNEL}"),
+        "CONFIG_CC_VERSION_TEXT=gcc 14.2.0\n",
+    );
+    assert_eq!(
+        build_env::compiler(&ctx(&host, PlanSource::Official)).unwrap(),
+        "gcc-14"
+    );
 }

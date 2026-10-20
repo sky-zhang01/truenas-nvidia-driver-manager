@@ -31,10 +31,11 @@ use common::{
     FakeHost, HOST_DATA_DIR, KERNEL, TRUENAS_VERSION,
 };
 use truenas_nvidia_driver_manager::codes::{CANONICAL_PATH, CATALOG_URL};
+use truenas_nvidia_driver_manager::host::Host;
 use truenas_nvidia_driver_manager::plan::{Ctx, PlanSlot};
 use truenas_nvidia_driver_manager::settings::Settings;
 use truenas_nvidia_driver_manager::startup::Startup;
-use truenas_nvidia_driver_manager::store::Paths;
+use truenas_nvidia_driver_manager::store::{Paths, Validate};
 use truenas_nvidia_driver_manager::upload::UploadState;
 use truenas_nvidia_driver_manager::web::{load_static_files, router, StaticFiles};
 
@@ -159,8 +160,28 @@ fn prepare(host: &FakeHost, scenario: &str) {
     if scenario != "no_link" {
         host.put_link("/run/extensions/nvidia.raw", CANONICAL_PATH);
     }
+    common::fake_host::prime_kernel_scene(
+        host,
+        KERNEL,
+        TRUENAS_VERSION,
+        "gcc (Debian 12.2.0-14+deb12u1) 12.2.0",
+    );
     match scenario {
+        "truenas27" | "truenas27_replacement" => {
+            let kernel = "6.18.52-production+truenas";
+            common::fake_host::prime_kernel_scene(
+                host,
+                kernel,
+                "27.0.0-RC.1",
+                "gcc (Debian 14.2.0-19) 14.2.0",
+            );
+            host.set_listing(CANONICAL_PATH, &canonical_listing(kernel, "580.173.02"));
+            if scenario == "truenas27_replacement" {
+                prepare_local_replacement(host, kernel, "27.0.0-RC.1");
+            }
+        }
         "fresh" | "no_link" | "upload_stage" | "drivers_rows" | "setup_problem" => {}
+        "readme_update" => host.add_gpu("0000:01:00.0", 0x2684, Some("nvidia")),
         "pascal" => host.add_gpu("0000:01:00.0", 0x1b80, Some("nvidia")),
         "kepler" => host.add_gpu("0000:01:00.0", 0x1180, Some("nvidia")),
         "mixed_1b80_2b85" => {
@@ -186,14 +207,99 @@ fn prepare(host: &FakeHost, scenario: &str) {
         _ => {}
     }
     match scenario {
-        "local_replacement" => prepare_local_replacement(host),
+        "local_replacement" => prepare_local_replacement(host, KERNEL, TRUENAS_VERSION),
+        "readme_landing" => {
+            use truenas_nvidia_driver_manager::task_state::{
+                self, CheckRecord, ObservedGpu, OriginalChoice, Pass, Phase, Plan, PlanSource,
+                ReadingJson, Status,
+            };
+            prepare_local_replacement(host, KERNEL, TRUENAS_VERSION);
+            host.add_gpu("0000:01:00.0", 0x2684, Some("nvidia"));
+            host.set_wall_ms(1_790_000_060_000);
+            for row in ["original", "build"] {
+                let path =
+                    format!("{HOST_DATA_DIR}/drivers/20260928T101530Z-3f9a0c12-{row}/record.json");
+                let mut record: Value =
+                    serde_json::from_slice(&host.read(std::path::Path::new(&path)).unwrap())
+                        .unwrap();
+                record["created_at"] = json!(1_789_999_000_000_u64);
+                host.put_text(&path, &record.to_string());
+            }
+            let version = "580.178.04";
+            host.put_file(CANONICAL_PATH, b"agent requested driver image".to_vec());
+            host.set_listing(CANONICAL_PATH, &canonical_listing(KERNEL, version));
+            host.set_driver_version(version);
+            let mut task = task_state::new_state(
+                "20260921T141320Z-3f9a0c12",
+                1_790_000_000_000,
+                Plan {
+                    source: PlanSource::Official,
+                    version: version.into(),
+                    kernel: KERNEL.into(),
+                    truenas_version: TRUENAS_VERSION.into(),
+                    original: OriginalChoice::Save,
+                    image_id: format!("sha256:{}", "a".repeat(64)),
+                    build_timeout_minutes: 30,
+                    gpus: Vec::new(),
+                    kernel_module_type: None,
+                },
+                Phase::Check,
+            );
+            task.status = Status::Succeeded;
+            task.finished_at = Some(1_790_000_060_000);
+            task.loaded_version_start = Some(ReadingJson::value("580.173.02".into()));
+            task.loaded_version_end = Some(ReadingJson::value(version.into()));
+            task.nvidia_smi_gpus = Some(ReadingJson::value(vec![ObservedGpu {
+                name: "NVIDIA GeForce RTX 4090".into(),
+                pci_address: "00000000:01:00.0".into(),
+            }]));
+            task.checks.push(CheckRecord {
+                pass: Pass::Update,
+                since_before: ReadingJson::value(1_790_000_000_000_000),
+                since_after: ReadingJson::value(1_790_000_010_000_000),
+                refresh_ok: true,
+                nvidia_smi: ReadingJson::value(version.into()),
+                proc_version: ReadingJson::value(version.into()),
+                expected: version.into(),
+                version_ok: true,
+                passed: true,
+            });
+            task.validate().expect("valid README success fixture");
+            let paths = Paths::new(HOST_DATA_DIR);
+            task_state::write(host, &paths, &task).expect("write README success fixture");
+            task_state::log(
+                host,
+                &paths,
+                &task.task_id,
+                truenas_nvidia_driver_manager::codes::LogKey::Finished,
+                json!({"status": "SUCCEEDED"}),
+            );
+        }
+        "module_race_update" | "module_race_restore" => {
+            prepare_local_replacement(host, KERNEL, TRUENAS_VERSION);
+            let restore = scenario == "module_race_restore";
+            host.autoload_on_write(restore);
+            if restore {
+                host.preset_once("nvidia-smi", &[], common::FakeOutput::code(18));
+            }
+        }
         "no_link" => host.remove("/run/extensions/nvidia.raw"),
-        "running_task" => {
+        "running_task" | "readme_running" => {
+            if scenario == "readme_running" {
+                host.add_gpu("0000:01:00.0", 0x2684, Some("nvidia"));
+                prime_canonical(host, "580.173.02");
+                host.set_driver_version("580.173.02");
+                host.set_wall_ms(1_790_000_000_000);
+            }
             let _ = host.set_gate("curl", &["--silent"]);
             let id = "20260928T101530Z-3f9a0c12";
             let state = truenas_nvidia_driver_manager::task_state::new_state(
                 id,
-                1,
+                if scenario == "readme_running" {
+                    1_790_000_000_000
+                } else {
+                    1
+                },
                 truenas_nvidia_driver_manager::task_state::Plan {
                     source: truenas_nvidia_driver_manager::task_state::PlanSource::Official,
                     version: "580.178.04".into(),
@@ -277,10 +383,17 @@ fn prepare(host: &FakeHost, scenario: &str) {
 }
 
 /// Prepare checksum-valid local rows and a replaceable host for an HTTP walkthrough.
-fn prepare_local_replacement(host: &FakeHost) {
-    host.set_uname(KERNEL);
+fn prepare_local_replacement(host: &FakeHost, kernel: &str, truenas: &str) {
+    host.set_uname(kernel);
     let original_bytes = b"driver image";
-    prime_canonical(host, "580.173.02");
+    host.put_file(CANONICAL_PATH, original_bytes.to_vec());
+    host.set_listing(CANONICAL_PATH, &canonical_listing(kernel, "580.173.02"));
+    // Each HTTP scenario starts with its own merged view, independent of the preceding task.
+    host.model_sysext_merge();
+    host.put_text(
+        "/data/manifest.json",
+        &json!({"version": truenas}).to_string(),
+    );
     host.remove_mount("/usr");
     host.add_mount("tank/ROOT/default/usr", "/usr", "zfs", "ro");
     for module in ["nvidia_drm", "nvidia_modeset", "nvidia_uvm"] {
@@ -305,7 +418,7 @@ fn prepare_local_replacement(host: &FakeHost) {
         let row = Paths::new(HOST_DATA_DIR).row_dir(id);
         let image = row.join("nvidia.raw");
         host.put_file(image.to_str().unwrap(), bytes.to_vec());
-        host.set_listing(image.to_str().unwrap(), &canonical_listing(KERNEL, version));
+        host.set_listing(image.to_str().unwrap(), &canonical_listing(kernel, version));
         host.put_text(
             row.join("record.json").to_str().unwrap(),
             &json!({
@@ -313,11 +426,11 @@ fn prepare_local_replacement(host: &FakeHost) {
                 "version": version,
                 "sha256": sha256_hex(bytes),
                 "size": bytes.len(),
-                "target_kernel": KERNEL,
+                "target_kernel": kernel,
                 "created_at": 7,
                 "fingerprint": null,
                 "original_of": (kind == "original").then(|| json!({
-                    "kernel": KERNEL, "truenas_version": TRUENAS_VERSION,
+                    "kernel": kernel, "truenas_version": truenas,
                 })),
                 "keep": (kind == "original").then_some(true),
             })

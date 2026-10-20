@@ -2,6 +2,38 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
+## 0.3.0
+
+- Support TrueNAS 27 alongside TrueNAS 25.10. Driver builds run in one pinned official Debian 13
+  environment that carries gcc 14 (the compiler of the TrueNAS 27 kernel) and gcc 12 (for
+  TrueNAS 25.10); offline preparation needs this one environment.
+- Read the kernel's compiler before saving the original or downloading anything; a kernel built
+  with a compiler the environment does not carry stops the task at once.
+- List the container instances that use the GPU on TrueNAS 27 and on TrueNAS 25.10; the page
+  calls them TrueNAS container instances.
+- Show the GPUs that `nvidia-smi` reports on the task page as a diagnostic; it does not change
+  the task result.
+- Check the loaded driver version after reloading the modules. On TrueNAS, any container start
+  (Docker's default NVIDIA runtime) and `nvidia-cdi-refresh` can load the modules of the image
+  merged at that moment; when the loaded modules are stale, unload and reload them once more
+  before the success check. Each update and restore does this at most once and shows it as its
+  own step.
+- When unloading a driver module is refused because something holds it briefly, wait for the
+  hold to drop (checking about every 0.2 seconds, at most about 30 seconds per module) and unload
+  it again. Container health checks through the NVIDIA runtime open an idle GPU for about two
+  seconds at a time.
+- Wait for a short GPU hold to end before deciding the GPU is in use. A container start or
+  health check can open the GPU for a second or two; every occupancy reading (Update, before
+  unloading, the module check after writing, and restoring the original) re-reads about every
+  0.2 seconds for at most about 30 seconds. The Update button and the task page show a short
+  waiting line, and the final notice says how long the program waited.
+- Always reload `nvidia`, `nvidia_drm` and `nvidia_modeset`, as TrueNAS does when it enables
+  the driver, plus any other driver module loaded at the start, so a module left unloaded by an
+  earlier task is loaded again.
+- Start the README with installing: a screenshot of Home after sign-in, four points, then four
+  install steps with the YAML on the page. The step-by-step guides, troubleshooting and FAQ
+  follow in folded sections; every screenshot is retaken at one size.
+
 ## 0.2.1
 
 - Create the administrator with a one-time setup code from the App logs and a password chosen

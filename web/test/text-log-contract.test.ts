@@ -5,8 +5,8 @@ import { installDom, FakeElement, FakeText } from "./dom-shim.js";
 import { MESSAGES } from "../src/messages.js";
 import { expand, expandText, formatTaskTime } from "../src/dom.js";
 import { refreshObserved } from "../src/rules.js";
-import { gpuBlockNode } from "../src/views/plan.js";
-import { logParams, renderTask } from "../src/views/tasks.js";
+import { armUpdateCheckStatus, gpuBlockNode } from "../src/views/plan.js";
+import { logParams, renderTask, waitingGpuMessageKey } from "../src/views/tasks.js";
 
 installDom();
 // `poll.ts` needs `window`; the rendering fixtures never fire the interval.
@@ -416,9 +416,14 @@ test("task status keeps each label paired with its value in both languages", asy
     assert.ok(status);
     assert.equal(status.getAttribute("role"), "status");
     const readings = status.children.filter((node) => node instanceof FakeElement) as FakeElement[];
-    assert.equal(readings.length, 2);
+    const labeled = readings.filter((node) => node.className === "reading");
+    assert.equal(labeled.length, 2);
+    const wait = readings.find((node) => node.className.split(/\s+/).includes("task-wait"));
+    assert.ok(wait);
+    assert.equal(wait.getAttribute("hidden"), "");
+    assert.equal(wait.textContent, "");
     for (const [index, key] of ["task.status", "task.phase"].entries()) {
-      const reading = readings[index]!;
+      const reading = labeled[index]!;
       assert.equal(reading.className, "reading");
       const [label, value] = reading.children as FakeElement[];
       assert.equal(label!.className, "reading-label");
@@ -483,7 +488,7 @@ test("the task-detail unreadable notice keeps Action and List and never the Note
 
   const busyEmpty = await renderDetail(taskDetail([], "task"));
   assert.deepEqual(noticeParts(busyEmpty), { action: false, list: false, note: true });
-  assert.match(busyEmpty.textContent, /未找到申请了显卡的应用/);
+  assert.match(busyEmpty.textContent, /没有找到申请了显卡的应用/);
 });
 
 test("unreadable refresh readings keep their own phrase", () => {
@@ -921,7 +926,7 @@ test("GPU application kinds use only the Docker and Incus keys", () => {
   );
   assert.match(text, /one · UNKNOWN/);
   assert.match(text, /two · Docker 容器/);
-  assert.match(text, /Incus 容器查询失败/);
+  assert.match(text, /TrueNAS 容器实例查询失败/);
   assert.equal(text.includes("query.object.bogus"), false);
   assert.match(expandText("log.gpu_users", logParams("log.gpu_users", {}), "zh"), /UNKNOWN/);
 });
@@ -1044,4 +1049,167 @@ test("a recorded release with retained material offers a cleanup retry", async (
   }, "en");
   assert.match(container.textContent, /directory cleanup is still pending/);
   assert.ok(allElements(container).some((node) => node.tagName === "BUTTON"));
+});
+
+test("occupancy wait copy is a Chinese and English pair", () => {
+  assert.equal(
+    expandText("update.checking", {}, "zh"),
+    "正在检查更新条件。如果显卡正被使用,会等它空闲,最多约 30 秒。",
+  );
+  assert.equal(
+    expandText("update.checking", {}, "en"),
+    "Checking update conditions. If the GPU is in use, this waits for it to become free, for up to about 30 seconds.",
+  );
+  for (const [phase, key] of [
+    ["unload", "task.waiting_gpu"],
+    ["align_modules", "task.waiting_gpu.align"],
+    ["restore_unload", "task.waiting_gpu.restore"],
+    ["restore_align_modules", "task.waiting_gpu.restore"],
+  ] as const) {
+    assert.equal(waitingGpuMessageKey({ status: "RUNNING", phase, waiting_gpu: true }), key);
+    assert.equal(expandText(key, {}, "zh"), MESSAGES[key]?.zh);
+    assert.equal(expandText(key, {}, "en"), MESSAGES[key]?.en);
+  }
+  assert.equal(waitingGpuMessageKey({ status: "RUNNING", phase: "unload" }), null);
+  assert.equal(
+    waitingGpuMessageKey({ status: "FAILED", phase: "unload", waiting_gpu: true }),
+    null,
+  );
+
+  const released = logParams("log.occupancy_wait", { waited_ms: 1000, result: "released" });
+  assert.equal(
+    expandText("log.occupancy_wait", released, "zh"),
+    "显卡正被使用，等待 1000 毫秒后，结果：已空闲。",
+  );
+  assert.equal(
+    expandText("log.occupancy_wait", released, "en"),
+    "The GPU was in use. After waiting 1000 ms, result: released.",
+  );
+  const held = logParams("log.occupancy_wait", { waited_ms: 30000, result: "still_in_use" });
+  assert.match(expandText("log.occupancy_wait", held, "zh"), /仍被占用/);
+  assert.match(expandText("log.occupancy_wait", held, "en"), /still in use/);
+
+  const immediate = expand(
+    "notice.unload_refused",
+    { module: "nvidia", unload_reason: "in use", old: "580.173.02" },
+    "en",
+  );
+  assert.equal(/waited about 30 seconds/.test(seg(immediate, "body")), false);
+  const waited = expand(
+    "notice.unload_refused",
+    { module: "nvidia", unload_reason: "in use", old: "580.173.02", waited_in_use: true },
+    "zh",
+  );
+  assert.match(seg(waited, "body"), /程序等待了约 30 秒,驱动模块 nvidia 仍无法卸载/);
+
+  const busy = expand("notice.restore_stopped", { current: "580.173.02" }, "en", "busy");
+  assert.match(seg(busy, "body"), /The GPU stayed in use/);
+  assert.match(seg(busy, "body"), /permanent path/);
+  const busyEmpty = expand(
+    "notice.restore_stopped",
+    { current: "580.173.02", empty_list: true },
+    "zh",
+    "busy",
+  );
+  assert.match(seg(busyEmpty, "action"), /如有应用正在反复重启,请先让它停止/);
+  assert.match(seg(expand("notice.gpu_in_use", {}, "zh"), "body"), /程序等待了约 30 秒,显卡仍被占用/);
+  assert.match(seg(expand("notice.gpu_in_use.empty_note", {}, "en"), "note"), /No app that requested the GPU was found/);
+});
+
+test("a running wait shows one status line and does not rewrite it while it stays", async () => {
+  let fire: (() => void) | null = null;
+  const previousWindow = (globalThis as unknown as { window: unknown }).window;
+  (globalThis as unknown as { window: unknown }).window = {
+    setInterval: (fn: () => void): number => {
+      fire = fn;
+      return 1;
+    },
+    clearInterval: (): void => {},
+  };
+  const detail = {
+    ...taskDetail([], "task"),
+    status: "RUNNING",
+    phase: "align_modules",
+    waiting_gpu: true,
+  };
+  (globalThis as unknown as { fetch: unknown }).fetch = async (): Promise<unknown> => ({
+    ok: true,
+    status: 200,
+    json: async (): Promise<unknown> => detail,
+  });
+  const container = new FakeElement("div");
+  renderTask(
+    { ...fakeApp, lang: "en" } as never,
+    container as unknown as HTMLElement,
+    "audit-task",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const status = allElements(container).find((node) => node.getAttribute("role") === "status");
+  assert.ok(status);
+  const wait = allElements(status).find((node) => node.className.split(/\s+/).includes("task-wait"));
+  assert.ok(wait);
+  assert.equal(wait.getAttribute("hidden"), null);
+  assert.equal(wait.textContent, MESSAGES["task.waiting_gpu.align"]?.en);
+  const descriptor = Object.getOwnPropertyDescriptor(FakeElement.prototype, "textContent");
+  assert.ok(descriptor?.set && descriptor.get);
+  let writes = 0;
+  Object.defineProperty(wait, "textContent", {
+    configurable: true,
+    get: () => descriptor.get?.call(wait),
+    set: (value: string) => {
+      writes += 1;
+      descriptor.set?.call(wait, value);
+    },
+  });
+  const tick = fire as (() => void) | null;
+  if (tick === null) throw new Error("interval was not armed");
+  tick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(writes, 0);
+  (globalThis as unknown as { window: unknown }).window = previousWindow;
+});
+
+test("the update check status appears after about 2 seconds and leaves when the request ends", () => {
+  const timers = new Map<number, () => void>();
+  let next = 1;
+  const previousWindow = (globalThis as unknown as { window: Window }).window;
+  (globalThis as unknown as { window: unknown }).window = {
+    setTimeout: (fn: () => void, ms?: number): number => {
+      assert.equal(ms, 2000);
+      const id = next;
+      next += 1;
+      timers.set(id, fn);
+      return id;
+    },
+    clearTimeout: (id?: number): void => {
+      if (id !== undefined) timers.delete(id);
+    },
+    setInterval: (): number => 1,
+    clearInterval: (): void => {},
+  };
+  const parent = new FakeElement("div");
+  const button = new FakeElement("button");
+  const after = new FakeElement("span");
+  parent.append(button, after);
+  const stop = armUpdateCheckStatus(button as unknown as HTMLElement, "zh");
+  assert.equal(parent.children.length, 2);
+  timers.get(1)?.();
+  assert.equal(parent.children.length, 3);
+  const status = parent.children[1] as FakeElement;
+  assert.equal(status.getAttribute("role"), "status");
+  assert.equal(status.textContent, MESSAGES["update.checking"]?.zh);
+  assert.equal(parent.children[2], after);
+  stop();
+  assert.equal(parent.children.length, 2);
+
+  const parentEarly = new FakeElement("div");
+  const earlyButton = new FakeElement("button");
+  parentEarly.append(earlyButton);
+  const stopEarly = armUpdateCheckStatus(earlyButton as unknown as HTMLElement, "en");
+  stopEarly();
+  assert.equal(timers.has(2), false);
+  assert.equal(parentEarly.children.length, 1);
+  (globalThis as unknown as { window: unknown }).window = previousWindow;
 });

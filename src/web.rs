@@ -2757,6 +2757,7 @@ fn unknown_task_response(
         "restore": null,
         "error": null,
         "gpu_users": null,
+        "nvidia_smi_gpus": null,
         "version_change": false,
         "notice": null,
         "log": {"lines": [], "next": 0, "reset": false},
@@ -2821,6 +2822,7 @@ fn unreconciled_task_detail(ctx: &Ctx, id: &str, after: Option<u64>) -> Response
             "raw": e.raw,
         })),
         "gpu_users": state.as_ref().and_then(|s| s.gpu_users.as_ref()).map(|g| json!(g)),
+        "nvidia_smi_gpus": state.as_ref().and_then(|s| s.nvidia_smi_gpus.as_ref()).map(|g| json!(g)),
         "version_change": version_change,
         "notice": notice,
         "log": log_json,
@@ -2850,7 +2852,7 @@ fn task_detail_response(
         "next": log.next,
         "reset": log.reset,
     });
-    let body = json!({
+    let mut body = json!({
         "task_id": id,
         "status": status,
         "state_read_error": t.state_read_error,
@@ -2877,6 +2879,7 @@ fn task_detail_response(
             "raw": e.raw,
         })),
         "gpu_users": state.as_ref().and_then(|s| s.gpu_users.as_ref()).map(|g| json!(g)),
+        "nvidia_smi_gpus": state.as_ref().and_then(|s| s.nvidia_smi_gpus.as_ref()).map(|g| json!(g)),
         "version_change": version_change,
         "notice": notice,
         "log": log_json,
@@ -2884,6 +2887,9 @@ fn task_detail_response(
             "reason": {"key": r.key, "params": r.params},
         })),
     });
+    if status == "RUNNING" && state.as_ref().is_some_and(|s| s.waiting_gpu == Some(true)) {
+        body["waiting_gpu"] = json!(true);
+    }
     json_response(body)
 }
 
@@ -2936,7 +2942,7 @@ fn notice_json(state: &TaskState) -> Option<Value> {
                 .replace
                 .last()
                 .map(|r| {
-                    r.reloaded
+                    r.final_reloaded()
                         .iter()
                         .filter(|x| !x.ok)
                         .map(|x| x.module.as_str())
@@ -2981,7 +2987,7 @@ fn notice_json(state: &TaskState) -> Option<Value> {
                     .replace
                     .iter()
                     .find(|r| r.pass == pass)
-                    .map(|r| r.reloaded.iter().any(|x| !x.ok))
+                    .map(|r| r.final_reloaded().iter().any(|x| !x.ok))
                     .unwrap_or(false)
             };
             match ErrorCode::parse(code) {
@@ -2994,20 +3000,34 @@ fn notice_json(state: &TaskState) -> Option<Value> {
                     },
                     "params": {},
                 })),
-                Some(ErrorCode::ModuleUnloadRefused) => Some(json!({
-                    "key": "notice.unload_refused",
-                    "params": {"reload_failed": reload_failed(crate::task_state::Pass::Update)},
-                })),
+                Some(ErrorCode::ModuleUnloadRefused) => {
+                    let mut params = json!({
+                        "reload_failed": reload_failed(crate::task_state::Pass::Update),
+                    });
+                    if error.params.get("waited_in_use").and_then(|v| v.as_bool()) == Some(true) {
+                        params["waited_in_use"] = json!(true);
+                    }
+                    Some(json!({
+                        "key": "notice.unload_refused",
+                        "params": params,
+                    }))
+                }
                 Some(ErrorCode::RestoreAborted) => {
                     let cause = error
                         .params
                         .get("cause")
                         .and_then(|v| v.as_str())
                         .unwrap_or("busy");
+                    let mut params = json!({
+                        "reload_failed": reload_failed(crate::task_state::Pass::Restore),
+                    });
+                    if error.params.get("waited_in_use").and_then(|v| v.as_bool()) == Some(true) {
+                        params["waited_in_use"] = json!(true);
+                    }
                     Some(json!({
                         "key": "notice.restore_stopped",
                         "variant": cause,
-                        "params": {"reload_failed": reload_failed(crate::task_state::Pass::Restore)},
+                        "params": params,
                     }))
                 }
                 Some(ErrorCode::RestoreNotWritten) => Some(json!({
@@ -3687,6 +3707,49 @@ mod tests {
     }
 
     #[test]
+    fn reload_notices_use_the_final_correction_round() {
+        use crate::task_state::*;
+        for (pass, code) in [
+            ("update", ErrorCode::ModuleUnloadRefused),
+            ("restore", ErrorCode::RestoreAborted),
+        ] {
+            for final_ok in [false, true] {
+                let mut state = TaskState::interrupted_stub(
+                    "20260928T101530Z-3f9a0c12",
+                    1,
+                    None,
+                    StateNote {
+                        state_read_error: "test".into(),
+                        kept_as: None,
+                    },
+                );
+                state.status = Status::Failed;
+                state.error = Some(ErrorRecord::new(code, json!({"cause": "unload_refused"})));
+                state.replace.push(serde_json::from_value(json!({
+                    "pass": pass,
+                    "unloaded": ["nvidia"],
+                    "reloaded": [{"module": "nvidia", "ok": !final_ok, "reason": if final_ok { json!({"stderr": "first failure"}) } else { Value::Null }}],
+                    "module_correction": {
+                        "trigger": "version_mismatch", "expected": "580.178.04",
+                        "version_before": {"not_loaded": true}, "version_after": null,
+                        "modules_before": [], "unloads": [], "stop_reason": null,
+                        "reloaded": [{"module": "nvidia", "ok": final_ok, "reason": if final_ok { Value::Null } else { json!({"stderr": "final failure"}) }}],
+                    }
+                })).unwrap());
+                assert_eq!(
+                    notice_json(&state).unwrap()["params"]["reload_failed"],
+                    !final_ok
+                );
+                state.status = Status::Succeeded;
+                assert_eq!(
+                    notice_json(&state).unwrap().get("variant").is_some(),
+                    !final_ok
+                );
+            }
+        }
+    }
+
+    #[test]
     fn version_change_conditions() {
         use crate::task_state::*;
         let mut state = TaskState {
@@ -3706,10 +3769,12 @@ mod tests {
             restore: None,
             error: None,
             gpu_users: None,
+            nvidia_smi_gpus: None,
             state_note: None,
             released_by: None,
             released_at: None,
             build_env_pulled_image: None,
+            waiting_gpu: None,
         };
         assert!(!version_change(&state));
         state.gpu_users = Some(GpuUsersRecord {

@@ -170,6 +170,8 @@ fi
 
 Use the task's `.status` to report the result together with evidence. `.checks` is an array: use `.checks[] | select(.pass == "update")` for the requested replacement, or `.checks[] | select(.pass == "restore")` for recovery. Use the last matching record if more than one exists. A successful requested replacement requires a successful `update` check. A successful recovery requires a successful `restore` check. For the applicable check, verify `.passed`, `.refresh_ok`, and `.version_ok` are true; `.since_before.value` and `.since_after.value` are readable and different; `.nvidia_smi.value` and `.proc_version.value` both equal `.expected`. Compare the expected version with the confirmed target, or with the original version for recovery. `since_before` and `since_after` values are Unix epoch microseconds (divide by 1000000 for seconds); compare their raw values for the refresh check, not values rounded for display. Report these actual readings and `.loaded_version_end`, not just `SUCCEEDED` or a completed progress bar. Missing or contradictory readings prevent a claim of verified success. Review failed module reloads in `.replace[].reloaded` and any notice: the driver check passing does not mean all previous Apps or modules resumed.
 
+GPU-user queries include Docker containers and TrueNAS container instances, selecting `container.query` with embedded devices, then `virt.instance.*` only if the first API is absent. Both APIs absent means no instances. The task detail field `.nvidia_smi_gpus` contains `{value: [{name, pci_address}]}` or `{unknown: {key, params}}`; `null` means no diagnostic query has been recorded. It describes the latest post-replacement check, including a recovery check. Report this as diagnostic evidence only; an unreadable GPU list does not invalidate a passed driver check or trigger recovery.
+
 ## 5. Report the result and handle failures
 
 Report task id, requested target, status, loaded version before/after, the applicable check readings, errors and remaining actions. `SUCCEEDED` means the requested replacement completed; `STOCK_RESTORED` means the failed update recovered to the saved stock driver, so the requested update did not succeed; `FAILED` requires inspecting the host and recovery details; `INTERRUPTED` means completion was interrupted, not rolled back successfully. `RUNNING` remains in progress. `UNKNOWN` remains uncertain. Never infer recovery merely from `FAILED` or from the current version matching an earlier version.
@@ -340,6 +342,7 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
       "phase",
       "loaded_version_start",
       "loaded_version_end",
+      "nvidia_smi_gpus",
       "checks",
       "restore",
       "error",

@@ -843,6 +843,7 @@ fn read_state_files(
                     let mut updated = state.clone();
                     updated.status = Status::Interrupted;
                     updated.finished_at = Some(facts.now);
+                    updated.waiting_gpu = None;
                     if task_state::write(h, p, &updated).is_ok() {
                         crate::log::info(
                             Event::TaskInterrupted,
@@ -2266,11 +2267,13 @@ fn driver_settled_with(
         return Ok(());
     }
     let last = state.replace.last().expect("the vector is not empty");
-    let contradictory =
-        state.replace.iter().any(|r| {
-            r.readback_ok.is_some() || r.refresh_exit.is_some() || r.ldconfig_exit.is_some()
-        }) || !state.checks.is_empty()
-            || state.restore.is_some();
+    let contradictory = state.replace.iter().any(|r| {
+        r.readback_ok.is_some()
+            || r.refresh_exit.is_some()
+            || r.ldconfig_exit.is_some()
+            || r.module_correction.is_some()
+    }) || !state.checks.is_empty()
+        || state.restore.is_some();
 
     // (2) Only unloaded, the permanent image untouched.
     if state.rootfs.is_none() && !contradictory {

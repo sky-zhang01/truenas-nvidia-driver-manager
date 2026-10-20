@@ -10,9 +10,9 @@
 #   NVM_BUILD_ENV_PLATFORM  Target platform, default linux/amd64.
 set -Eeuo pipefail
 
-IMAGE_REF="${NVM_BUILD_ENV_IMAGE:-debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587}"
-IMAGE_ID_EXPECTED="sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23"
-IMAGE_ID_INDEX="sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587"
+IMAGE_REF="${NVM_BUILD_ENV_IMAGE:-debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f}"
+IMAGE_ID_EXPECTED="sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c"
+IMAGE_ID_INDEX="sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f"
 PLATFORM="${NVM_BUILD_ENV_PLATFORM:-linux/amd64}"
 KIT="${NVM_BUILD_KIT:-}"
 KERNEL="$(uname -r)"
@@ -117,7 +117,6 @@ new_volume() { # new_volume <suffix>; sets NEW_VOLUME
     [ "$(docker volume inspect -f '{{index .Labels "nvm.ci.run"}}' "${NEW_VOLUME}")" = "${RUN_TOKEN}" ] || return 1
 }
 new_volume hdr; HDR_VOL="${NEW_VOLUME}"
-new_volume boot; BOOT_VOL="${NEW_VOLUME}"
 new_volume mods; MODS_VOL="${NEW_VOLUME}"
 new_volume in; IN_VOL="${NEW_VOLUME}"
 new_volume find; FIND_VOL="${NEW_VOLUME}"
@@ -126,7 +125,7 @@ new_volume kit; KIT_VOL="${NEW_VOLUME}"
 
 # The block below, up to the artifact registration line, is extracted verbatim by
 # `ci/cleanup-lib-test.sh` and run against the stub docker in its control
-# environment, so every variable it references — HDR_VOL, BOOT_VOL,
+# environment, so every variable it references — HDR_VOL,
 # MODS_VOL, IN_VOL, FIND_VOL, KERNEL, PLATFORM, BUILD_IMAGE, ARTIFACT_VOL — must
 # be defined there too; a missing one is a bare `unbound variable` under
 # `set -u`, and the control reports "references undefined variables" first and
@@ -137,7 +136,6 @@ SEED_INPUTS="nvm-build-script-seed-${HDR_VOL}"
 # still-existing container as gone.
 SEED_INPUTS_CID="$(docker create --name "${SEED_INPUTS}" --platform "${PLATFORM}" --pull never --entrypoint /bin/true \
     --mount "type=volume,src=${HDR_VOL},dst=/usr/src/linux-headers-truenas-production-amd64" \
-    --mount "type=volume,src=${BOOT_VOL},dst=/boot" \
     --mount "type=volume,src=${MODS_VOL},dst=/host/modules/${KERNEL}" \
     --mount "type=volume,src=${IN_VOL},dst=/in" \
     --mount "type=volume,src=${FIND_VOL},dst=/find-shim" \
@@ -163,23 +161,13 @@ seed_root "${KIT}" . "${SEED_KIT_CID}:/build-kit"
 . "${SCRIPT_DIR}/../test-lib.sh"
 
 HDR="${WORK}/hdr"
-CFG="${WORK}/boot/config-${KERNEL}"
 MODS="${WORK}/mods/${KERNEL}"
 IN="${WORK}/in"
 OUT_EMPTY="${WORK}/out"
 BIN="${WORK}/bin"
 
-mkdir -p "${HDR}/include/config" "${WORK}/boot" "${MODS}/kernel/drivers/video" \
+mkdir -p "${HDR}/include/config" "${MODS}/kernel/drivers/video" \
          "${IN}/toolkit" "${OUT_EMPTY}" "${BIN}"
-
-write_auto_conf() { # $1 = gcc major (default 12)
-    local major="${1:-12}"
-    printf 'CONFIG_CC_VERSION_TEXT="gcc-%s (Debian 12.2.0-14) %s.2.0"\n' "${major}" "${major}" \
-        > "${HDR}/include/config/auto.conf"
-    printf 'CONFIG_CC_VERSION_TEXT="gcc-%s (Debian 12.2.0-14) %s.2.0"\n' "${major}" "${major}" \
-        > "${CFG}"
-}
-write_auto_conf 12
 
 for ko in nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-peermem; do
     printf 'stub %s\n' "${ko}" > "${MODS}/kernel/drivers/video/${ko}.ko"
@@ -251,10 +239,9 @@ exec /usr/bin/chmod "$@"
 CHMOD_SHIM_BODY
 chmod 0755 "${FIND_SHIM}/chmod-fail/chmod"
 
-# Seed the daemon-side volumes; `run_build` reseeds HDR/CFG/IN after its rewrites.
+# Seed the daemon-side volumes; `run_build` reseeds HDR/IN after its rewrites.
 seed_inputs() {
     seed_root "${HDR}" . "${SEED_INPUTS}:/usr/src/linux-headers-truenas-production-amd64"
-    seed_root "${WORK}/boot" "config-${KERNEL}" "${SEED_INPUTS}:/boot"
     seed_root "${IN}" . "${SEED_INPUTS}:/in"
 }
 seed_inputs
@@ -302,7 +289,6 @@ BUILD_RUNS=0
 run_build() { # run_build <variant> [module-type] [gcc-major] [failure-mode] [community-marker]
     local variant="$1" mtype="${2:-}" gcc="${3:-12}" failure_mode="${4:-}" marker="${5:-}"
     cp "${BIN}/${variant}.run" "${IN}/driver.run"
-    write_auto_conf "${gcc}"
     seed_inputs
 
     local name image="${HELPER_IMAGE}" script=/in/build-driver.sh
@@ -331,11 +317,11 @@ run_build() { # run_build <variant> [module-type] [gcc-major] [failure-mode] [co
         -e TAR_OPTIONS=--no-same-owner \
         -e NVM_BUILD_KIT_LIST=/in/build-kit.list \
         -e NVM_BUILD_SCRIPT=/in/build-driver.sh \
+        -e "NVM_BUILD_COMPILER=gcc-${gcc}" \
         ${env_args[@]+"${env_args[@]}"} \
         --mount "type=volume,src=${KIT_VOL},dst=/build-kit,readonly" \
         --mount "type=volume,src=${FIND_VOL},dst=/find-shim,readonly" \
         --mount "type=volume,src=${HDR_VOL},dst=/usr/src/linux-headers-truenas-production-amd64,readonly" \
-        --mount "type=volume,src=${BOOT_VOL},dst=/boot,readonly" \
         --mount "type=volume,src=${MODS_VOL},dst=/host/modules/${KERNEL},readonly" \
         --mount "type=volume,src=${IN_VOL},dst=/in,readonly" \
         --entrypoint /bin/bash \
@@ -629,6 +615,12 @@ run_build install-fail-kernel
 check "install-fail-kernel exit code 1" test "${LAST_RC}" -eq 1
 check "install-fail-kernel reason installer_kernel_module_failed" log_has "NVM:FAIL:installer_kernel_module_failed"
 
+# The host selects by major; both compilers are in this one Debian 13 environment.
+run_build 555 "" 14
+check "gcc-14 exit code 0" test "${LAST_RC}" -eq 0
+check "gcc-14 selected" log_has "NVM:INFO:cc=gcc-14"
+
+# A missing passed executable is still a script failure (kernel parsing is host-side).
 run_build 555 "" 99
 check "gcc-99 exit code 1" test "${LAST_RC}" -eq 1
 check "gcc-99 reason compiler_missing:gcc-99" log_has "NVM:FAIL:compiler_missing:gcc-99"

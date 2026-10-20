@@ -326,15 +326,39 @@ export interface TaskDetail {
   restore: RestoreRecord | null;
   error: TaskError | null;
   gpu_users: { users: ObjectEntry[]; errors: CategoryError[] } | null;
+  nvidia_smi_gpus?: Reading<{ name: string; pci_address: string }[]> | null;
   version_change: boolean;
+  /** Present only while this running task has been waiting for the GPU for about three seconds. */
+  waiting_gpu?: boolean;
   notice: Notice | null;
   log: LogTail;
   unit_query: UnitQuery | null;
 }
 
+export interface UnloadWait {
+  module: string;
+  waited_ms: number;
+  retries: number;
+  result: "unloaded" | "refused" | "unreadable" | "other";
+}
+
 export interface ReplaceRecord {
   pass: "update" | "restore";
   unloaded: string[];
+  unload_waits?: UnloadWait[];
+  occupancy_waits?: { waited_ms: number; result: "released" | "still_in_use" }[];
+  module_correction?: {
+    trigger: "version_mismatch" | "version_missing" | "unchanged_module";
+    expected: string;
+    version_before: Reading<string>;
+    version_after: Reading<string> | null;
+    modules_before: string[];
+    unloads: { module: string; exit: unknown; reason: ReasonField | { stderr: string } | null }[];
+    waits?: UnloadWait[];
+    occupancy_waits?: { waited_ms: number; result: "released" | "still_in_use" }[];
+    reloaded: ReplaceRecord["reloaded"];
+    stop_reason: ReasonField | { stderr: string } | null;
+  };
   reloaded: {
     module: string;
     ok: boolean;

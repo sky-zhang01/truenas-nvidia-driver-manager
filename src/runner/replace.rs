@@ -2,7 +2,7 @@
 
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{io, io::Read};
 
 use serde_json::{json, Value};
@@ -10,11 +10,13 @@ use serde_json::{json, Value};
 use crate::codes::*;
 use crate::drivers;
 use crate::facts;
-use crate::host::{At, Cmd, Create, Exit, Output};
+use crate::host::{At, Cmd, Create, Exit, Host, Output};
 use crate::runner::{original::OriginalRow, RunCtx};
 use crate::store::{self, JsonRead};
 use crate::task_state::{
-    Pass, Phase, ReadingJson, ReasonJson, ReloadTargetsJson, ReloadedRecord, ReplaceRecord, Rootfs,
+    ModuleCorrectionRecord, ModuleCorrectionTrigger, ModuleUnloadAttempt, ModuleUnloadWait,
+    OccupancyWaitRecord, OccupancyWaitResult, Pass, Phase, ReadingJson, ReasonJson,
+    ReloadTargetsJson, ReloadedRecord, ReplaceRecord, Rootfs, UnloadWaitResult,
 };
 
 /// The pass record and deadline used by the later write and reload steps.
@@ -59,7 +61,12 @@ impl ModuleFailure {
 fn record(pass: Pass) -> ReplaceRecord {
     ReplaceRecord {
         pass,
+        module_version_before: None,
+        file_changed: None,
+        module_correction: None,
         unloaded: Vec::new(),
+        unload_waits: Vec::new(),
+        occupancy_waits: Vec::new(),
         reloaded: Vec::new(),
         refresh_exit: None,
         ldconfig_exit: None,
@@ -167,16 +174,20 @@ fn refusal_failure(
     reason: &ReasonJson,
     cmd: &Cmd,
     out: &Output,
+    waited_in_use: bool,
 ) -> ModuleFailure {
-    let (code, params) = match pass {
-        Pass::Update => (
-            ErrorCode::ModuleUnloadRefused,
-            json!({"module": module, "unload_reason": reason}),
-        ),
-        Pass::Restore => (
-            ErrorCode::RestoreAborted,
-            json!({"cause": "unload_refused", "module": module, "unload_reason": reason}),
-        ),
+    let mut params = match pass {
+        Pass::Update => json!({"module": module, "unload_reason": reason}),
+        Pass::Restore => {
+            json!({"cause": "unload_refused", "module": module, "unload_reason": reason})
+        }
+    };
+    if waited_in_use {
+        params["waited_in_use"] = json!(true);
+    }
+    let code = match pass {
+        Pass::Update => ErrorCode::ModuleUnloadRefused,
+        Pass::Restore => ErrorCode::RestoreAborted,
     };
     ModuleFailure {
         code,
@@ -213,6 +224,444 @@ fn reload(ctx: &mut RunCtx, index: usize, modules: &[String]) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitPlace {
+    First,
+    Correction,
+}
+
+enum Hold {
+    Absent,
+    Releasable,
+    Busy,
+}
+
+enum Release {
+    Unloaded,
+    Stop(Stop),
+}
+
+enum ReleaseError {
+    /// `uncertain` is set only on the pre-write path, after an `rmmod` that may already
+    /// have unloaded the module. The post-write round leaves it empty and does not roll back.
+    NotPersisted {
+        uncertain: Option<String>,
+    },
+    Other(ModuleError),
+}
+
+impl From<ModuleError> for ReleaseError {
+    fn from(error: ModuleError) -> Self {
+        match error {
+            ModuleError::StateNotPersisted => ReleaseError::NotPersisted { uncertain: None },
+            other => ReleaseError::Other(other),
+        }
+    }
+}
+
+enum Stop {
+    TimedOut { cmd: Cmd, out: Output },
+    Signal { cmd: Cmd, out: Output },
+    Refused { cmd: Cmd, out: Output },
+    Unreadable(&'static str),
+    Deadline,
+}
+
+enum Attempt {
+    Unloaded,
+    InUse(Cmd, Output),
+    Stop(Stop),
+}
+
+fn in_use(out: &Output) -> bool {
+    matches!(out.exit, Exit::Code(code) if code != 0)
+        && out.stderr_text().to_ascii_lowercase().contains("in use")
+}
+
+fn read_proc_modules_host(host: &dyn Host) -> Result<Vec<facts::ModuleLine>, &'static str> {
+    match host.read(Path::new(PROC_MODULES_PATH)) {
+        Ok(bytes) => match std::str::from_utf8(&bytes) {
+            Ok(text) => facts::parse_proc_modules(text).map_err(|_| REASON_FORMAT_UNRECOGNIZED),
+            Err(_) => Err(REASON_FORMAT_UNRECOGNIZED),
+        },
+        Err(error) => Err(read_reason(&error)),
+    }
+}
+
+fn read_proc_modules(ctx: &RunCtx) -> Result<Vec<facts::ModuleLine>, &'static str> {
+    read_proc_modules_host(ctx.host.as_ref())
+}
+
+fn log_occupancy(ctx: &mut RunCtx, usage_result: &str, modules: &[facts::ModuleLine]) {
+    ctx.log(
+        LogKey::Occupancy,
+        json!({
+            "usage_result": usage_result,
+            "module_readings": module_readings(modules),
+        }),
+    );
+}
+
+fn log_occupancy_unreadable(ctx: &mut RunCtx) {
+    ctx.log(
+        LogKey::Occupancy,
+        json!({
+            "usage_result": "unreadable",
+            "module_readings": {"key": "log.usage.unreadable", "params": {}},
+        }),
+    );
+}
+
+/// Drop the running-task wait marker. A marker that was never set does not write.
+fn clear_waiting_gpu(ctx: &mut RunCtx) -> Result<(), ModuleError> {
+    if ctx.state.waiting_gpu.take().is_some() && !ctx.write_state() {
+        return Err(ModuleError::StateNotPersisted);
+    }
+    Ok(())
+}
+
+fn remember_occupancy_wait(
+    ctx: &mut RunCtx,
+    index: usize,
+    correction: bool,
+    waited_ms: u64,
+    result: OccupancyWaitResult,
+) -> Result<(), ModuleError> {
+    ctx.state.waiting_gpu = None;
+    let record = OccupancyWaitRecord { waited_ms, result };
+    if correction {
+        ctx.state.replace[index]
+            .module_correction
+            .as_mut()
+            .unwrap()
+            .occupancy_waits
+            .push(record);
+    } else {
+        ctx.state.replace[index].occupancy_waits.push(record);
+    }
+    if !ctx.write_state() {
+        return Err(ModuleError::StateNotPersisted);
+    }
+    ctx.log(
+        LogKey::OccupancyWait,
+        json!({"waited_ms": waited_ms, "result": result.as_str()}),
+    );
+    Ok(())
+}
+
+fn mark_waiting_gpu(ctx: &mut RunCtx) -> bool {
+    if ctx.state.waiting_gpu == Some(true) {
+        return true;
+    }
+    ctx.state.waiting_gpu = Some(true);
+    ctx.write_state()
+}
+
+/// Occupancy wait shared by the first unload and the alignment round.
+/// `deadline` is the 600s replace window; alignment passes `None`.
+fn wait_for_gpu(ctx: &mut RunCtx, deadline: Option<Instant>) -> facts::OccupancyDecision {
+    let host = ctx.host.clone();
+    facts::wait_until_gpu_idle(host.as_ref(), deadline, read_proc_modules_host, || {
+        mark_waiting_gpu(ctx)
+    })
+}
+
+fn hold(modules: &[facts::ModuleLine], name: &str) -> Hold {
+    match modules.iter().find(|module| module.name == name) {
+        None => Hold::Absent,
+        Some(module) if module.refcount <= module.deps.len() as u64 => Hold::Releasable,
+        Some(_) => Hold::Busy,
+    }
+}
+
+fn rmmod_timeout(ctx: &RunCtx, deadline: Option<Instant>) -> Option<Duration> {
+    match deadline {
+        None => Some(HOST_CMD_TIMEOUT),
+        Some(deadline) => {
+            let remaining = deadline.saturating_duration_since(ctx.host.now());
+            if remaining.is_zero() {
+                None
+            } else {
+                Some(remaining)
+            }
+        }
+    }
+}
+
+fn waited_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn record_wait(
+    ctx: &mut RunCtx,
+    index: usize,
+    place: WaitPlace,
+    module: &str,
+    started: Instant,
+    retries: u64,
+    result: UnloadWaitResult,
+) -> Result<(), ModuleError> {
+    ctx.state.waiting_gpu = None;
+    let waited_ms = waited_ms(ctx.host.now().saturating_duration_since(started));
+    let wait = ModuleUnloadWait {
+        module: module.to_string(),
+        waited_ms,
+        retries,
+        result,
+    };
+    match place {
+        WaitPlace::First => ctx.state.replace[index].unload_waits.push(wait),
+        WaitPlace::Correction => ctx.state.replace[index]
+            .module_correction
+            .as_mut()
+            .unwrap()
+            .waits
+            .push(wait),
+    }
+    if !ctx.write_state() {
+        return Err(ModuleError::StateNotPersisted);
+    }
+    ctx.log(
+        LogKey::ModuleUnloadWait,
+        json!({
+            "module": module,
+            "waited_ms": waited_ms,
+            "retries": retries,
+            "result": result.as_str(),
+        }),
+    );
+    Ok(())
+}
+
+fn record_correction_attempt(
+    ctx: &mut RunCtx,
+    index: usize,
+    module: &str,
+    out: &Output,
+    timeout: Duration,
+) -> Result<(), ModuleError> {
+    let reason = (!out.exit.ok()).then(|| command_reason(out, timeout));
+    ctx.state.replace[index]
+        .module_correction
+        .as_mut()
+        .unwrap()
+        .unloads
+        .push(ModuleUnloadAttempt {
+            module: module.to_string(),
+            exit: out.exit.to_json(),
+            reason,
+        });
+    if ctx.write_state() {
+        Ok(())
+    } else {
+        Err(ModuleError::StateNotPersisted)
+    }
+}
+
+fn one_rmmod(
+    ctx: &mut RunCtx,
+    index: usize,
+    module: &str,
+    deadline: Option<Instant>,
+    place: WaitPlace,
+) -> Result<Attempt, ModuleError> {
+    let Some(timeout) = rmmod_timeout(ctx, deadline) else {
+        return Ok(Attempt::Stop(Stop::Deadline));
+    };
+    let cmd = Cmd::new(At::Host, "rmmod", timeout).arg(module);
+    let out = ctx.cmd(&cmd);
+    if place == WaitPlace::Correction {
+        record_correction_attempt(ctx, index, module, &out, cmd.timeout)?;
+    }
+    if out.exit.ok() {
+        return Ok(Attempt::Unloaded);
+    }
+    if out.exit == Exit::TimedOut {
+        return Ok(Attempt::Stop(Stop::TimedOut { cmd, out }));
+    }
+    let reason = command_reason(&out, cmd.timeout);
+    ctx.log(
+        LogKey::ModuleUnloadRefused,
+        json!({"module": module, "unload_reason": reason}),
+    );
+    if matches!(out.exit, Exit::Signal(_)) {
+        return Ok(Attempt::Stop(Stop::Signal { cmd, out }));
+    }
+    if in_use(&out) {
+        return Ok(Attempt::InUse(cmd, out));
+    }
+    Ok(Attempt::Stop(Stop::Refused { cmd, out }))
+}
+
+fn remember_first_unload(ctx: &mut RunCtx, index: usize, place: WaitPlace, module: &str) {
+    if place != WaitPlace::First {
+        return;
+    }
+    let unloaded = &mut ctx.state.replace[index].unloaded;
+    if unloaded.iter().any(|name| name == module) {
+        return;
+    }
+    unloaded.push(module.to_string());
+}
+
+fn finish_unloaded(
+    ctx: &mut RunCtx,
+    index: usize,
+    place: WaitPlace,
+    module: &str,
+    started: Instant,
+    retries: u64,
+) -> Result<Release, ReleaseError> {
+    // The module is already gone. Remember that before the wait record is persisted:
+    // a failed write still has to roll this module back with the earlier ones.
+    remember_first_unload(ctx, index, place, module);
+    record_wait(
+        ctx,
+        index,
+        place,
+        module,
+        started,
+        retries,
+        UnloadWaitResult::Unloaded,
+    )?;
+    Ok(Release::Unloaded)
+}
+
+fn release_module(
+    ctx: &mut RunCtx,
+    index: usize,
+    module: &str,
+    deadline: Option<Instant>,
+    place: WaitPlace,
+) -> Result<Release, ReleaseError> {
+    let (mut cmd, mut out) = match one_rmmod(ctx, index, module, deadline, place)? {
+        Attempt::Unloaded => return Ok(Release::Unloaded),
+        Attempt::Stop(stop) => return Ok(Release::Stop(stop)),
+        Attempt::InUse(cmd, out) => (cmd, out),
+    };
+    let started = ctx.host.now();
+    let mut retries = 0u64;
+    loop {
+        let now = ctx.host.now();
+        if deadline.is_some_and(|deadline| now >= deadline) {
+            record_wait(
+                ctx,
+                index,
+                place,
+                module,
+                started,
+                retries,
+                UnloadWaitResult::Other,
+            )?;
+            return Ok(Release::Stop(Stop::Deadline));
+        }
+        if now.saturating_duration_since(started) >= UNLOAD_WAIT_LIMIT {
+            record_wait(
+                ctx,
+                index,
+                place,
+                module,
+                started,
+                retries,
+                UnloadWaitResult::Refused,
+            )?;
+            return Ok(Release::Stop(Stop::Refused { cmd, out }));
+        }
+        match read_proc_modules(ctx) {
+            Err(reason) => {
+                record_wait(
+                    ctx,
+                    index,
+                    place,
+                    module,
+                    started,
+                    retries,
+                    UnloadWaitResult::Unreadable,
+                )?;
+                return Ok(Release::Stop(Stop::Unreadable(reason)));
+            }
+            Ok(modules) => match hold(&modules, module) {
+                Hold::Absent => {
+                    return finish_unloaded(ctx, index, place, module, started, retries);
+                }
+                Hold::Busy => {}
+                Hold::Releasable => match one_rmmod(ctx, index, module, deadline, place)? {
+                    Attempt::Unloaded => {
+                        retries += 1;
+                        return finish_unloaded(ctx, index, place, module, started, retries);
+                    }
+                    Attempt::Stop(Stop::Deadline) => {
+                        record_wait(
+                            ctx,
+                            index,
+                            place,
+                            module,
+                            started,
+                            retries,
+                            UnloadWaitResult::Other,
+                        )?;
+                        return Ok(Release::Stop(Stop::Deadline));
+                    }
+                    Attempt::Stop(stop) => {
+                        retries += 1;
+                        // A timed-out or signaled rmmod may already have unloaded the module.
+                        // On the pre-write path that fact has to reach the existing rollback
+                        // even when this wait record cannot be saved.
+                        let uncertain = (place == WaitPlace::First
+                            && matches!(stop, Stop::TimedOut { .. } | Stop::Signal { .. }))
+                        .then(|| module.to_string());
+                        if let Err(error) = record_wait(
+                            ctx,
+                            index,
+                            place,
+                            module,
+                            started,
+                            retries,
+                            UnloadWaitResult::Other,
+                        ) {
+                            return Err(match error {
+                                ModuleError::StateNotPersisted => {
+                                    ReleaseError::NotPersisted { uncertain }
+                                }
+                                other => ReleaseError::Other(other),
+                            });
+                        }
+                        return Ok(Release::Stop(stop));
+                    }
+                    Attempt::InUse(next_cmd, next_out) => {
+                        retries += 1;
+                        cmd = next_cmd;
+                        out = next_out;
+                    }
+                },
+            },
+        }
+        let now = ctx.host.now();
+        let left_limit = UNLOAD_WAIT_LIMIT.saturating_sub(now.saturating_duration_since(started));
+        let left_deadline = deadline
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .unwrap_or(Duration::MAX);
+        let slice = UNLOAD_WAIT_POLL.min(left_limit).min(left_deadline);
+        if slice.is_zero() {
+            continue;
+        }
+        if now.saturating_duration_since(started) >= GPU_WAIT_NOTICE && !mark_waiting_gpu(ctx) {
+            return Err(ReleaseError::NotPersisted { uncertain: None });
+        }
+        ctx.host.wait(slice);
+    }
+}
+
+fn correction_stop_reason(stop: &Stop) -> Option<ReasonJson> {
+    match stop {
+        Stop::TimedOut { cmd, out } | Stop::Signal { cmd, out } | Stop::Refused { cmd, out } => {
+            Some(command_reason(out, cmd.timeout))
+        }
+        Stop::Unreadable(reason) => Some(ReasonJson::key(reason, json!({}))),
+        Stop::Deadline => None,
+    }
+}
+
 /// Start a replacement pass by checking occupancy and unloading modules. A failure rolls back
 /// successfully unloaded modules.
 pub fn unload(ctx: &mut RunCtx, pass: Pass) -> Result<ModulePass, ModuleError> {
@@ -222,7 +671,9 @@ pub fn unload(ctx: &mut RunCtx, pass: Pass) -> Result<ModulePass, ModuleError> {
     };
     ctx.enter(phase);
     let index = ctx.state.replace.len();
-    ctx.state.replace.push(record(pass));
+    let mut replacement = record(pass);
+    replacement.module_version_before = Some(module_version_text(ctx));
+    ctx.state.replace.push(replacement);
     if !ctx.write_state() {
         return Err(ModuleError::StateNotPersisted);
     }
@@ -238,89 +689,115 @@ pub fn unload(ctx: &mut RunCtx, pass: Pass) -> Result<ModulePass, ModuleError> {
         deadline,
     };
 
-    let reading = match ctx.host.read(Path::new(PROC_MODULES_PATH)) {
-        Ok(bytes) => match std::str::from_utf8(&bytes) {
-            Ok(text) => facts::parse_proc_modules(text).map_err(|_| REASON_FORMAT_UNRECOGNIZED),
-            Err(_) => Err(REASON_FORMAT_UNRECOGNIZED),
-        },
-        Err(error) => Err(read_reason(&error)),
-    };
-    let modules = match reading {
-        Ok(modules) => modules,
-        Err(reason) => {
-            ctx.log(
-                LogKey::Occupancy,
-                json!({
-                    "usage_result": "unreadable",
-                    "module_readings": {"key": "log.usage.unreadable", "params": {}},
-                }),
-            );
+    let modules = match wait_for_gpu(ctx, Some(deadline)) {
+        facts::OccupancyDecision::Idle(modules) => {
+            log_occupancy(ctx, "not_in_use", &modules);
+            modules
+        }
+        facts::OccupancyDecision::Released { waited_ms, modules } => {
+            log_occupancy(ctx, "not_in_use", &modules);
+            remember_occupancy_wait(ctx, index, false, waited_ms, OccupancyWaitResult::Released)?;
+            modules
+        }
+        facts::OccupancyDecision::StillInUse { waited_ms, modules } => {
+            log_occupancy(ctx, "busy", &modules);
+            remember_occupancy_wait(
+                ctx,
+                index,
+                false,
+                waited_ms,
+                OccupancyWaitResult::StillInUse,
+            )?;
+            return Err(ModuleError::Failure(occupancy_failure(pass, None)));
+        }
+        facts::OccupancyDecision::Unreadable(reason) => {
+            clear_waiting_gpu(ctx)?;
+            log_occupancy_unreadable(ctx);
             if ctx.host.now() >= deadline {
                 return stop_at_deadline(ctx, &current, None, None, None);
             }
             return Err(ModuleError::Failure(occupancy_failure(pass, Some(reason))));
         }
+        facts::OccupancyDecision::Deadline { modules, .. } => {
+            clear_waiting_gpu(ctx)?;
+            log_occupancy(ctx, "busy", &modules);
+            return stop_at_deadline(ctx, &current, None, None, None);
+        }
+        facts::OccupancyDecision::NotPersisted => return Err(ModuleError::StateNotPersisted),
     };
-    let busy = facts::occupancy(&modules);
-    ctx.log(
-        LogKey::Occupancy,
-        json!({
-            "usage_result": if busy { "busy" } else { "not_in_use" },
-            "module_readings": module_readings(&modules),
-        }),
-    );
     if ctx.host.now() >= deadline {
         return stop_at_deadline(ctx, &current, None, None, None);
     }
-    if busy {
-        return Err(ModuleError::Failure(occupancy_failure(pass, None)));
-    }
 
     for module in facts::unload_plan(&modules) {
-        let remaining = deadline.saturating_duration_since(ctx.host.now());
-        if remaining.is_zero() {
-            return stop_at_deadline(ctx, &current, None, None, None);
-        }
-        let cmd = Cmd::new(At::Host, "rmmod", remaining).arg(module);
-        let out = ctx.cmd(&cmd);
-        if out.exit == Exit::TimedOut {
-            return stop_at_deadline(
-                ctx,
-                &current,
-                Some((cmd.argv(), out.exit)),
-                command_raw(&out),
-                Some(module),
-            );
-        }
-        if matches!(out.exit, Exit::Signal(_)) {
-            let reason = command_reason(&out, cmd.timeout);
-            ctx.log(
-                LogKey::ModuleUnloadRefused,
-                json!({"module": module, "unload_reason": reason}),
-            );
-            return after_rollback(
-                ctx,
-                &current,
-                refusal_failure(pass, module, &reason, &cmd, &out),
-                Some(module),
-            );
-        }
-        if out.exit.ok() {
-            ctx.state.replace[index].unloaded.push(module.to_string());
-            if !ctx.write_state() {
-                rollback_unloaded(ctx, &current);
+        let released = match release_module(ctx, index, module, Some(deadline), WaitPlace::First) {
+            Ok(released) => released,
+            Err(ReleaseError::NotPersisted { uncertain }) => {
+                match uncertain.as_deref() {
+                    Some(module) => rollback_with_uncertain(ctx, &current, module),
+                    None => rollback_unloaded(ctx, &current),
+                }
                 return Err(ModuleError::StateNotPersisted);
             }
-            ctx.log(LogKey::ModuleUnloaded, json!({"module": module}));
-        }
-        if !out.exit.ok() {
-            let reason = command_reason(&out, cmd.timeout);
-            ctx.log(
-                LogKey::ModuleUnloadRefused,
-                json!({"module": module, "unload_reason": reason}),
-            );
-            let failure = refusal_failure(pass, module, &reason, &cmd, &out);
-            return after_rollback(ctx, &current, failure, None);
+            Err(ReleaseError::Other(error)) => return Err(error),
+        };
+        match released {
+            Release::Unloaded => {
+                // A waited unload already recorded this module before its wait result was saved.
+                let already = ctx.state.replace[index]
+                    .unloaded
+                    .iter()
+                    .any(|name| name == module);
+                if !already {
+                    ctx.state.replace[index].unloaded.push(module.to_string());
+                    if !ctx.write_state() {
+                        rollback_unloaded(ctx, &current);
+                        return Err(ModuleError::StateNotPersisted);
+                    }
+                }
+                ctx.log(LogKey::ModuleUnloaded, json!({"module": module}));
+            }
+            Release::Stop(Stop::TimedOut { cmd, out }) => {
+                return stop_at_deadline(
+                    ctx,
+                    &current,
+                    Some((cmd.argv(), out.exit)),
+                    command_raw(&out),
+                    Some(module),
+                );
+            }
+            Release::Stop(Stop::Signal { cmd, out }) => {
+                let reason = command_reason(&out, cmd.timeout);
+                return after_rollback(
+                    ctx,
+                    &current,
+                    refusal_failure(pass, module, &reason, &cmd, &out, false),
+                    Some(module),
+                );
+            }
+            Release::Stop(Stop::Refused { cmd, out }) => {
+                let reason = command_reason(&out, cmd.timeout);
+                let waited_in_use = ctx.state.replace[index]
+                    .unload_waits
+                    .iter()
+                    .any(|wait| wait.module == module && wait.result == UnloadWaitResult::Refused);
+                let failure = refusal_failure(pass, module, &reason, &cmd, &out, waited_in_use);
+                return after_rollback(ctx, &current, failure, None);
+            }
+            Release::Stop(Stop::Unreadable(reason)) => {
+                ctx.log(
+                    LogKey::Occupancy,
+                    json!({
+                        "usage_result": "unreadable",
+                        "module_readings": {"key": "log.usage.unreadable", "params": {}},
+                    }),
+                );
+                rollback_unloaded(ctx, &current);
+                return Err(ModuleError::Failure(occupancy_failure(pass, Some(reason))));
+            }
+            Release::Stop(Stop::Deadline) => {
+                return stop_at_deadline(ctx, &current, None, None, None);
+            }
         }
         if ctx.host.now() >= deadline {
             return stop_at_deadline(ctx, &current, None, None, None);
@@ -414,6 +891,212 @@ pub fn reload_targets(ctx: &mut RunCtx, current: &ModulePass) -> Result<(), Modu
     });
     reload(ctx, current.record_index, &modules);
     Ok(())
+}
+
+/// Preserve the entire kernel reading; missing and unreadable are distinct decisions.
+fn module_version_text(ctx: &RunCtx) -> ReadingJson<String> {
+    match ctx.host.read(Path::new(NVRM_VERSION_PATH)) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => ReadingJson::value(text),
+            Err(_) => ReadingJson::unknown(REASON_FORMAT_UNRECOGNIZED),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            ReadingJson::NotLoaded { not_loaded: true }
+        }
+        Err(error) => ReadingJson::unknown(read_reason(&error)),
+    }
+}
+
+fn persist_correction(ctx: &RunCtx) -> Result<(), ModuleError> {
+    if ctx.write_state() {
+        Ok(())
+    } else {
+        Err(ModuleError::StateNotPersisted)
+    }
+}
+
+/// A single post-write round, independent of the write-before deadline and rollback path.
+/// Unload/reload failures are observations for F11, never a write-before failure.
+pub fn align_modules(
+    ctx: &mut RunCtx,
+    current: &ModulePass,
+    expected: &str,
+) -> Result<(), ModuleError> {
+    let index = current.record_index;
+    if ctx.state.replace[index].module_correction.is_some() {
+        return Ok(());
+    }
+    let observed = module_version_text(ctx);
+    let trigger = match &observed {
+        ReadingJson::NotLoaded { .. } => ModuleCorrectionTrigger::VersionMissing,
+        ReadingJson::Value { value } => {
+            let Some(parsed) = facts::parse_nvrm_version(value) else {
+                return Ok(());
+            };
+            if parsed.version.text() != expected {
+                ModuleCorrectionTrigger::VersionMismatch
+            } else if ctx.state.replace[index].module_version_before.as_ref() == Some(&observed)
+                && ctx.state.replace[index].file_changed == Some(true)
+            {
+                ModuleCorrectionTrigger::UnchangedModule
+            } else {
+                return Ok(());
+            }
+        }
+        ReadingJson::Unknown { .. } => return Ok(()),
+    };
+    let Some(targets) = ctx.state.reload_targets.as_ref() else {
+        return Err(ModuleError::MissingReloadTargets);
+    };
+    let targets = targets.modules.clone();
+    ctx.state.phase = Some(match current.pass {
+        Pass::Update => Phase::AlignModules,
+        Pass::Restore => Phase::RestoreAlignModules,
+    });
+    ctx.state.replace[index].module_correction = Some(ModuleCorrectionRecord {
+        trigger,
+        expected: expected.to_string(),
+        version_before: observed,
+        modules_before: Vec::new(),
+        unloads: Vec::new(),
+        waits: Vec::new(),
+        occupancy_waits: Vec::new(),
+        reloaded: Vec::new(),
+        stop_reason: None,
+        version_after: None,
+    });
+    // The phase and the parent readback establish that the file has already been written.
+    // Failure here must not authorize any further destructive action.
+    persist_correction(ctx)?;
+    ctx.log(
+        LogKey::PhaseEnter,
+        json!({"phase": ctx.state.phase.unwrap().as_str()}),
+    );
+    let mut unload_ok = false;
+    let planned = match wait_for_gpu(ctx, None) {
+        facts::OccupancyDecision::Idle(modules) => {
+            log_occupancy(ctx, "not_in_use", &modules);
+            Some(facts::unload_plan(&modules))
+        }
+        facts::OccupancyDecision::Released { waited_ms, modules } => {
+            log_occupancy(ctx, "not_in_use", &modules);
+            let planned = facts::unload_plan(&modules);
+            ctx.state.replace[index]
+                .module_correction
+                .as_mut()
+                .unwrap()
+                .modules_before = planned.iter().map(|module| module.to_string()).collect();
+            remember_occupancy_wait(ctx, index, true, waited_ms, OccupancyWaitResult::Released)?;
+            Some(planned)
+        }
+        facts::OccupancyDecision::StillInUse { waited_ms, modules } => {
+            log_occupancy(ctx, "busy", &modules);
+            let correction = ctx.state.replace[index].module_correction.as_mut().unwrap();
+            correction.modules_before = facts::unload_plan(&modules)
+                .iter()
+                .map(|module| module.to_string())
+                .collect();
+            correction.stop_reason = Some(ReasonJson::key("log.usage.busy", json!({})));
+            remember_occupancy_wait(ctx, index, true, waited_ms, OccupancyWaitResult::StillInUse)?;
+            None
+        }
+        facts::OccupancyDecision::Unreadable(reason) => {
+            clear_waiting_gpu(ctx)?;
+            log_occupancy_unreadable(ctx);
+            ctx.state.replace[index]
+                .module_correction
+                .as_mut()
+                .unwrap()
+                .stop_reason = Some(ReasonJson::key(reason, json!({})));
+            persist_correction(ctx)?;
+            None
+        }
+        facts::OccupancyDecision::Deadline { modules, .. } => {
+            clear_waiting_gpu(ctx)?;
+            log_occupancy(ctx, "busy", &modules);
+            ctx.state.replace[index]
+                .module_correction
+                .as_mut()
+                .unwrap()
+                .stop_reason = Some(ReasonJson::key("log.usage.busy", json!({})));
+            persist_correction(ctx)?;
+            None
+        }
+        facts::OccupancyDecision::NotPersisted => return Err(ModuleError::StateNotPersisted),
+    };
+    if let Some(planned) = planned {
+        if ctx.state.replace[index]
+            .module_correction
+            .as_ref()
+            .is_some_and(|correction| correction.occupancy_waits.is_empty())
+        {
+            ctx.state.replace[index]
+                .module_correction
+                .as_mut()
+                .unwrap()
+                .modules_before = planned.iter().map(|module| module.to_string()).collect();
+            persist_correction(ctx)?;
+        }
+        unload_ok = true;
+        for module in planned {
+            match release_module(ctx, index, module, None, WaitPlace::Correction) {
+                Ok(Release::Unloaded) => {
+                    ctx.log(LogKey::ModuleUnloaded, json!({"module": module}));
+                }
+                Ok(Release::Stop(stop)) => {
+                    ctx.state.replace[index]
+                        .module_correction
+                        .as_mut()
+                        .unwrap()
+                        .stop_reason = correction_stop_reason(&stop);
+                    persist_correction(ctx)?;
+                    unload_ok = false;
+                    break;
+                }
+                Err(error) => {
+                    return Err(match error {
+                        ReleaseError::NotPersisted { .. } => ModuleError::StateNotPersisted,
+                        ReleaseError::Other(error) => error,
+                    });
+                }
+            }
+        }
+    }
+    // A refused dependency also prevents reaching/removing the core. Never combine the new
+    // image's dependent modules with a core this round could not remove. No pre-write rollback.
+    if unload_ok {
+        for module in targets {
+            let cmd = Cmd::new(At::Host, "modprobe", HOST_CMD_TIMEOUT).arg(&module);
+            let out = ctx.cmd(&cmd);
+            let reason = (!out.exit.ok()).then(|| command_reason(&out, cmd.timeout));
+            ctx.state.replace[index]
+                .module_correction
+                .as_mut()
+                .unwrap()
+                .reloaded
+                .push(ReloadedRecord {
+                    module: module.clone(),
+                    ok: out.exit.ok(),
+                    reason: reason.clone(),
+                });
+            persist_correction(ctx)?;
+            if out.exit.ok() {
+                ctx.log(LogKey::ModuleReloaded, json!({"module": module}));
+            } else {
+                ctx.log(
+                    LogKey::ModuleReloadFailed,
+                    json!({"module": module, "raw": reason}),
+                );
+            }
+        }
+    }
+    let end = module_version_text(ctx);
+    ctx.state.replace[index]
+        .module_correction
+        .as_mut()
+        .unwrap()
+        .version_after = Some(end);
+    persist_correction(ctx)
 }
 
 struct Input {
@@ -759,6 +1442,10 @@ pub fn write(
             )
             .into());
         }
+        ctx.state.replace[current.record_index].file_changed =
+            store::hash_file(ctx.host.as_ref(), Path::new(RW_CANONICAL_PATH))
+                .ok()
+                .map(|before| before.sha256 != input.sha256);
         ctx.log(
             LogKey::RwMountConfirmed,
             json!({"dataset": rootfs.dataset, "value": rootfs.readonly_before}),

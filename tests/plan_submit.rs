@@ -705,6 +705,43 @@ fn docker_inspect(
 const CONTAINER_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[tokio::test]
+async fn a_brief_occupancy_hold_still_plans() {
+    let (app, cookie) = setup().await;
+    app.host.load_module("nvidia", 0, &[]);
+    app.host.sustain_open(
+        "nvidia",
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(1),
+    );
+    let started = std::time::Instant::now();
+    let (status, body) = official_plan(&app, &cookie, "580.178.04").await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["result"], "ready");
+}
+
+#[tokio::test]
+async fn a_sustained_occupancy_hold_blocks_the_plan() {
+    let (app, cookie) = setup().await;
+    app.host.load_module("nvidia", 2, &[]);
+    let started = std::time::Instant::now();
+    let (status, body) = official_plan(&app, &cookie, "580.178.04").await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["result"], "blocked");
+    assert_eq!(body["gpu"]["state"], "busy");
+    assert_eq!(app.host.count("systemd-run"), 0);
+}
+
+#[tokio::test]
 async fn a_render_node_open_makes_the_gpu_busy() {
     // An opened render node leaves nvidia_drm one reference above its dependents.
     let (app, cookie) = setup().await;
