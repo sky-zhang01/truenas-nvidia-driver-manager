@@ -2,7 +2,12 @@
 
 [English](deploy.en.md)
 
-实测平台仅为 **TrueNAS SCALE 25.10.7 / amd64**，其他版本与架构未经测试。本 App 使用特权容器及 `pid: host` 控制主机驱动。安装前请读 [安全说明](security.zh-CN.md)，安排维护窗口并准备主机控制台；替换可能中断 GPU 工作负载。
+支持并实测的平台为 **TrueNAS SCALE 25.10.7 与 TrueNAS 27.0.0-RC.1 / amd64**，其他版本与架构未经测试。本 App 使用特权容器及 `pid: host` 控制主机驱动。安装前请读 [安全说明](security.zh-CN.md)，安排维护窗口并准备主机控制台；替换可能中断 GPU 工作负载。
+
+使用管理器前，先在 TrueNAS 启用 NVIDIA 驱动：
+
+- **25.10.7：**在**应用 → 已安装**页面点**配置 → 设置**，勾选**安装 NVIDIA 驱动程序**，点**保存**。
+- **27.0.0-RC.1：**打开**系统 → 高级设置**，在 **NVIDIA Drivers** 卡片点**配置**，勾选 **Enable NVIDIA GPU Support**，点**保存**。
 
 ## 1. 安装 App
 
@@ -60,29 +65,29 @@ App YAML 使用导入后的仓库标签或 image ID。`docker load` 导入的归
 
 切换本地驱动、换回原版不需要构建环境。从上传安装包离线构建需要以下全部材料：
 
-1. 固定的 amd64 Debian 构建镜像。在联网电脑上准备：
+1. 两种内核只需同一份固定的 amd64 Debian 13（`trixie-slim`）构建镜像。固定软件包集包含 gcc-14 14.2.0-19 与 gcc-12 12.4.0-5；runner 在下载构建材料前，按内核记录的编译器主版本选用。25.10 内核的 gcc 12.2.0 要求由同主版本的 gcc 12.4.0 满足。在联网电脑上准备：
 
    ```bash
    set -e
-   BUILD_IMAGE='debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587'
+   BUILD_IMAGE='debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f'
    docker pull --platform linux/amd64 "$BUILD_IMAGE"
    BUILD_IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$BUILD_IMAGE")
    case "$BUILD_IMAGE_ID" in
-     sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23|sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587) ;;
+     sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c|sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f) ;;
      *) printf 'Unexpected build image ID: %s\n' "$BUILD_IMAGE_ID" >&2; exit 1 ;;
    esac
-   docker save -o debian-bookworm-slim-amd64.tar "$BUILD_IMAGE_ID"
+   docker save -o debian-trixie-slim-amd64.tar "$BUILD_IMAGE_ID"
    ```
 
    检查允许 classic 与 containerd 镜像存储使用的两个内容 ID，并按实际本地 ID 导出。将归档传到 NAS 后执行：
 
    ```bash
-   docker load -i debian-bookworm-slim-amd64.tar
-   docker image inspect -f '{{.Id}}' sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23 ||
-     docker image inspect -f '{{.Id}}' sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+   docker load -i debian-trixie-slim-amd64.tar
+   docker image inspect -f '{{.Id}}' sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c ||
+     docker image inspect -f '{{.Id}}' sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
    ```
 
-   第一次查找可能提示镜像不存在，此时第二次会查另一个 ID；两次都失败则停止。输出必须为 `sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23` 或 `sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587`，不同镜像存储可能用不同 ID 标识同一份固定内容。管理器会依次查引用及两个已知 ID，全部缺失才尝试拉取。
+   第一次查找可能提示镜像不存在，此时第二次会查另一个 ID；两次都失败则停止。输出必须为 `sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c` 或 `sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f`，不同镜像存储可能用不同 ID 标识同一份固定内容。管理器会依次查引用及两个已知 ID，全部缺失才尝试拉取。
 2. 当前版本固定的 Debian 软件包。在联网电脑的仓库根目录执行：
 
    ```bash

@@ -670,3 +670,96 @@ test("retained task release closes its dialog when the session expires", async (
   await expect(page.locator("#login-user")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
+
+for (const [scenario, kernel, version] of [
+  ["fresh", "6.12.105-production+truenas", "25.10.7"],
+  ["truenas27", "6.18.52-production+truenas", "27.0.0-RC.1"],
+]) {
+  test(`kernel compiler scene ${scenario} reaches a plan`, async ({ page, request }) => {
+    await openSession(page, request, scenario);
+    await expect(page.locator("main")).toContainText(version!);
+    await page.goto("/#/update");
+    await expect(page.locator("#version-select")).toBeVisible();
+    await page.selectOption("#version-select", "580.178.04");
+    const response = page.waitForResponse((r) => r.url().endsWith("/api/plans") && r.request().method() === "POST");
+    await page.getByRole("button", { name: CHECK }).click();
+    const plan = await (await response).json();
+    expect(plan.dialog.kernel).toBe(kernel);
+    expect(plan.dialog.truenas_version).toBe(version);
+    await expect(page.locator("dialog[open]")).toBeVisible();
+  });
+}
+
+test("task GPU diagnostic renders names, PCI addresses and read failures without changing status", async ({ page, request }) => {
+  await openSession(page, request, "fresh");
+  let reading: unknown = { value: [
+    { name: "NVIDIA Example GPU", pci_address: "00000000:01:00.0" },
+    { name: "NVIDIA Other GPU", pci_address: "00000000:02:00.0" },
+  ] };
+  await page.route("**/api/tasks/gpu-diagnostic*", (route) => route.fulfill({ json: {
+    ...retainedTask("SUCCEEDED", false), task_id: "gpu-diagnostic", nvidia_smi_gpus: reading,
+  } }));
+  await page.goto("/#/tasks/gpu-diagnostic");
+  const line = page.locator(".task-gpu-diagnostic");
+  await expect(line).toContainText("NVIDIA Example GPU (00000000:01:00.0)");
+  await expect(line).toContainText("NVIDIA Other GPU (00000000:02:00.0)");
+  await expect(line).toContainText(/diagnostic only|仅供诊断/);
+  reading = { unknown: { key: "reason.exit_status", params: { code: 9 } } };
+  await page.reload();
+  await expect(line).toContainText(/Could not read|无法读取/);
+  await expect(line).toContainText("9");
+  await expect(page.locator(".task-state")).toContainText(/Succeeded|成功/);
+  await page.screenshot({ path: test.info().outputPath("diagnostic-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: test.info().outputPath("diagnostic-mobile.png"), fullPage: true });
+});
+
+test("the 27 kernel scene persists and displays the runner GPU diagnostic", async ({ page, request }) => {
+  await openSession(page, request, "truenas27_replacement");
+  await expect(page.locator("main")).toContainText("27.0.0-RC.1");
+  await page.goto("/#/drivers");
+  const row = page.locator("table.drivers tbody tr").filter({ hasText: "580.178.04" });
+  await row.getByRole("button", { name: /Check this version and continue|用这个版本检查并继续/ }).click();
+  await page.locator("dialog[open]").getByRole("button", { name: /Start update|开始更新/ }).click();
+  await expect(page).toHaveURL(/#\/tasks\//);
+  await expect(page.locator(".task-state")).toContainText(/Succeeded|成功/, { timeout: 15_000 });
+  const taskId = page.url().split("#/tasks/")[1];
+  const response = await page.request.get(`${BASE}/api/tasks/${taskId}`, {
+    headers: { "X-NVM-Token": await apiToken(page) },
+  });
+  expect(response.ok()).toBeTruthy();
+  const detail = await response.json();
+  expect(detail.plan.kernel).toBe("6.18.52-production+truenas");
+  expect(detail.plan.truenas_version).toBe("27.0.0-RC.1");
+  expect(detail.nvidia_smi_gpus).toEqual({ value: [
+    { name: "NVIDIA Example GPU", pci_address: "00000000:01:00.0" },
+  ] });
+  await expect(page.locator(".task-gpu-diagnostic")).toContainText("NVIDIA Example GPU (00000000:01:00.0)");
+  await expect(page.locator(".task-gpu-diagnostic")).toContainText(/diagnostic only|仅供诊断/);
+  const state = await (await request.get(`${BASE}/__fake/state`)).json();
+  expect(state.commands.some((args: string[]) => args[0] === "midclt" && args[2] === "container.query")).toBeTruthy();
+  expect(state.commands.some((args: string[]) => args[0] === "midclt" && args[2] === "virt.instance.query")).toBeFalsy();
+});
+
+for (const restore of [false, true]) {
+  test(`a module race displays its independent ${restore ? "restore" : "update"} correction stage`, async ({ page, request }) => {
+    await openSession(page, request, restore ? "module_race_restore" : "module_race_update");
+    await page.goto("/#/drivers");
+    const row = page.locator("table.drivers tbody tr").filter({ hasText: "580.178.04" });
+    await row.getByRole("button", { name: /Check this version and continue|用这个版本检查并继续/ }).click();
+    await page.locator("dialog[open]").getByRole("button", { name: /Start update|开始更新/ }).click();
+    await expect(page).toHaveURL(/#\/tasks\//);
+    await expect(page.locator(".task-state")).toContainText(restore ? /Original driver restored|原版.*恢复|已恢复原版/ : /Succeeded|成功/, { timeout: 15_000 });
+    const id = page.url().split("#/tasks/")[1];
+    const detail = await (await page.request.get(`${BASE}/api/tasks/${id}`, {
+      headers: { "X-NVM-Token": await apiToken(page) },
+    })).json();
+    expect(detail.status).toBe(restore ? "STOCK_RESTORED" : "SUCCEEDED");
+    const record = detail.replace.at(-1);
+    expect(record.module_correction.trigger).toBe("version_mismatch");
+    expect(record.module_correction.reloaded.every((r: { ok: boolean }) => r.ok)).toBe(true);
+    await expect(page.locator(".task-steps")).toContainText(/核对装载的驱动模块|Aligning loaded driver modules/);
+    if (restore) await expect(page.locator(".task-steps")).toContainText(/恢复原版驱动|Restoring the original driver/);
+    expect(detail.checks.at(-1).passed).toBe(true);
+  });
+}

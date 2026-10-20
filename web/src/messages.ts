@@ -529,6 +529,7 @@ export const MESSAGES: Record<string, Message> = {
   "phase.write": { zh: "写入驱动文件", en: "Writing the driver file" },
   "phase.refresh": { zh: "刷新驱动扩展", en: "Refreshing the driver extension" },
   "phase.reload": { zh: "重新加载驱动模块", en: "Reloading driver modules" },
+  "phase.align_modules": { zh: "核对装载的驱动模块", en: "Aligning loaded driver modules" },
   "phase.check": { zh: "成功检查", en: "Post-update check" },
   "phase.restore_unload": {
     zh: "恢复原版驱动 · 卸载驱动模块",
@@ -545,6 +546,10 @@ export const MESSAGES: Record<string, Message> = {
   "phase.restore_reload": {
     zh: "恢复原版驱动 · 重新加载驱动模块",
     en: "Restoring the original driver · Reloading driver modules",
+  },
+  "phase.restore_align_modules": {
+    zh: "恢复原版驱动 · 核对装载的驱动模块",
+    en: "Restoring the original driver · Aligning loaded driver modules",
   },
   "phase.restore_check": {
     zh: "恢复原版驱动 · 成功检查",
@@ -570,6 +575,10 @@ export const MESSAGES: Record<string, Message> = {
   "home.interrupted.modules": {
     zh: "warning|{time} 开始从 {source} 更新到 {version}，停在{phase}。发现中断的时间是 {discovered}。这一步在写入驱动文件之时或之后，页面无法判断文件是否已经换过。驱动模块可能已卸载且没有装回。请先看当前状态,再按情况重新选择版本更新,或重启主机后确认应用能使用显卡。",
     en: "warning|The update started at {time} from {source}, toward {version}, and stopped during {phase}. The interruption was discovered at {discovered}. This step is at or after the driver file is written, so this page cannot tell whether the file was replaced. Driver modules may be unloaded without having been loaded again. Check the current state first, then choose a version and update again, or restart the host and confirm applications can use the GPU.",
+  },
+  "home.interrupted.file_written": {
+    zh: "warning|{time} 开始从 {source} 更新到 {version}，停在{phase}。发现中断的时间是 {discovered}。文件已经写入。驱动模块可能已卸载且没有装回。请先看当前状态，再按情况重新选择版本更新，或重启主机后确认应用能使用显卡。",
+    en: "warning|The update started at {time} from {source}, toward {version}, and stopped during {phase}. The interruption was discovered at {discovered}. The driver file has already been written. Driver modules may be unloaded without having been loaded again. Check the current state first, then choose a version and update again, or restart the host and confirm applications can use the GPU.",
   },
   "home.interrupted.phase_unknown": {
     zh: "warning|{time} 开始从 {source} 更新到 {version}。停在哪一步没有记下。发现中断的时间是 {discovered}。页面无法判断驱动文件是否已经换过。",
@@ -687,6 +696,12 @@ export const MESSAGES: Record<string, Message> = {
     zh: "显卡占用判定:{usage_result};驱动模块引用数:{module_readings}。",
     en: "GPU usage: {usage_result}; driver module references: {module_readings}.",
   },
+  "log.occupancy_wait": {
+    zh: "显卡正被使用，等待 {waited_ms} 毫秒后，结果：{result}。",
+    en: "The GPU was in use. After waiting {waited_ms} ms, result: {result}.",
+  },
+  "log.occupancy_wait.released": { zh: "已空闲", en: "released" },
+  "log.occupancy_wait.still_in_use": { zh: "仍被占用", en: "still in use" },
   "log.usage.not_in_use": { zh: "未被占用", en: "not in use" },
   "log.usage.busy": { zh: "被占用", en: "in use" },
   "log.usage.unreadable": { zh: "无法读取", en: "unreadable" },
@@ -701,6 +716,14 @@ export const MESSAGES: Record<string, Message> = {
     zh: "卸载驱动模块 {module} 被系统拒绝:{unload_reason}。",
     en: "Unloading driver module {module} was refused: {unload_reason}.",
   },
+  "log.module_unload_wait": {
+    zh: "卸载驱动模块 {module} 时因正在使用而等待 {waited_ms} 毫秒，重试 {retries} 次，结果：{result}。",
+    en: "Unloading driver module {module} waited {waited_ms} ms because it was in use, retried {retries} times, result: {result}.",
+  },
+  "log.unload_wait.unloaded": { zh: "已卸载", en: "unloaded" },
+  "log.unload_wait.refused": { zh: "仍被拒绝", en: "still refused" },
+  "log.unload_wait.unreadable": { zh: "无法读取模块列表", en: "module list unreadable" },
+  "log.unload_wait.other": { zh: "因其他错误停下", en: "stopped by another error" },
   "log.rw_mount_confirmed": {
     zh: "已确认数据集 {dataset} 的可写挂载(只读属性原值为 {value})。",
     en: "Confirmed the writable mount of dataset {dataset} (readonly was {value}).",
@@ -1504,6 +1527,10 @@ export const MESSAGES: Record<string, Message> = {
   "tasks.source.local": { zh: "本地驱动 · {source}", en: "Local driver · {source}" },
   "task.status": { zh: "状态", en: "Status" },
   "task.phase": { zh: "当前阶段", en: "Current stage" },
+  "task.gpus": { zh: "nvidia-smi 看到的显卡（仅供诊断）", en: "GPUs seen by nvidia-smi (diagnostic only)" },
+  "task.gpus.not_read": { zh: "尚未读取", en: "Not read yet" },
+  "task.gpus.unreadable": { zh: "无法读取：{reason}", en: "Could not read: {reason}" },
+  "task.gpus.none": { zh: "未读到显卡", en: "No GPUs reported" },
   "task.download": { zh: "下载进度", en: "Download progress" },
   "task.log": { zh: "日志尾部", en: "Log tail" },
   "task.error_code": { zh: "错误码与说明", en: "Error code and explanation" },
@@ -1525,20 +1552,20 @@ export const MESSAGES: Record<string, Message> = {
   },
 
   "notice.gpu_in_use": {
-    zh: "error|title|无法更新:显卡正被占用\nbody|显卡正被占用,驱动文件未改动。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用,仍提示显卡正被占用,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
-    en: "error|title|Cannot update: GPU in use\nbody|The GPU is in use. The driver file was not changed.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the GPU is still reported in use after the applications using it are stopped, it may be held by a process running directly on the host, or by a display output.",
+    zh: "error|title|无法更新:显卡正被占用\nbody|程序等待了约 30 秒,显卡仍被占用,驱动文件未改动。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用,仍提示显卡正被占用,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
+    en: "error|title|Cannot update: GPU in use\nbody|The program waited about 30 seconds and the GPU was still in use. The driver file was not changed.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the GPU is still reported in use after the applications using it are stopped, it may be held by a process running directly on the host, or by a display output.",
   },
   "notice.gpu_in_use.empty_note": {
-    zh: "note|未找到申请了显卡的应用。占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
-    en: "note|No application that requested the GPU was found. The GPU may be held by a process running directly on the host, or by a display output.",
+    zh: "note|没有找到申请了显卡的应用。占用可能来自正在启动或反复重启的应用、主机上直接运行的进程,或显示输出。稍等片刻再试一次。",
+    en: "note|No app that requested the GPU was found. The hold may come from an app that is starting or restarting repeatedly, a process running directly on the host, or a display output. Try again in a moment.",
   },
   "notice.gpu_in_use.unreadable": {
     zh: "error|title|无法更新:无法读取显卡占用状态\nbody|无法读取显卡占用状态:{read_reason}。驱动文件未改动。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}",
     en: "error|title|Cannot update: GPU usage state could not be read\nbody|The GPU usage state could not be read: {read_reason}. The driver file was not changed.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}",
   },
   "notice.gpu_in_use.task": {
-    zh: "error|title|更新已停止:显卡正被占用\nbody|显卡正被占用,驱动文件未改动。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用,仍提示显卡正被占用,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
-    en: "error|title|Update stopped: GPU in use\nbody|The GPU is in use. The driver file was not changed.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the GPU is still reported in use after the applications using it are stopped, it may be held by a process running directly on the host, or by a display output.",
+    zh: "error|title|更新已停止:显卡正被占用\nbody|程序等待了约 30 秒,显卡仍被占用,驱动文件未改动,已加载的驱动没有变化。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用,仍提示显卡正被占用,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
+    en: "error|title|Update stopped: GPU in use\nbody|The program waited about 30 seconds and the GPU was still in use. The driver file was not changed, and the loaded driver is unchanged.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the GPU is still reported in use after the applications using it are stopped, it may be held by a process running directly on the host, or by a display output.",
   },
   "notice.gpu_in_use.task_unreadable": {
     zh: "error|title|更新已停止:无法读取显卡占用状态\nbody|无法读取显卡占用状态:{read_reason}。驱动文件未改动。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}",
@@ -1556,6 +1583,18 @@ export const MESSAGES: Record<string, Message> = {
   "notice.unload_refused.not_unloaded": {
     zh: "error|title|更新已停止:驱动无法卸载\nbody|卸载 NVIDIA 驱动模块 {module} 被系统拒绝:{unload_reason}。驱动文件未改动,当前驱动仍为 {old}。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用后仍无法卸载驱动模块,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
     en: "error|title|Update stopped: driver could not be unloaded\nbody|Unloading the NVIDIA driver module {module} was refused: {unload_reason}. The driver file was not changed; the driver is still {old}.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the driver modules still cannot be unloaded after the applications using the GPU are stopped, the GPU may be held by a process running directly on the host, or by a display output.",
+  },
+  "notice.unload_refused.waited": {
+    zh: "error|title|更新已停止:驱动无法卸载\nbody|程序等待了约 30 秒,驱动模块 {module} 仍无法卸载({unload_reason})。已重新加载已卸载的驱动模块,驱动文件未改动,当前驱动仍为 {old}。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用后仍无法卸载驱动模块,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
+    en: "error|title|Update stopped: driver could not be unloaded\nbody|The program waited about 30 seconds and module {module} still could not be unloaded ({unload_reason}). The driver modules already unloaded have been reloaded. The driver file was not changed; the driver is still {old}.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the driver modules still cannot be unloaded after the applications using the GPU are stopped, the GPU may be held by a process running directly on the host, or by a display output.",
+  },
+  "notice.unload_refused.waited.reload_failed": {
+    zh: "error|title|更新已停止:驱动无法卸载\nbody|程序等待了约 30 秒,驱动模块 {module} 仍无法卸载({unload_reason})。重新加载驱动模块失败:{reload_reason}。驱动文件未改动。已卸载的驱动模块没有全部重新加载,申请了显卡的应用可能无法启动。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用后仍无法卸载驱动模块,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
+    en: "error|title|Update stopped: driver could not be unloaded\nbody|The program waited about 30 seconds and module {module} still could not be unloaded ({unload_reason}). Reloading the driver modules failed: {reload_reason}. The driver file was not changed. Not all of the unloaded driver modules were reloaded; applications that requested the GPU may fail to start.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the driver modules still cannot be unloaded after the applications using the GPU are stopped, the GPU may be held by a process running directly on the host, or by a display output.",
+  },
+  "notice.unload_refused.waited.not_unloaded": {
+    zh: "error|title|更新已停止:驱动无法卸载\nbody|程序等待了约 30 秒,驱动模块 {module} 仍无法卸载({unload_reason})。驱动文件未改动,当前驱动仍为 {old}。\naction|以下是申请了显卡的应用。请停止其中正在使用显卡的应用,然后重新开始更新。\nlist|{name} · {type}\nnote|如已停止正在使用显卡的应用后仍无法卸载驱动模块,占用者可能是主机上直接运行的进程,或显卡正用于显示输出。",
+    en: "error|title|Update stopped: driver could not be unloaded\nbody|The program waited about 30 seconds and module {module} still could not be unloaded ({unload_reason}). The driver file was not changed; the driver is still {old}.\naction|The applications below requested the GPU. Stop those that are using the GPU, then start the update again.\nlist|{name} · {type}\nnote|If the driver modules still cannot be unloaded after the applications using the GPU are stopped, the GPU may be held by a process running directly on the host, or by a display output.",
   },
 
   "notice.update_complete": {
@@ -1601,6 +1640,42 @@ export const MESSAGES: Record<string, Message> = {
   "notice.restore_stopped.unload_refused.not_unloaded": {
     zh: "error|title|更新失败,原版驱动恢复已中止\nbody|驱动 {target} 未通过成功检查:{check_reason}。恢复原版驱动 {original} 时卸载驱动模块 {module} 被系统拒绝:{unload_reason},恢复在写入原版驱动文件之前中止。当前加载的驱动为 {current}。\naction|请在「本地驱动」中选择原版驱动 {original} 进行更新。",
     en: "error|title|Update failed; restoring the original driver was stopped\nbody|Driver {target} failed the post-update check: {check_reason}. Unloading the driver module {module} was refused when restoring the original driver {original}: {unload_reason}, so the restore stopped before the original driver file was written. The loaded driver is {current}.\naction|Select the original driver {original} in Local drivers and update.",
+  },
+  "notice.restore_stopped.unload_refused.waited": {
+    zh: "error|title|更新失败,原版驱动恢复已中止\nbody|驱动 {target} 未通过成功检查:{check_reason}。程序等待了约 30 秒,驱动模块 {module} 仍无法卸载({unload_reason}),恢复在写入原版驱动文件之前中止。已重新加载已卸载的驱动模块,当前加载的驱动为 {current}。\naction|请在「本地驱动」中选择原版驱动 {original} 进行更新。",
+    en: "error|title|Update failed; restoring the original driver was stopped\nbody|Driver {target} failed the post-update check: {check_reason}. The program waited about 30 seconds and module {module} still could not be unloaded ({unload_reason}), so the restore stopped before the original driver file was written. The driver modules already unloaded have been reloaded; the loaded driver is {current}.\naction|Select the original driver {original} in Local drivers and update.",
+  },
+  "notice.restore_stopped.unload_refused.waited.reload_failed": {
+    zh: "error|title|更新失败,原版驱动恢复已中止\nbody|驱动 {target} 未通过成功检查:{check_reason}。程序等待了约 30 秒,驱动模块 {module} 仍无法卸载({unload_reason}),恢复在写入原版驱动文件之前中止。重新加载驱动模块失败:{reload_reason}。正式路径上的驱动文件仍为 {target}。已卸载的驱动模块没有全部重新加载,申请了显卡的应用可能无法启动。\naction|请在「本地驱动」中选择原版驱动 {original} 进行更新。",
+    en: "error|title|Update failed; restoring the original driver was stopped\nbody|Driver {target} failed the post-update check: {check_reason}. The program waited about 30 seconds and module {module} still could not be unloaded ({unload_reason}), so the restore stopped before the original driver file was written. Reloading the driver modules failed: {reload_reason}. The driver file at the permanent path is still {target}. Not all of the unloaded driver modules were reloaded; applications that requested the GPU may fail to start.\naction|Select the original driver {original} in Local drivers and update.",
+  },
+  "notice.restore_stopped.unload_refused.waited.not_unloaded": {
+    zh: "error|title|更新失败,原版驱动恢复已中止\nbody|驱动 {target} 未通过成功检查:{check_reason}。程序等待了约 30 秒,驱动模块 {module} 仍无法卸载({unload_reason}),恢复在写入原版驱动文件之前中止。当前加载的驱动为 {current}。\naction|请在「本地驱动」中选择原版驱动 {original} 进行更新。",
+    en: "error|title|Update failed; restoring the original driver was stopped\nbody|Driver {target} failed the post-update check: {check_reason}. The program waited about 30 seconds and module {module} still could not be unloaded ({unload_reason}), so the restore stopped before the original driver file was written. The loaded driver is {current}.\naction|Select the original driver {original} in Local drivers and update.",
+  },
+  "notice.restore_stopped.busy": {
+    zh: "error|title|更新失败,原版驱动恢复已中止\nbody|更新后的核对没有通过,程序开始恢复原版驱动。恢复时显卡一直被使用,程序等待约 30 秒后停下,没有卸载任何驱动模块。刚写入的新驱动文件现在在正式路径上,当前加载的驱动是 {current}。\naction|请停止下列申请了显卡的应用,然后在「本地驱动」中选择原版驱动重新更新。\nlist|{name} · {type}",
+    en: "error|title|Update failed; restoring the original driver was stopped\nbody|The check after the update did not pass, and the program began restoring the original driver. The GPU stayed in use while restoring. The program waited about 30 seconds and then stopped without unloading any driver module. The newly written driver file is now on the permanent path, and the loaded driver is {current}.\naction|Stop the apps below that requested the GPU, then select the original driver in Local drivers and update.\nlist|{name} · {type}",
+  },
+  "notice.restore_stopped.busy.empty_list": {
+    zh: "error|title|更新失败,原版驱动恢复已中止\nbody|更新后的核对没有通过,程序开始恢复原版驱动。恢复时显卡一直被使用,程序等待约 30 秒后停下,没有卸载任何驱动模块。刚写入的新驱动文件现在在正式路径上,当前加载的驱动是 {current}。\naction|请在「本地驱动」中选择原版驱动重新更新;如有应用正在反复重启,请先让它停止。",
+    en: "error|title|Update failed; restoring the original driver was stopped\nbody|The check after the update did not pass, and the program began restoring the original driver. The GPU stayed in use while restoring. The program waited about 30 seconds and then stopped without unloading any driver module. The newly written driver file is now on the permanent path, and the loaded driver is {current}.\naction|Select the original driver in Local drivers and update. If an app keeps restarting, stop it first.",
+  },
+  "update.checking": {
+    zh: "正在检查更新条件。如果显卡正被使用,会等它空闲,最多约 30 秒。",
+    en: "Checking update conditions. If the GPU is in use, this waits for it to become free, for up to about 30 seconds.",
+  },
+  "task.waiting_gpu": {
+    zh: "显卡正被使用,正在等它空闲,最多约 30 秒。空闲后自动继续;如果是你的应用在用显卡,现在停止它即可。",
+    en: "The GPU is in use. Waiting up to about 30 seconds for it to become free; the update then continues on its own. If one of your applications is using the GPU, you can stop it now.",
+  },
+  "task.waiting_gpu.align": {
+    zh: "新驱动文件已写入。显卡正被使用,正在等它空闲后载入,最多约 30 秒。",
+    en: "The new driver file has been written. The GPU is in use; waiting up to about 30 seconds for it to become free before loading it.",
+  },
+  "task.waiting_gpu.restore": {
+    zh: "正在恢复原版驱动。显卡正被使用,正在等它空闲,最多约 30 秒。",
+    en: "Restoring the original driver. The GPU is in use; waiting up to about 30 seconds for it to become free.",
   },
 
   "notice.restore_failed": {
@@ -1722,7 +1797,7 @@ export const MESSAGES: Record<string, Message> = {
   },
   "query.object.host_task_unit": { zh: "主机任务单元", en: "Host task unit" },
   "query.object.docker": { zh: "Docker 容器", en: "Docker container" },
-  "query.object.incus": { zh: "Incus 容器", en: "Incus container" },
+  "query.object.incus": { zh: "TrueNAS 容器实例", en: "TrueNAS container instances" },
   "query.object.running_task": { zh: "未结束的任务", en: "Running task" },
   "query.object.extension_link": { zh: "驱动扩展链接", en: "Driver extension link" },
   "query.object.local_checksum": { zh: "本地驱动文件校验值", en: "Local driver file checksum" },
@@ -1960,8 +2035,6 @@ MESSAGES["upload.rejected"] = MESSAGES["upload.rejected.too_large"];
 MESSAGES["plan.source_invalid.gpu_unsupported"] = MESSAGES["catalog.no_usable_version"];
 MESSAGES["plan.source_invalid.gpu_undecidable"] = MESSAGES["query.failed"];
 
-MESSAGES["notice.restore_stopped.busy"] = MESSAGES["notice.restore_stopped"];
-MESSAGES["notice.restore_stopped.busy.empty_list"] = MESSAGES["notice.restore_stopped.empty_list"];
 MESSAGES["notice.gpu_in_use.busy"] = MESSAGES["notice.gpu_in_use"];
 
 MESSAGES["plan.precheck_failed"] = MESSAGES["precheck.failed"];

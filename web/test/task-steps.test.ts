@@ -43,6 +43,9 @@ test("interrupt copy follows the phase", () => {
   ]) {
     assert.equal(interruptCopyKey(phase), "home.interrupted.modules", phase);
   }
+  for (const phase of ["align_modules", "restore_align_modules"]) {
+    assert.equal(interruptCopyKey(phase), "home.interrupted.file_written");
+  }
   // The check phases run with the modules loaded: the generic writing is accurate for them.
   assert.equal(interruptCopyKey("check"), "home.interrupted");
   assert.equal(interruptCopyKey("restore_check"), "home.interrupted");
@@ -86,6 +89,11 @@ test("planned steps follow source and original", () => {
     "restore_check",
     "read_loaded_version_end",
   ]);
+  const corrected = plannedSteps({ source: { kind: "local" }, original: "skip" }, true, { update: true, restore: true });
+  assert.ok(corrected.indexOf("align_modules") > corrected.indexOf("reload"));
+  assert.ok(corrected.indexOf("align_modules") < corrected.indexOf("check"));
+  assert.ok(corrected.indexOf("restore_align_modules") > corrected.indexOf("restore_reload"));
+  assert.ok(corrected.indexOf("restore_align_modules") < corrected.indexOf("restore_check"));
   const quiet = plannedSteps({ source: { kind: "official" }, original: "save" }, false);
   assert.equal(quiet.includes("restore_write"), false);
 });
@@ -152,6 +160,8 @@ test("interrupt details link to local drivers without claiming the file is there
       kind: "local",
       notice: /驱动模块可能已卸载且没有装回|Driver modules may be unloaded without having been loaded again/,
     },
+    { phase: "align_modules", kind: "official", notice: /文件已经写入|file has already been written/ },
+    { phase: "restore_align_modules", kind: "local", notice: /文件已经写入|file has already been written/ },
     { phase: "unload", kind: "official", notice: /请先看当前状态|Check the current state first/ },
   ];
   for (const lang of ["zh", "en"] as const) {

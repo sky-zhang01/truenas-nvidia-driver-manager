@@ -49,11 +49,13 @@ pub enum Phase {
     Write,
     Refresh,
     Reload,
+    AlignModules,
     Check,
     RestoreUnload,
     RestoreWrite,
     RestoreRefresh,
     RestoreReload,
+    RestoreAlignModules,
     RestoreCheck,
     ReadLoadedVersionEnd,
 }
@@ -69,11 +71,13 @@ impl Phase {
             Phase::Write => "write",
             Phase::Refresh => "refresh",
             Phase::Reload => "reload",
+            Phase::AlignModules => "align_modules",
             Phase::Check => "check",
             Phase::RestoreUnload => "restore_unload",
             Phase::RestoreWrite => "restore_write",
             Phase::RestoreRefresh => "restore_refresh",
             Phase::RestoreReload => "restore_reload",
+            Phase::RestoreAlignModules => "restore_align_modules",
             Phase::RestoreCheck => "restore_check",
             Phase::ReadLoadedVersionEnd => "read_loaded_version_end",
         }
@@ -89,11 +93,13 @@ impl Phase {
             "write" => Phase::Write,
             "refresh" => Phase::Refresh,
             "reload" => Phase::Reload,
+            "align_modules" => Phase::AlignModules,
             "check" => Phase::Check,
             "restore_unload" => Phase::RestoreUnload,
             "restore_write" => Phase::RestoreWrite,
             "restore_refresh" => Phase::RestoreRefresh,
             "restore_reload" => Phase::RestoreReload,
+            "restore_align_modules" => Phase::RestoreAlignModules,
             "restore_check" => Phase::RestoreCheck,
             "read_loaded_version_end" => Phase::ReadLoadedVersionEnd,
             _ => return None,
@@ -271,11 +277,107 @@ pub struct ReloadedRecord {
     pub reason: Option<ReasonJson>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleCorrectionTrigger {
+    VersionMismatch,
+    VersionMissing,
+    UnchangedModule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleUnloadAttempt {
+    pub module: String,
+    pub exit: Value,
+    pub reason: Option<ReasonJson>,
+}
+
+/// How a wait for an in-use module ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnloadWaitResult {
+    Unloaded,
+    Refused,
+    Unreadable,
+    Other,
+}
+
+impl UnloadWaitResult {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UnloadWaitResult::Unloaded => "unloaded",
+            UnloadWaitResult::Refused => "refused",
+            UnloadWaitResult::Unreadable => "unreadable",
+            UnloadWaitResult::Other => "other",
+        }
+    }
+}
+
+/// Result of a wait that started because the occupancy reading saw the GPU in use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OccupancyWaitResult {
+    Released,
+    StillInUse,
+}
+
+impl OccupancyWaitResult {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OccupancyWaitResult::Released => "released",
+            OccupancyWaitResult::StillInUse => "still_in_use",
+        }
+    }
+}
+
+/// One occupancy wait. Written only when the first reading was occupied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OccupancyWaitRecord {
+    pub waited_ms: u64,
+    pub result: OccupancyWaitResult,
+}
+
+/// One wait after `rmmod` was refused because the module was in use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleUnloadWait {
+    pub module: String,
+    pub waited_ms: u64,
+    pub retries: u64,
+    pub result: UnloadWaitResult,
+}
+
+/// One bounded, post-write correction. It never changes the first round's accounts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleCorrectionRecord {
+    pub trigger: ModuleCorrectionTrigger,
+    pub expected: String,
+    pub version_before: ReadingJson<String>,
+    pub modules_before: Vec<String>,
+    pub unloads: Vec<ModuleUnloadAttempt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<ModuleUnloadWait>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occupancy_waits: Vec<OccupancyWaitRecord>,
+    pub reloaded: Vec<ReloadedRecord>,
+    pub stop_reason: Option<ReasonJson>,
+    pub version_after: Option<ReadingJson<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplaceRecord {
     pub pass: Pass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_version_before: Option<ReadingJson<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_changed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_correction: Option<ModuleCorrectionRecord>,
     #[serde(default)]
     pub unloaded: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unload_waits: Vec<ModuleUnloadWait>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occupancy_waits: Vec<OccupancyWaitRecord>,
     #[serde(default)]
     pub reloaded: Vec<ReloadedRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,6 +388,16 @@ pub struct ReplaceRecord {
     pub readback_ok: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readonly_after: Option<ReadingJson<String>>,
+}
+
+impl ReplaceRecord {
+    /// Notifications describe the final reload round; earlier failures remain historical.
+    pub fn final_reloaded(&self) -> &[ReloadedRecord] {
+        self.module_correction
+            .as_ref()
+            .map(|c| c.reloaded.as_slice())
+            .unwrap_or(&self.reloaded)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,6 +497,13 @@ pub struct StateNote {
     pub kept_as: Option<String>,
 }
 
+/// A GPU observed by the post-replacement diagnostic query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedGpu {
+    pub name: String,
+    pub pci_address: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskState {
     pub task_id: String,
@@ -409,6 +528,9 @@ pub struct TaskState {
     pub error: Option<ErrorRecord>,
     #[serde(default)]
     pub gpu_users: Option<GpuUsersRecord>,
+    /// Diagnostic only; never used to decide success or recovery.
+    #[serde(default)]
+    pub nvidia_smi_gpus: Option<ReadingJson<Vec<ObservedGpu>>>,
     #[serde(default)]
     pub state_note: Option<StateNote>,
     /// The later verified task that released this task's retained directory.
@@ -421,6 +543,10 @@ pub struct TaskState {
     /// was already local (or was loaded offline) is never recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_env_pulled_image: Option<String>,
+    /// Set while a GPU wait inside this task has already lasted about three seconds.
+    /// Absent once the wait ends, and absent from a terminal record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_gpu: Option<bool>,
 }
 
 impl TaskState {
@@ -451,10 +577,12 @@ impl TaskState {
             restore: None,
             error: None,
             gpu_users: None,
+            nvidia_smi_gpus: None,
             state_note: Some(note),
             released_by: None,
             released_at: None,
             build_env_pulled_image: None,
+            waiting_gpu: None,
         }
     }
 }
@@ -669,7 +797,38 @@ impl Validate for TaskState {
                     return Err("unknown unloaded module".into());
                 }
             }
-            for r in &replace.reloaded {
+            for wait in &replace.unload_waits {
+                if !crate::facts::DRIVER_MODULES.contains(&wait.module.as_str()) {
+                    return Err("unknown unload wait module".into());
+                }
+            }
+            if let Some(correction) = &replace.module_correction {
+                for module in correction
+                    .modules_before
+                    .iter()
+                    .chain(correction.unloads.iter().map(|a| &a.module))
+                {
+                    if !crate::facts::DRIVER_MODULES.contains(&module.as_str()) {
+                        return Err("unknown correction module".into());
+                    }
+                }
+                for attempt in &correction.unloads {
+                    let ok = attempt.exit.get("code").and_then(Value::as_i64) == Some(0);
+                    if ok != attempt.reason.is_none() {
+                        return Err("correction unload reason must match exit".into());
+                    }
+                }
+                for wait in &correction.waits {
+                    if !crate::facts::DRIVER_MODULES.contains(&wait.module.as_str()) {
+                        return Err("unknown unload wait module".into());
+                    }
+                }
+            }
+            for r in replace
+                .reloaded
+                .iter()
+                .chain(replace.module_correction.iter().flat_map(|c| &c.reloaded))
+            {
                 if !crate::facts::DRIVER_MODULES.contains(&r.module.as_str()) {
                     return Err("unknown reloaded module".into());
                 }
@@ -910,10 +1069,12 @@ pub fn new_state(id: &str, created_at: u64, plan: Plan, phase: Phase) -> TaskSta
         restore: None,
         error: None,
         gpu_users: None,
+        nvidia_smi_gpus: None,
         state_note: None,
         released_by: None,
         released_at: None,
         build_env_pulled_image: None,
+        waiting_gpu: None,
     }
 }
 
@@ -1039,6 +1200,16 @@ mod tests {
     }
 
     #[test]
+    fn existing_task_without_gpu_diagnostic_still_deserializes() {
+        let state = new_state("20260928T101530Z-3f9a0c12", 1, sample_plan(), Phase::Check);
+        let mut value = serde_json::to_value(&state).unwrap();
+        value.as_object_mut().unwrap().remove("nvidia_smi_gpus");
+        let decoded: TaskState = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, state);
+        assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
     fn interrupted_note_allows_null_plan() {
         let mut st = new_state("20260928T101530Z-3f9a0c12", 1, sample_plan(), Phase::Check);
         st.status = Status::Interrupted;
@@ -1084,7 +1255,12 @@ mod tests {
         });
         st.replace.push(ReplaceRecord {
             pass: Pass::Update,
+            module_version_before: None,
+            file_changed: None,
+            module_correction: None,
             unloaded: vec!["nvidia".into()],
+            unload_waits: Vec::new(),
+            occupancy_waits: Vec::new(),
             reloaded: vec![ReloadedRecord {
                 module: "nvidia".into(),
                 ok: false,
@@ -1230,7 +1406,12 @@ mod tests {
         st.error = None;
         st.replace.push(ReplaceRecord {
             pass: Pass::Update,
+            module_version_before: None,
+            file_changed: None,
+            module_correction: None,
             unloaded: vec!["nvidia".into()],
+            unload_waits: Vec::new(),
+            occupancy_waits: Vec::new(),
             reloaded: vec![ReloadedRecord {
                 module: "nvidia".into(),
                 ok: false,
@@ -1266,7 +1447,12 @@ mod tests {
         let mut st = new_state("20260928T101530Z-3f9a0c12", 1, sample_plan(), Phase::Reload);
         st.replace.push(ReplaceRecord {
             pass: Pass::Update,
+            module_version_before: None,
+            file_changed: None,
+            module_correction: None,
             unloaded: vec!["nvidia".into()],
+            unload_waits: Vec::new(),
+            occupancy_waits: Vec::new(),
             reloaded: vec![ReloadedRecord {
                 module: "nvidia".into(),
                 ok: false,

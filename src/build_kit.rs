@@ -9,18 +9,18 @@ use std::sync::OnceLock;
 
 /// The official image, referenced by its index fingerprint.
 pub const BUILD_ENV_IMAGE_REF: &str =
-    "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587";
+    "debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f";
 
 /// The amd64 image ID of that image as the classic image store reports it
-/// (measured on the target host).
+/// (the config digest from the official amd64 manifest).
 pub const BUILD_ENV_IMAGE_ID: &str =
-    "sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23";
+    "sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c";
 
 /// The index digest inside [`BUILD_ENV_IMAGE_REF`]. A containerd-backed image
 /// store reports this as the local image ID where a classic store reports the
 /// per-platform image ID; both name the same pinned amd64 image.
 pub const BUILD_ENV_IMAGE_INDEX_ID: &str =
-    "sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587";
+    "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f";
 
 /// The architecture of the build environment: the target is amd64.
 pub const BUILD_ENV_PLATFORM: &str = "linux/amd64";
@@ -208,15 +208,25 @@ mod tests {
         assert_eq!(manifest_header("snapshot"), Some(BUILD_ENV_SNAPSHOT));
         assert_eq!(
             manifest_header("top_packages"),
-            Some("gcc-12 binutils make libc6-dev kmod squashfs-tools libelf-dev patch xz-utils")
+            Some("gcc-14 gcc-12 binutils make libc6-dev kmod squashfs-tools libelf-dev patch xz-utils")
         );
         assert_eq!(
             manifest_header("columns"),
             Some("sha256, bytes, filename, package, version, url (tab-separated)")
         );
         let packages = packages().expect("the embedded manifest parses");
-        assert_eq!(packages.len(), 49);
-        assert_eq!(manifest_header("packages"), Some("49"));
+        assert_eq!(packages.len(), 47);
+        assert_eq!(manifest_header("packages"), Some("47"));
+        for (compiler, version) in [("gcc-14", "14.2.0-19"), ("gcc-12", "12.4.0-5")] {
+            assert_eq!(
+                packages
+                    .iter()
+                    .find(|p| p.package == compiler)
+                    .unwrap()
+                    .version,
+                version
+            );
+        }
         // Every name appears once and every address sits under the pinned
         // timestamp.
         let mut names: Vec<&str> = packages.iter().map(|p| p.filename.as_str()).collect();
@@ -229,6 +239,7 @@ mod tests {
         // The closure must carry the compiler and packaging tools the build
         // script uses.
         for wanted in [
+            "gcc-14",
             "gcc-12",
             "binutils",
             "make",
@@ -250,8 +261,8 @@ mod tests {
     fn the_manifest_parser_refuses_malformed_rows() {
         let good = "aa".repeat(32);
         let row = |sha: &str, bytes: &str, rest: &str| format!("{sha}\t{bytes}\t{rest}\n");
-        let url = "https://snapshot.debian.org/archive/debian/20261005T000000Z/pool/main/g/gcc-12/gcc-12_12.2.0-14+deb12u1_amd64.deb";
-        let head = "gcc-12_12.2.0-14+deb12u1_amd64.deb\tgcc-12\t12.2.0-14+deb12u1";
+        let url = "https://snapshot.debian.org/archive/debian/20261005T000000Z/pool/main/g/gcc-12/gcc-12_12.4.0-5_amd64.deb";
+        let head = "gcc-12_12.4.0-5_amd64.deb\tgcc-12\t12.4.0-5";
         assert_eq!(
             parse_manifest(&row(&good, "42", &format!("{head}\t{url}")))
                 .unwrap()

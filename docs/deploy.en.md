@@ -2,10 +2,16 @@
 
 [简体中文](deploy.zh-CN.md)
 
-The tested platform is **TrueNAS SCALE 25.10.7 / amd64**. Other versions and architectures are
-untested. This App controls the host driver from a privileged container with `pid: host`.
+The supported and tested platforms are **TrueNAS SCALE 25.10.7 and TrueNAS 27.0.0-RC.1 / amd64**.
+Other versions and architectures are untested. This App controls the host driver from a
+privileged container with `pid: host`.
 Read the [security guide](security.en.md) before installing. Arrange a maintenance
 window and host console access; replacing drivers can interrupt GPU workloads.
+
+Enable the NVIDIA driver in TrueNAS before using the manager:
+
+- **25.10.7:** on **Apps → Installed**, click **Configuration → Settings**, tick **Install NVIDIA Drivers** and click **Save**.
+- **27.0.0-RC.1:** open **System → Advanced Settings**, click **Configure** on the **NVIDIA Drivers** card, tick **Enable NVIDIA GPU Support** and click **Save**.
 
 ## 1. Install the App
 
@@ -109,32 +115,35 @@ The App's **Shell** button cannot start a shell. Its size differs from the much 
 Switching to a saved local driver or restoring stock requires no build environment. An offline
 build from an uploaded installer requires all of the following:
 
-1. The pinned amd64 Debian build image. On an online computer, prepare it with:
+1. One pinned amd64 Debian 13 (`trixie-slim`) build image for both kernel compiler majors.
+   Its fixed package set includes gcc-14 14.2.0-19 and gcc-12 12.4.0-5; the runner selects
+   by the kernel’s compiler major before downloading any build inputs. This accepts the
+   25.10 kernel’s gcc 12.2.0 requirement with gcc 12.4.0. On an online computer, prepare it with:
 
    ```bash
    set -e
-   BUILD_IMAGE='debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587'
+   BUILD_IMAGE='debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f'
    docker pull --platform linux/amd64 "$BUILD_IMAGE"
    BUILD_IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$BUILD_IMAGE")
    case "$BUILD_IMAGE_ID" in
-     sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23|sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587) ;;
+     sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c|sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f) ;;
      *) printf 'Unexpected build image ID: %s\n' "$BUILD_IMAGE_ID" >&2; exit 1 ;;
    esac
-   docker save -o debian-bookworm-slim-amd64.tar "$BUILD_IMAGE_ID"
+   docker save -o debian-trixie-slim-amd64.tar "$BUILD_IMAGE_ID"
    ```
 
    The check accepts the two content IDs used by classic and containerd image stores, and saves
    the actual local ID. Transfer the archive to the NAS and run:
 
    ```bash
-   docker load -i debian-bookworm-slim-amd64.tar
-   docker image inspect -f '{{.Id}}' sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23 ||
-     docker image inspect -f '{{.Id}}' sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+   docker load -i debian-trixie-slim-amd64.tar
+   docker image inspect -f '{{.Id}}' sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c ||
+     docker image inspect -f '{{.Id}}' sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
    ```
 
    The first lookup may report a missing image; the second then checks the other ID. Stop if
-   both fail. The printed ID must be `sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23` or
-   `sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587`; stores can report different IDs for the same pinned content.
+   both fail. The printed ID must be `sha256:567e3c17b188e21cd42aa5e1c55e16d8270f880ed8ea321dbd40f993467efc4c` or
+   `sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f`; stores can report different IDs for the same pinned content.
    The manager checks the reference and both known IDs before trying a pull.
 2. The fixed Debian package set from this release. At the repository root on an online computer:
 

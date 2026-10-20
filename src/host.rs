@@ -287,6 +287,13 @@ pub trait Host: Send + Sync {
 
     fn uname_release(&self) -> io::Result<String>;
     fn now(&self) -> Instant;
+
+    /// Block until `duration` passes on this host's monotonic clock.
+    /// A test host may advance a fake clock instead of sleeping.
+    fn wait(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+
     fn wall_ms(&self) -> u64;
 
     /// Open (creating with `mode` when absent) the fixed lock file behind

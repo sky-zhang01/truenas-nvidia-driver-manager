@@ -238,6 +238,7 @@ pub fn docker_run_argv(
     image_id: &str,
     module_type: Option<crate::catalog::KernelModuleType>,
     community_patch: bool,
+    compiler: &str,
 ) -> Vec<OsString> {
     let task_dir = host_data_dir.join("manager").join("tasks").join(id);
     let mut argv: Vec<OsString> = vec![
@@ -262,6 +263,8 @@ pub fn docker_run_argv(
         "TAR_OPTIONS=--no-same-owner".into(),
         "--env".into(),
         "LC_ALL=C".into(),
+        "--env".into(),
+        format!("NVM_BUILD_COMPILER={compiler}").into(),
     ];
     if let Some(t) = module_type {
         argv.push("--env".into());
@@ -282,10 +285,6 @@ pub fn docker_run_argv(
     argv.push("--mount".into());
     argv.push(
         format!("type=bind,src={KERNEL_HEADERS_PATH},dst={KERNEL_HEADERS_PATH},readonly").into(),
-    );
-    argv.push("--mount".into());
-    argv.push(
-        format!("type=bind,src=/boot/config-{kernel},dst=/boot/config-{kernel},readonly").into(),
     );
     argv.push("--mount".into());
     argv.push(
@@ -370,7 +369,7 @@ fn raw_tail(raw: &[String]) -> String {
 /// run the build container and deliver the artifact. `env` is the
 /// build environment [`crate::runner::build_env::acquire`] prepared for this
 /// task (both the official and the upload source go through it).
-pub fn build(ctx: &mut RunCtx, env: &BuildEnv) -> Result<(), BuildFailure> {
+pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), BuildFailure> {
     // The build script is part of the program now; the container reads it from
     // the task's read-only `in` directory.
     build_env::write_build_script(ctx)?;
@@ -413,6 +412,7 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv) -> Result<(), BuildFailure> {
         &image_id,
         module_type,
         community_patch,
+        compiler,
     );
     let deadline = ctx
         .build_deadline
@@ -936,6 +936,7 @@ mod tests {
             &format!("sha256:{}", "a".repeat(64)),
             Some(crate::catalog::KernelModuleType::Open),
             false,
+            "gcc-12",
         );
         let text: Vec<String> = argv
             .iter()
@@ -960,6 +961,7 @@ mod tests {
         assert_eq!(text[text.len() - 2], format!("sha256:{}", "a".repeat(64)));
         assert!(text.contains(&"NVM_BUILD_KIT_LIST=/in/build-kit.list".into()));
         assert!(text.contains(&"NVM_BUILD_SCRIPT=/in/build-driver.sh".into()));
+        assert!(text.contains(&"NVM_BUILD_COMPILER=gcc-12".into()));
         assert!(text.contains(
             &"type=bind,src=/mnt/<pool>/data/manager/build-kit,dst=/build-kit,readonly".to_string()
         ));
@@ -977,6 +979,7 @@ mod tests {
             "sha256:x",
             None,
             true,
+            "gcc-14",
         );
         let text: Vec<String> = no_type
             .iter()
@@ -986,6 +989,7 @@ mod tests {
             .iter()
             .any(|a| a.starts_with("NVM_KERNEL_MODULE_TYPE=")));
         assert!(text.contains(&"NVM_COMMUNITY_PATCH=470.256.02".to_string()));
+        assert!(text.contains(&"NVM_BUILD_COMPILER=gcc-14".into()));
     }
 
     #[test]

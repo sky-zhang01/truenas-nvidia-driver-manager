@@ -296,6 +296,8 @@ fn modules_follow_references_and_dependencies() {
         .any(|w| w == b"nvidia"));
 
     host.set_module_load_fail("nvidia");
+    assert!(host.run(&cmd("modprobe").arg("nvidia")).exit.ok());
+    host.unload_module("nvidia");
     let out = host.run(&cmd("modprobe").arg("nvidia"));
     assert!(!out.exit.ok());
     assert!(out.stderr_text().contains("No such device"));
@@ -325,7 +327,11 @@ fn the_sysext_model_tracks_since_and_the_missing_link_case() {
     assert_eq!(host.sysext_since(), before + 1);
     let version =
         String::from_utf8(host.read(Path::new("/proc/driver/nvidia/version")).unwrap()).unwrap();
-    assert!(version.contains("580.178.04"), "{version}");
+    assert!(
+        version.contains("580.173.02"),
+        "refresh changed a resident module: {version}"
+    );
+    assert_eq!(host.run(&cmd("nvidia-smi")).exit, Exit::Code(18));
 
     // A link to a missing target: the refresh returns 0, /usr has no extension and the SINCE does
     // not advance.
@@ -745,6 +751,11 @@ fn refresh_merges_the_link_target_image() {
     let before = host.sysext_since();
     assert!(host.run(&cmd("systemd-sysext").arg("refresh")).exit.ok());
     assert_ne!(host.sysext_since(), before);
+    assert!(host.run(&cmd("modprobe").arg("nvidia")).exit.ok());
+    let resident =
+        String::from_utf8(host.read(Path::new("/proc/driver/nvidia/version")).unwrap()).unwrap();
+    assert!(resident.contains("580.173.02"));
+    assert_eq!(host.run(&cmd("nvidia-smi")).exit, Exit::Code(18));
 
     assert!(host.run(&cmd("rmmod").arg("nvidia")).exit.ok());
     assert!(host.read(Path::new("/proc/driver/nvidia/version")).is_err());

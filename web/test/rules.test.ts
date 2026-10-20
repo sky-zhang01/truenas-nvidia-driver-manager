@@ -644,3 +644,24 @@ test("the no-original reason parameter keeps the complete restore reason key", (
   assert.match(text, /the original driver file could not be read: a read error occurred/);
   assert.equal(text.includes("restore.no_original.restore.no_original"), false);
 });
+
+test("reload failure copy follows the last corrective round", () => {
+  for (const pass of ["update", "restore"] as const) {
+    for (const finalOk of [false, true]) {
+      const detail = detailWith("FAILED", {
+        key: pass === "update" ? "notice.unload_refused" : "notice.restore_stopped", params: { reload_failed: finalOk },
+      }, {
+        code: pass === "update" ? "MODULE_UNLOAD_REFUSED" : "RESTORE_ABORTED",
+        params: { cause: "unload_refused", module: "nvidia", unload_reason: { stderr: "busy" } },
+        command: null, exit: null, raw: null,
+      });
+      (detail as { replace: unknown }).replace = [{
+        pass, unloaded: ["nvidia"],
+        reloaded: [{ module: "nvidia", ok: !finalOk, reason: finalOk ? { stderr: "old failure" } : null }],
+        module_correction: { reloaded: [{ module: "nvidia", ok: finalOk, reason: finalOk ? null : { stderr: "final failure" } }] },
+      }];
+      const params = taskNoticeParams(detail, "en");
+      assert.equal(params["reload_failed"], !finalOk);
+    }
+  }
+});

@@ -89,4 +89,25 @@ if grep -qF "job static has result 'failure'" "${WORK}/err" \
 else
     fail "a failing gate must report every broken rule, got: $(cat "${WORK}/err")"
 fi
+# Both pipelines route the README copy check through the always-required static job.
+if node - "${SCRIPT_DIR}/.." <<'NODE'
+const fs = require('node:fs'), path = require('node:path');
+for (const name of ['.gitea/workflows/ci.yml', '.github/workflows/ci.yml']) {
+    const file = path.join(process.argv[2], name);
+    if (name.startsWith('.gitea/') && !fs.existsSync(file)) {
+        console.log('SKIP: private workflow is absent from the public export');
+        continue;
+    }
+    const source = fs.readFileSync(file, 'utf8');
+    const body = source.split('\n  static:\n')[1]?.split(/^  [a-z][a-z-]*:\s*$/m)[0];
+    if (!body || /^    if:/m.test(body)) throw new Error(name + ': static must run unconditionally');
+    for (const command of ['bash ci/check-readme-compose-test.sh', 'python3 ci/check-readme-compose.py']) {
+        const steps = body.split(/(?=^      - (?:name:|uses:))/m).filter(step => step.includes(command));
+        if (steps.length !== 1 || /^        if:/m.test(steps[0])) throw new Error(name + ': missing unconditional ' + command);
+    }
+}
+NODE
+then pass 'both static jobs require README compose controls and the real check'
+else fail 'README compose checks must run in both required static jobs'
+fi
 finish_tests "gate-test: ${FAILURES} control(s) failed" "gate-test: ${PASS} controls passed"

@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
+use std::time::Instant;
 
 use crate::codes::*;
 use crate::host::{At, Cmd, Host};
@@ -50,6 +51,47 @@ impl<T> Reading<T> {
             Reading::Unknown(r) => Reading::Unknown(r),
         }
     }
+}
+
+/// Read the kernel compiler requirement from the headers first, then the boot config.
+/// Both web-container and host-runner readers must use the host view.
+pub fn kernel_gcc_major(h: &dyn Host, kernel: &str) -> Option<u32> {
+    [
+        format!("{KERNEL_HEADERS_PATH}/include/config/auto.conf"),
+        format!("/boot/config-{kernel}"),
+    ]
+    .iter()
+    .find_map(|path| {
+        let bytes = h.read(&h.view(Path::new(path))).ok()?;
+        parse_kernel_gcc_major(std::str::from_utf8(&bytes).ok()?)
+    })
+}
+
+/// CONFIG_CC_VERSION_TEXT can be quoted or unquoted. As in Kbuild's text,
+/// the final dotted version is the compiler version, not the package revision.
+pub fn parse_kernel_gcc_major(config: &str) -> Option<u32> {
+    let value = config
+        .lines()
+        .find_map(|line| line.strip_prefix("CONFIG_CC_VERSION_TEXT="))?;
+    if !value.to_ascii_lowercase().contains("gcc") {
+        return None;
+    }
+    value
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .filter_map(|version| {
+            let mut parts = version.split('.');
+            let major = parts.next()?;
+            let minor = parts.next()?;
+            let patch = parts.next()?;
+            if [major, minor, patch]
+                .iter()
+                .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return None;
+            }
+            major.parse().ok()
+        })
+        .next_back()
 }
 
 /// The five driver modules shipped by the driver image.
@@ -140,6 +182,95 @@ pub fn occupancy(modules: &[ModuleLine]) -> bool {
         .any(|m| m.name.starts_with("nvidia") && m.refcount > m.deps.len() as u64)
 }
 
+/// What one occupancy wait decided. A first reading that is already idle is `Idle` and is not a
+/// wait. `Deadline` and `Unreadable` are not occupancy-wait results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OccupancyDecision {
+    Idle(Vec<ModuleLine>),
+    Released {
+        waited_ms: u64,
+        modules: Vec<ModuleLine>,
+    },
+    StillInUse {
+        waited_ms: u64,
+        modules: Vec<ModuleLine>,
+    },
+    Unreadable(&'static str),
+    Deadline {
+        waited_ms: u64,
+        modules: Vec<ModuleLine>,
+    },
+    /// The caller's "still waiting" marker could not be saved.
+    NotPersisted,
+}
+
+fn elapsed_ms(host: &dyn Host, started: Instant) -> u64 {
+    u64::try_from(host.now().saturating_duration_since(started).as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Re-read `/proc/modules` until the GPU is idle, the 30s cap is reached, `deadline` is reached,
+/// or a reading cannot be parsed. `on_still_waiting` runs once, after the wait has already lasted
+/// [`GPU_WAIT_NOTICE`] and the latest reading is still occupied, before the next slice. Returning
+/// `false` from it stops the wait as [`OccupancyDecision::NotPersisted`].
+pub fn wait_until_gpu_idle(
+    host: &dyn Host,
+    deadline: Option<Instant>,
+    mut read: impl FnMut(&dyn Host) -> Result<Vec<ModuleLine>, &'static str>,
+    mut on_still_waiting: impl FnMut() -> bool,
+) -> OccupancyDecision {
+    let first = match read(host) {
+        Ok(modules) => modules,
+        Err(reason) => return OccupancyDecision::Unreadable(reason),
+    };
+    if !occupancy(&first) {
+        return OccupancyDecision::Idle(first);
+    }
+    let started = host.now();
+    let mut last = first;
+    let mut noticed = false;
+    loop {
+        let now = host.now();
+        if deadline.is_some_and(|deadline| now >= deadline) {
+            return OccupancyDecision::Deadline {
+                waited_ms: elapsed_ms(host, started),
+                modules: last,
+            };
+        }
+        if now.saturating_duration_since(started) >= UNLOAD_WAIT_LIMIT {
+            return OccupancyDecision::StillInUse {
+                waited_ms: elapsed_ms(host, started),
+                modules: last,
+            };
+        }
+        match read(host) {
+            Err(reason) => return OccupancyDecision::Unreadable(reason),
+            Ok(modules) if !occupancy(&modules) => {
+                return OccupancyDecision::Released {
+                    waited_ms: elapsed_ms(host, started),
+                    modules,
+                };
+            }
+            Ok(modules) => last = modules,
+        }
+        let now = host.now();
+        let left_limit = UNLOAD_WAIT_LIMIT.saturating_sub(now.saturating_duration_since(started));
+        let left_deadline = deadline
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .unwrap_or(std::time::Duration::MAX);
+        let slice = UNLOAD_WAIT_POLL.min(left_limit).min(left_deadline);
+        if slice.is_zero() {
+            continue;
+        }
+        if !noticed && now.saturating_duration_since(started) >= GPU_WAIT_NOTICE {
+            noticed = true;
+            if !on_still_waiting() {
+                return OccupancyDecision::NotPersisted;
+            }
+        }
+        host.wait(slice);
+    }
+}
+
 /// Human-readable readings for the `log.occupancy` line.
 pub fn module_readings(modules: &[ModuleLine]) -> String {
     let loaded: Vec<&ModuleLine> = modules
@@ -216,11 +347,21 @@ pub fn reload_targets(start: Option<&[ModuleLine]>) -> Option<ReloadTargets> {
             modules: DEFAULT_RELOAD.to_vec(),
         })
     } else {
-        let mut targets = present;
-        targets.reverse();
+        // The usual three modules are always reloaded, plus any other driver module that was
+        // loaded at the start (for example `nvidia_uvm`). Order stays the reverse of unload order.
+        let mut set: BTreeSet<&str> = DEFAULT_RELOAD.iter().copied().collect();
+        for name in present {
+            set.insert(name);
+        }
+        let mut modules: Vec<&'static str> = UNLOAD_ORDER
+            .iter()
+            .copied()
+            .filter(|name| set.contains(name))
+            .collect();
+        modules.reverse();
         Some(ReloadTargets {
             basis: ReloadBasis::LoadedAtStart,
-            modules: targets,
+            modules,
         })
     }
 }
@@ -1229,6 +1370,21 @@ mod tests {
             t.modules,
             vec!["nvidia", "nvidia_uvm", "nvidia_modeset", "nvidia_drm"]
         );
+        let partial = parse_proc_modules(
+            "nvidia 1 0 - Live 0x0\nnvidia_uvm 1 0 - Live 0x0\nnvidia_modeset 1 0 - Live 0x0\n",
+        )
+        .unwrap();
+        let t = reload_targets(Some(&partial)).unwrap();
+        assert_eq!(t.basis, ReloadBasis::LoadedAtStart);
+        assert_eq!(
+            t.modules,
+            vec!["nvidia", "nvidia_uvm", "nvidia_modeset", "nvidia_drm"]
+        );
+        let only = parse_proc_modules("nvidia 1 0 - Live 0x0\n").unwrap();
+        assert_eq!(
+            reload_targets(Some(&only)).unwrap().modules,
+            vec!["nvidia", "nvidia_modeset", "nvidia_drm"]
+        );
         let t = reload_targets(Some(&parse_proc_modules("").unwrap())).unwrap();
         assert_eq!(t.basis, ReloadBasis::NoneLoadedAtStart);
         assert_eq!(t.modules, DEFAULT_RELOAD.to_vec());
@@ -1517,5 +1673,37 @@ lrwxrwxrwx root/root 0 2026-09-28 10:15 squashfs-root/usr/lib/x86_64-linux-gnu/l
         assert_eq!(c.len(), 2);
         assert_eq!(c[0].address, "0000:01:00.0");
         assert_eq!(c[1].address, "0000:03:00.0");
+    }
+}
+
+#[cfg(test)]
+mod kernel_compiler_tests {
+    use super::*;
+    #[test]
+    fn reads_real_compiler_texts_and_ignores_unusable_values() {
+        for (text, expected) in [
+            (
+                "CONFIG_CC_VERSION_TEXT=\"gcc (Debian 14.2.0-19) 14.2.0\"",
+                Some(14),
+            ),
+            (
+                "CONFIG_CC_VERSION_TEXT=gcc (Debian 12.2.0-14+deb12u1) 12.2.0",
+                Some(12),
+            ),
+            (
+                "CONFIG_CC_VERSION_TEXT=x86_64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0",
+                Some(14),
+            ),
+            (
+                "CONFIG_CC_VERSION_TEXT=gcc (package 12.4.0) 15.1.0",
+                Some(15),
+            ),
+            ("CONFIG_CC_VERSION_TEXT=clang 15.1.0", None),
+            ("CONFIG_CC_VERSION_TEXT=gcc-14", None),
+            ("CONFIG_CC_VERSION_TEXT=gcc 99999999999999999.1.0", None),
+            ("# CONFIG_CC_VERSION_TEXT=gcc 14.2.0", None),
+        ] {
+            assert_eq!(parse_kernel_gcc_major(text), expected, "{text}");
+        }
     }
 }

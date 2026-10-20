@@ -24,6 +24,26 @@ import { queryObjectKey } from "../rules.js";
 import { closeDialog, openDialog } from "../dialog.js";
 import type { Lang } from "../messages.js";
 
+const UPDATE_CHECK_NOTICE_MS = 2000;
+
+/// Show the update-condition status beside `anchor` when the plan request is still open
+/// after about 2 seconds. Call the returned function when the request ends.
+export function armUpdateCheckStatus(anchor: HTMLElement, lang: Lang): () => void {
+  let status: HTMLElement | null = null;
+  const timer = window.setTimeout(() => {
+    const parent = anchor.parentElement;
+    if (!anchor.isConnected || !parent) return;
+    status = el("p", { class: "update-check-status", role: "status" });
+    status.textContent = expandText("update.checking", {}, lang);
+    parent.insertBefore(status, anchor.nextSibling);
+  }, UPDATE_CHECK_NOTICE_MS);
+  return () => {
+    window.clearTimeout(timer);
+    status?.remove();
+    status = null;
+  };
+}
+
 function joinReasons(reasons: ReasonLike[], lang: Lang): string {
   const sep = lang === "zh" ? ";" : "; ";
   return reasons.map((r) => expandText(r.key, (r.params ?? {}) as Params, lang)).join(sep);

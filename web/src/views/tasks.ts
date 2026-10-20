@@ -317,6 +317,12 @@ export function logParams(key: string, payload: unknown): Params {
     case "log.occupancy":
       params["usage_result"] = logKey("log.usage.", p["usage_result"]);
       break;
+    case "log.occupancy_wait":
+      params["result"] = logKey("log.occupancy_wait.", p["result"]);
+      break;
+    case "log.module_unload_wait":
+      params["result"] = logKey("log.unload_wait.", p["result"]);
+      break;
     case "log.build_deadline_set":
       // The runner deadline_ms field renders as the same local time format as other dates.
       params["time"] =
@@ -520,6 +526,27 @@ function logLineText(app: App, line: LogLine): string {
   return `${formatClock(line.t)} ${body}`;
 }
 
+export function gpuDiagnosticText(reading: TaskDetail["nvidia_smi_gpus"], lang: App["lang"]): string {
+  if (!reading) return expandText("task.gpus.not_read", {}, lang);
+  if (isUnknown(reading)) return expandText("task.gpus.unreadable", { reason: normalizeReason(reading.unknown.key, reading.unknown.params) }, lang);
+  if (!("value" in reading) || reading.value.length === 0) return expandText("task.gpus.none", {}, lang);
+  return reading.value.map((gpu) => `${gpu.name} (${gpu.pci_address})`).join("; ");
+}
+
+/** The waiting line for a running task, or null when the task is not waiting. */
+export function waitingGpuMessageKey(detail: {
+  status: string;
+  phase: string | null;
+  waiting_gpu?: boolean;
+}): string | null {
+  if (detail.status !== "RUNNING" || detail.waiting_gpu !== true) return null;
+  if (detail.phase === "align_modules") return "task.waiting_gpu.align";
+  if (detail.phase === "restore_unload" || detail.phase === "restore_align_modules") {
+    return "task.waiting_gpu.restore";
+  }
+  return "task.waiting_gpu";
+}
+
 export function renderTask(app: App, container: HTMLElement, taskId: string): void {
   const lang = app.lang;
   let poller: Poller | null = null;
@@ -530,9 +557,11 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
   const statusValue = el("span", { class: "reading-value" });
   const phaseLabel = el("span", { class: "reading-label", text: expandText("task.phase", {}, lang) });
   const phaseValue = el("span", { class: "reading-value" });
+  const waitLine = el("p", { class: "task-wait", hidden: true });
   statusArea.append(
     el("div", { class: "reading" }, [statusLabel, statusValue]),
     el("div", { class: "reading" }, [phaseLabel, phaseValue]),
+    waitLine,
   );
   const startedValue = el("span", { class: "reading-value" });
   const finishedValue = el("span", { class: "reading-value" });
@@ -549,6 +578,11 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
     times.append(line);
   }
   const basis = el("p", { class: "hint", text: expandText("tasks.time.basis", {}, lang) });
+  const gpuValue = el("span", { class: "reading-value" });
+  const gpuDiagnostic = el("div", { class: "reading task-gpu-diagnostic" }, [
+    el("span", { class: "reading-label", text: expandText("task.gpus", {}, lang) }),
+    gpuValue,
+  ]);
   const stepArea = el("div", { class: "task-steps-wrap" });
 
   const recoveryArea = el("div", { class: "task-recovery" });
@@ -560,7 +594,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
   const logPre = el("pre", { class: "log-tail" });
   logArea.append(el("h3", { text: expandText("task.log", {}, lang) }), logPre);
 
-  container.append(heading, statusArea, times, basis, stepArea, recoveryArea, downloadArea, noticeArea, readErrorArea, logArea);
+  container.append(heading, statusArea, times, basis, gpuDiagnostic, stepArea, recoveryArea, downloadArea, noticeArea, readErrorArea, logArea);
   const terminalExtra = el("div", { class: "task-terminal" });
   container.append(terminalExtra);
 
@@ -692,6 +726,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
       // All response side effects, including the terminal login refresh, belong to the still-live page.
       if (!container.isConnected) return;
       renderRecovery(detail);
+      setText(gpuValue, gpuDiagnosticText(detail.nvidia_smi_gpus, lang));
       after = detail.log.next;
       // Only RUNNING claims the dot for this task. Uncertainty clears this task claim without
       // affecting a different task.
@@ -699,12 +734,22 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
       // An unchanged poll must not rewrite the status live region.
       setText(statusValue, expandText(`status.${detail.status}`, {}, lang));
       setText(phaseValue, detail.phase ? expandText(`phase.${detail.phase}`, {}, lang) : expandText("task.value.unavailable", {}, lang));
+      const waitKey = waitingGpuMessageKey(detail);
+      const waitText = waitKey ? expandText(waitKey, {}, lang) : "";
+      if (waitLine.textContent !== waitText) {
+        setText(waitLine, waitText);
+        if (waitText === "") waitLine.setAttribute("hidden", "");
+        else waitLine.removeAttribute("hidden");
+      }
       setText(startedValue, taskTimeText(detail.created_at, lang));
       setText(finishedValue, finishedText(detail.status, detail.finished_at, lang));
       setText(discoveredValue, discoveredText(detail.status, detail.interrupt_discovered_at, lang));
       const restoring =
         (detail.phase ?? "").startsWith("restore_") || detail.restore?.decision === "restore";
-      const steps = plannedSteps(asStepPlan(detail.plan), restoring);
+      const steps = plannedSteps(asStepPlan(detail.plan), restoring, {
+        update: detail.phase === "align_modules" || detail.replace.some((r) => r.pass === "update" && r.module_correction),
+        restore: detail.phase === "restore_align_modules" || detail.replace.some((r) => r.pass === "restore" && r.module_correction),
+      });
       const stepSig = JSON.stringify([steps, detail.phase]);
       if (stepSig !== stepSignature) {
         stepSignature = stepSig;
@@ -903,7 +948,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
           }
         }
         if (detail.replace.length > 0) {
-          const failed = detail.replace.flatMap((r) => r.reloaded.filter((x) => !x.ok));
+          const failed = detail.replace.flatMap((r) => (r.module_correction?.reloaded ?? r.reloaded).filter((x) => !x.ok));
           for (const f of failed) {
             details.append(
               renderNotice("log.module_reload_failed", { module: f.module, raw: f.reason ?? "" }, lang),

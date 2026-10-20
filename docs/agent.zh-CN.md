@@ -167,6 +167,9 @@ fi
 
 按任务 `.status` 报告结果，并附实际证据。`.checks` 是数组：请求的替换按 `.checks[] | select(.pass == "update")` 选取，恢复按 `.checks[] | select(.pass == "restore")` 选取；存在多条匹配记录时使用最后一条。所请求替换成功需要成功的 `update` 检查；恢复成功需要成功的 `restore` 检查。适用检查中的 `.passed`、`.refresh_ok`、`.version_ok` 必须为 true，`.since_before.value` 和 `.since_after.value` 必须可读且不同，`.nvidia_smi.value` 和 `.proc_version.value` 必须都等于 `.expected`。再核对预期版本是否等于已确认目标，恢复时是否等于原版版本。`since_before` 和 `since_after` 的值是 Unix epoch 微秒，换成秒时除以 1000000；刷新核对须比较原始值，不能比较显示时舍入的值。报告实际读数和 `.loaded_version_end`，不能只看 `SUCCEEDED` 或进度条。缺失或矛盾的读数不支持宣称已验证成功。还须检查 `.replace[].reloaded` 中的模块重载失败与提示；驱动检查通过不表示 App 和其他模块已全部恢复。
 
+显卡使用者查询包含 Docker 容器与 TrueNAS 容器实例：先用 `container.query` 内嵌的设备列表，仅在该接口不存在时回退 `virt.instance.*`；两者都不存在视为没有实例。任务详情字段 `.nvidia_smi_gpus` 为 `{value: [{name, pci_address}]}` 或 `{unknown: {key, params}}`，`null` 表示尚未记录诊断查询。它对应最后一次替换后检查，包括恢复检查。只把它作为诊断证据；显卡列表读不到不否定已通过的驱动检查，也不触发恢复。
+
+
 ## 5. 如实报告结果并处理失败
 
 报告任务 id、请求目标、状态、前后加载版本、适用检查读数、错误和剩余动作。`SUCCEEDED` 表示请求的替换完成；`STOCK_RESTORED` 表示失败后恢复到已保存原版，请求的更新没有成功；`FAILED` 表示需要核查主机与恢复详情；`INTERRUPTED` 表示任务中断，不表示回滚成功。`RUNNING` 表示仍在运行；`UNKNOWN` 表示无法确定。不能仅凭 `FAILED` 或当前版本与之前相同，就认定恢复成功。

@@ -915,7 +915,12 @@ fn succeeded(host: &FakeHost, reload_failed: Option<&str>) -> TaskState {
     });
     state.replace.push(ReplaceRecord {
         pass: Pass::Update,
+        module_version_before: None,
+        file_changed: None,
+        module_correction: None,
         unloaded: vec!["nvidia_uvm".to_string()],
+        unload_waits: Vec::new(),
+        occupancy_waits: Vec::new(),
         reloaded: vec![
             ReloadedRecord {
                 module: "nvidia".to_string(),

@@ -265,6 +265,19 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
     let is_official = matches!(plan_source, crate::task_state::PlanSource::Official);
     let is_upload = matches!(plan_source, crate::task_state::PlanSource::Upload { .. });
 
+    // This must precede official driver downloads as well as image/package preparation.
+    let compiler = if is_official || is_upload {
+        match build_env::compiler(ctx) {
+            Ok(compiler) => Some(compiler),
+            Err(failure) => {
+                ctx.fail_with_command(failure.code, failure.params, failure.raw, failure.command);
+                return finish(ctx).map_err(|_| FlowStop::Interrupted);
+            }
+        }
+    } else {
+        None
+    };
+
     if original_choice == crate::task_state::OriginalChoice::Save {
         ctx.enter(Phase::SaveOriginal);
         match original::save(ctx) {
@@ -302,15 +315,16 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
     // environment first: the official image, the fixed Debian package closure and the
     // embedded build script. An operation that does not compile never reaches this stage.
     if is_official || is_upload {
-        stage_build(ctx, prepared)?;
+        stage_build(ctx, prepared, compiler.as_deref().unwrap())?;
     }
 
     let update = replace::unload(ctx, Pass::Update).or_else(|e| module_error(ctx, e))?;
     replace::write(ctx, &update, None).or_else(|e| module_error(ctx, e))?;
     let readings = replace::refresh(ctx, &update);
     replace::reload_targets(ctx, &update).or_else(|e| module_error(ctx, e))?;
-    ctx.enter(Phase::Check);
     let expected = ctx.state.plan.as_ref().unwrap().version.clone();
+    replace::align_modules(ctx, &update, &expected).or_else(|e| module_error(ctx, e))?;
+    ctx.enter(Phase::Check);
     let checked = check::check(ctx, Pass::Update, readings, &expected);
     let passed = checked.passed;
     ctx.state.checks.push(checked);
@@ -360,6 +374,7 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
     replace::write(ctx, &restore, Some(&original)).or_else(|e| module_error(ctx, e))?;
     let readings = replace::refresh(ctx, &restore);
     replace::reload_targets(ctx, &restore).or_else(|e| module_error(ctx, e))?;
+    replace::align_modules(ctx, &restore, &original.version).or_else(|e| module_error(ctx, e))?;
     ctx.enter(Phase::RestoreCheck);
     let checked = check::check(ctx, Pass::Restore, readings, &original.version);
     let passed = checked.passed;
@@ -381,6 +396,7 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
 pub fn stage_build(
     ctx: &mut RunCtx,
     prepared: Option<build_env::BuildEnv>,
+    compiler: &str,
 ) -> Result<(), FlowStop> {
     ctx.enter(Phase::Build);
     if ctx.build_deadline.is_none() {
@@ -399,7 +415,7 @@ pub fn stage_build(
             return Err(FlowStop::Terminal);
         }
     };
-    let built = build::build(ctx, &env);
+    let built = build::build(ctx, &env, compiler);
     // The build is over whatever happened (success, failure, timeout alike): an
     // image this task pulled is removed again before the terminal state lands.
     build_env::release(ctx, &env);
@@ -579,6 +595,7 @@ fn finish_terminal(ctx: &mut RunCtx, terminal: Option<Status>) -> Result<(), ()>
     if ctx.state.phase != Some(Phase::ReadLoadedVersionEnd) {
         ctx.state.phase = Some(Phase::ReadLoadedVersionEnd);
     }
+    ctx.state.waiting_gpu = None;
     let written = ctx.write_state();
     if written {
         ctx.log(

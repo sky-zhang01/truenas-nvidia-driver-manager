@@ -86,6 +86,40 @@ pub fn cache_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(CACHE_KIT_PATH)
 }
 
+/// Select from the compilers actually carried by the pinned closure, before downloads.
+pub fn compiler(ctx: &RunCtx) -> Result<String, BuildFailure> {
+    let kernel = crate::facts::kernel(ctx.host.as_ref()).value().cloned();
+    let major = kernel
+        .as_deref()
+        .and_then(|kernel| crate::facts::kernel_gcc_major(ctx.host.as_ref(), kernel))
+        .ok_or_else(|| {
+            BuildFailure::new(
+                ErrorCode::BuildFailed,
+                BUILD_KERNEL_GCC_UNKNOWN,
+                json!({}),
+                None,
+            )
+        })?;
+    let compiler = format!("gcc-{major}");
+    let packages = build_kit::packages().map_err(|error| {
+        BuildFailure::new(
+            ErrorCode::BuildFailed,
+            BUILD_DOCKER_RUN_FAILED,
+            json!({}),
+            Some(error),
+        )
+    })?;
+    if !packages.iter().any(|package| package.package == compiler) {
+        return Err(BuildFailure::new(
+            ErrorCode::BuildFailed,
+            &format!("compiler_missing:{compiler}"),
+            json!({}),
+            None,
+        ));
+    }
+    Ok(compiler)
+}
+
 /// Prepare the build environment: image, packages, installer and package list.
 /// On failure an image this call pulled is removed here, so the caller has
 /// nothing left to undo.
@@ -104,7 +138,7 @@ pub fn acquire(ctx: &mut RunCtx, deadline: Instant) -> Result<BuildEnv, BuildFai
 }
 
 /// The same as [`acquire`], with the list given by the caller: a test runs the
-/// same logic with a small list of its own (the 49 embedded packages have no
+/// same logic with a small list of its own (the embedded packages have no
 /// real bytes inside a test).
 pub fn acquire_packages(
     ctx: &mut RunCtx,

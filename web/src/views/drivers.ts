@@ -21,7 +21,7 @@ import {
 import type { App } from "../main.js";
 import { compareRows, queryObjectKey, type SortColumn, type SortDir } from "../rules.js";
 import { closeDialog, openDialog } from "../dialog.js";
-import { openCheckDialog, openConfirmDialog, renderPlanError } from "./plan.js";
+import { armUpdateCheckStatus, openCheckDialog, openConfirmDialog, renderPlanError } from "./plan.js";
 import { loginReadFailed, updateBlockedNode } from "./update.js";
 
 function sourceText(app: App, row: DriverRow): string {
@@ -497,6 +497,7 @@ export function renderDrivers(app: App, container: HTMLElement): void {
           planInFlight = true;
           update.disabled = true;
           clear(errorBox);
+          const stopCheckStatus = armUpdateCheckStatus(update, lang);
           void (async () => {
             try {
               const res = await postPlan({ kind: "local", row_id: row.id });
@@ -523,6 +524,7 @@ export function renderDrivers(app: App, container: HTMLElement): void {
                 );
               }
             } finally {
+              stopCheckStatus();
               planInFlight = false;
               update.disabled = updateBlockedNow();
             }

@@ -53,6 +53,16 @@ function codeExplanationKey(params: Params): string {
 
 // A runtime flag selects a wording variant only when the catalog defines that key.
 function runtimeVariant(key: string, params: Params): string {
+  const waited = params["waited_in_use"] === true;
+  if (waited && params["reload_failed"] === true && message(`${key}.waited.reload_failed`)) {
+    return `${key}.waited.reload_failed`;
+  }
+  if (waited && params["not_unloaded"] === true && message(`${key}.waited.not_unloaded`)) {
+    return `${key}.waited.not_unloaded`;
+  }
+  if (waited && message(`${key}.waited`)) {
+    return `${key}.waited`;
+  }
   if (params["reload_failed"] === true && message(`${key}.reload_failed`)) {
     return `${key}.reload_failed`;
   }

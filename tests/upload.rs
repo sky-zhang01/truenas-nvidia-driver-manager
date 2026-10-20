@@ -850,7 +850,7 @@ async fn two_contents_of_the_same_version_become_two_rows() {
             .to_string();
         // Hold the build container until the preset output is in place. An upload-source task
         // prepares the build environment too; the fake host carries an already prepared one,
-        // because the pinned official image and its 49 packages have no real bytes inside it.
+        // because the pinned official image and its packages have no real bytes inside it.
         app.host.prepare_build_env();
         let gate = app.host.set_gate("docker", &["run"]);
         let (status, task) = post_task(&app, &cookie, &body["plan_id"], "skip").await;

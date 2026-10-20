@@ -24,6 +24,7 @@ export class FakeElement {
   };
   private attrs = new Map<string, string>();
   private nodes: (FakeElement | FakeText)[] = [];
+  parent: FakeElement | null = null;
 
   constructor(tagName: string) {
     this.tagName = tagName.toUpperCase();
@@ -37,6 +38,17 @@ export class FakeElement {
     return this.nodes[0] ?? null;
   }
 
+  get parentElement(): FakeElement | null {
+    return this.parent;
+  }
+
+  get nextSibling(): FakeElement | FakeText | null {
+    if (!this.parent) return null;
+    const at = this.parent.nodes.indexOf(this);
+    if (at < 0) return null;
+    return this.parent.nodes[at + 1] ?? null;
+  }
+
   get textContent(): string {
     return this.nodes.map((n) => n.textContent).join("");
   }
@@ -47,8 +59,36 @@ export class FakeElement {
 
   append(...added: (FakeElement | FakeText | string)[]): void {
     for (const node of added) {
-      this.nodes.push(typeof node === "string" ? new FakeText(node) : node);
+      const child = typeof node === "string" ? new FakeText(node) : node;
+      if (child instanceof FakeElement) {
+        child.detach();
+        child.parent = this;
+      }
+      this.nodes.push(child);
     }
+  }
+
+  insertBefore(node: FakeElement, before: FakeElement | FakeText | null): void {
+    node.detach();
+    node.parent = this;
+    if (before === null) {
+      this.nodes.push(node);
+      return;
+    }
+    const at = this.nodes.indexOf(before);
+    if (at < 0) this.nodes.push(node);
+    else this.nodes.splice(at, 0, node);
+  }
+
+  remove(): void {
+    this.detach();
+  }
+
+  private detach(): void {
+    if (!this.parent) return;
+    const at = this.parent.nodes.indexOf(this);
+    if (at >= 0) this.parent.nodes.splice(at, 1);
+    this.parent = null;
   }
 
   appendChild(node: FakeElement | FakeText): FakeElement | FakeText {
@@ -59,6 +99,7 @@ export class FakeElement {
   removeChild(node: FakeElement | FakeText): void {
     const at = this.nodes.indexOf(node);
     if (at >= 0) this.nodes.splice(at, 1);
+    if (node instanceof FakeElement && node.parent === this) node.parent = null;
   }
 
   setAttribute(name: string, value: string): void {

@@ -10,6 +10,9 @@ cd "${SCRIPT_DIR}/.."
 if node - "${WORK}" <<'NODE'
 const fs = require('node:fs');
 const source = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+if (/release\.sh --dev|^  dev-image:|REGISTRY_TOKEN|REGISTRY_HOST_VARIABLE/m.test(source)) {
+    throw new Error('private dev publication must stay out of public CI');
+}
 const job = name => source.split('\n  ' + name + ':\n')[1]?.split(/^  [a-z][a-z-]*:\s*$/m)[0];
 function requireRule(condition, message) {
     if (!condition) throw new Error(message);
@@ -43,7 +46,7 @@ requireRule(gate.includes('PUBLIC_LEAK_RESULT: ${{ needs.public-leak.result }}')
 requireRule(gate.includes('run: bash ci/gate.sh'), 'gate must use the shared result checks');
 const stat = job('static');
 requireRule(!/^    if:/m.test(stat), 'static must run on every event');
-for (const command of ['python3 tools/third-party-licenses-test.py', 'bash ci/image-assert-test.sh']) {
+for (const command of ['python3 tools/third-party-licenses-test.py', 'bash ci/image-assert-test.sh', 'bash ci/check-readme-compose-test.sh', 'python3 ci/check-readme-compose.py']) {
     const matches = stat.split(/(?=^      - (?:name:|uses:))/m).filter(step => step.includes(command));
     requireRule(matches.length === 1 && !/^        if:/m.test(matches[0]), 'static controls must run unconditionally');
 }

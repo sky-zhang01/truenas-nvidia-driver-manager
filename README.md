@@ -5,107 +5,79 @@
   </picture>
 </p>
 
-Update the NVIDIA driver on your TrueNAS from a web page. Pick a version, confirm, and let the manager install and check it.
+TrueNAS has no button for changing the NVIDIA driver. This App adds one: pick a version in your browser, confirm, and the manager installs the driver and checks it.
 
-**Jump to:** [Before you start](#before-you-start) · [Install](#install-in-five-steps) · [Update your driver](#update-your-driver) · [Restart GPU Apps (expand step 6)](#update-your-driver) · [If something goes wrong](#if-something-goes-wrong) · [Stay safe](#stay-safe) · [FAQ](#faq) · [简体中文](README.zh-CN.md)
+**Jump to:** [Install](#install) · [Update your driver](#update-your-driver) · [Troubleshooting](#troubleshooting) · [Stay safe](#stay-safe) · [FAQ](#faq) · [简体中文](README.zh-CN.md)
 
-![The Home page: the driver loaded in the kernel, the GPU and the saved original driver.](docs/images/home-en.png)
+<img src="docs/images/home-landing-en.png" width="900" alt="The manager's Home page after sign-in: header, navigation, the driver loaded in the kernel, the GPU and the saved original driver.">
 
-*Home shows the loaded driver, your GPU and whether the original driver is saved.*
+- **Pick a version.** An official NVIDIA driver, one you uploaded, or one you saved before.
+- **One confirmation.** Nothing updates by itself; every change waits for your click.
+- **A checked result.** The manager confirms that the new driver is really loaded.
+- **A way back.** It keeps the driver that came with TrueNAS (the "original driver") and tries to restore it if the check fails. Recovery can fail too, so always check Home afterwards.
 
-## What it does for you
+Works on TrueNAS SCALE **25.10.7** and TrueNAS **27.0.0-RC.1** (amd64), both tested on real hosts.
 
-You bought a new NVIDIA GPU, or a game, AI tool or media app needs a newer driver than the one TrueNAS SCALE ships. TrueNAS itself has no button for changing the driver.
+## Install
 
-This tool adds that button. It runs as a normal TrueNAS App, and you use it in your browser. This page calls it "the manager".
+**1. Prepare TrueNAS.**
 
-1. It shows the driver versions you can choose from.
-2. It prepares the driver for your NAS and installs it.
-3. It checks that the new driver is really loaded.
-4. It keeps the driver that came with TrueNAS (called the "original driver"), so you can go back to it.
+- The NAS needs an NVIDIA GPU. Switch on the NVIDIA driver in TrueNAS; the manager replaces it, so it has to exist first. If it is missing, Home tells you.
+  - **25.10.7:** **Apps → Installed → Configuration → Settings**, tick **Install NVIDIA Drivers**, **Save**.
+  - **27.0.0-RC.1:** **System → Advanced Settings**, **Configure** on the **NVIDIA Drivers** card, tick **Enable NVIDIA GPU Support**, **Save**.
+- Create a dataset just for the manager: **Datasets**, select your pool, **Add Dataset**, name it, for example `nvm` (folder `/mnt/<pool>/nvm`). Under **Advanced Options** it must allow running programs (`exec=on`). See the [deployment guide](docs/deploy.en.md) for the exact requirements.
+- The NAS needs internet access (NVIDIA, Docker Hub, Debian package archive). Offline? See the [deployment guide](docs/deploy.en.md).
 
-Every change needs your confirmation, and nothing updates by itself. If the check after an update fails and an original driver is saved, the manager tries to put the original back. That recovery can fail too, so always check the result on the Home page.
+**2. Install the App from YAML.** In **Apps → Discover Apps**, next to "Custom App" click **⋮** and choose **Install via YAML**. Give the App any name. Paste this and change only the data folder (keep `:/var/lib/nvm`), then save:
 
-## Before you start
-
-- TrueNAS SCALE **25.10.7** on a common 64-bit x86 PC (amd64). This is the only setup that has been tested.
-- An NVIDIA GPU in the NAS.
-- The NVIDIA driver switched on in TrueNAS: on **Apps → Installed**, click **Configuration → Settings** and tick **Install NVIDIA Drivers**. The manager replaces that driver, so it has to exist first. If it is missing, the manager's Home page tells you.
-- A dataset (a storage folder in your pool) just for the manager. In TrueNAS, open **Datasets**, select your pool, click **Add Dataset**, and name it, for example `nvm`. Its folder is then `/mnt/<pool>/nvm`, where `<pool>` is the name of your pool. The dataset must allow running programs (the ZFS setting `exec=on`). Check this under **Advanced Options** of the new dataset. The [deployment guide](docs/deploy.en.md) lists the exact requirements.
-- Internet access on the NAS, to reach NVIDIA's download site, Docker Hub and Debian's package archive. For offline use, see the [deployment guide](docs/deploy.en.md).
-- An idle period when nobody uses the NAS, and a way to reach the NAS directly: the TrueNAS Shell, or a keyboard and screen on the NAS.
-
-> [!WARNING]
-> Changing the driver interrupts every App that uses the GPU. Pick an idle period. Save the original driver before your first update, and keep direct access to the NAS ready in case the GPU does not come back.
->
-> The YAML file you install from asks for extended rights (`privileged: true` and `pid: host`). The manager needs them to change the driver of the NAS itself. That is also why you should read [Stay safe](#stay-safe).
-
-## Install in five steps
-
-Open a step for details and screenshots.
-
-<details>
-<summary>1. In TrueNAS, open <strong>Install via YAML</strong> for a Custom App</summary>
-
-In TrueNAS, open **Apps → Discover Apps**. Next to "Custom App", click **⋮** ("More Options") and choose **Install via YAML**. Give the App any name you like.
-
-</details>
-
-<details>
-<summary>2. Paste the YAML and replace only the data folder path</summary>
-
-Open [`deploy/compose.yaml`](deploy/compose.yaml) on GitHub, click the copy button, and paste the whole text into the YAML box. Replace `/mnt/<pool>/<dataset>` with the dataset folder you prepared (your data folder): `<pool>` is your pool's name and `<dataset>` is the dataset name, such as `nvm`. Keep `:/var/lib/nvm` after it.
-
-</details>
-
-<details>
-<summary>3. Keep the other lines as they are, save, and start the App</summary>
-
-Leave the other lines as they are, and save. The file publishes the manager on port 8199 of your NAS (the "bridge" setting); the [deployment guide](docs/deploy.en.md) covers other network setups. TrueNAS removes the comments from the YAML when it saves, which is normal.
-
-</details>
-
-<details>
-<summary>4. Open the App logs and copy the latest setup code</summary>
-
-1. Wait until the App shows as running, then open **Apps → Installed → your App → Workloads** and click the document icon (**View Logs**) on the container's row. If the log is empty, wait a minute and open it again.
-2. Find the latest `setup_code_issued` event: **the newest entry is at the bottom**. Each log entry is JSON, with `SETUP CODE:` inside its `msg` text.
-3. Copy only the four groups after `SETUP CODE:`, without quotes or the full stop. Your code differs from the example below.
-
-Other fields and the rest of the message are left out ("..."); the real log entry is a single line.
-
-```json
-{
-  "event": "setup_code_issued",
-  "msg": "SETUP CODE: 7KQ2-M9XD-4TWB-HE6R. ..."
-}
+```yaml
+services:
+  nvidia-driver-manager:
+    image: ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:latest
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    runtime: runc
+    volumes:
+      - /mnt/<pool>/<dataset>:/var/lib/nvm
+    ports:
+      - "8199:8199"
 ```
 
-</details>
+> [!WARNING]
+> `privileged: true` and `pid: host` give the App control of the NAS itself; it needs them to change the host's driver. Read [Stay safe](#stay-safe) before you install.
 
-<details>
-<summary>5. Open the manager in your browser and create your administrator account (with screenshot)</summary>
+The manager is then on port 8199 of your NAS. For macvlan or ipvlan, another port, or offline use, see [`deploy/compose.yaml`](deploy/compose.yaml) and the [deployment guide](docs/deploy.en.md). TrueNAS removes comments when it saves; that is normal.
 
-For `<nas-ip>`, use the address you use to open TrueNAS; on a home network it usually starts with `192.168.`. If you gave the App its own address (macvlan), use that instead, as explained in the [deployment guide](docs/deploy.en.md).
+**3. Copy the setup code.** Wait until the App shows as running. In **Apps → Installed → your App → Workloads**, click the document icon (**View Logs**) on the container's row. The newest entry is at the bottom; if the log is empty, wait a minute and open it again. Find the latest `setup_code_issued` event. Each log entry is JSON, with `SETUP CODE:` inside its `msg` text. Copy only the four groups after `SETUP CODE:`, without quotes or the full stop. Your code differs from this example (other fields and the rest of the message are left out; the real log entry is a single line):
 
-1. Open `http://<nas-ip>:8199/` in your browser.
-2. Enter the setup code and keep the prefilled user name `admin`.
-3. Choose a password of at least 8 characters and type it twice.
-4. Click **Create administrator**. You are signed in and can start updating.
+```json
+{ "event": "setup_code_issued", "msg": "SETUP CODE: 7KQ2-M9XD-4TWB-HE6R. ..." }
+```
 
-If the code is rejected, see the FAQ entry [Expand "The setup code is rejected, expired or missing."](#faq)
+**4. Create your administrator.** Open `http://<nas-ip>:8199/` (`<nas-ip>` is the address you use for TrueNAS; with macvlan, use the App's own address), enter the code, keep the user name `admin`, choose a password of at least 8 characters, type it twice and click **Create administrator**. You are signed in.
 
-<img src="docs/images/setup-en.png" width="500" alt="The setup page, where you enter the setup code and choose the administrator password.">
+<img src="docs/images/setup-en.png" width="900" alt="The setup page, where you enter the setup code and choose the administrator password.">
 
 *Example only. Your code is in the App logs; enter it and choose the administrator password.*
 
-The setup code works once and stays valid for 24 hours. Restarting the App before setup makes a new code, so always take the latest one. The setup code is only for the first start. Next time, open the same address and sign in as `admin` with your password. Restarting the App later needs no code.
-
-</details>
+The code works once and stays valid for 24 hours; restarting the App before setup makes a new one, so always use the latest. The code is only for the first start. Later visits use `admin` and your password; restarting the App after setup needs no code. Code rejected? See the [FAQ](#faq).
 
 ## Update your driver
 
-Open a step for details and screenshots.
+> [!WARNING]
+> Changing the driver interrupts every App that uses the GPU. Pick an idle period, save the original driver on your first update, and keep direct access to the NAS (the TrueNAS Shell, or a keyboard and screen) in case the GPU does not come back.
+
+1. Open **Update driver**, tick your GPU(s), choose an official NVIDIA version and click **Check and continue**.
+2. Stop any App the check lists as using the GPU. The manager never stops your Apps.
+3. Choose **Save original and start** and confirm.
+4. Wait for the task. It keeps running if you close the browser.
+5. Confirm **Succeeded** and the new version on the task page and on Home.
+6. **Restart your GPU Apps**, especially those under "Driver version changed" on Home or failing with "Driver/library version mismatch".
+
+Screenshots for each step are in the update guide below.
+
+## Update guide
 
 <details>
 <summary>1. Choose your GPUs and an official NVIDIA driver version, then click <strong>Check and continue</strong> (with screenshot)</summary>
@@ -117,7 +89,7 @@ Open a step for details and screenshots.
 
 The **Upload .run** button is for an installer you downloaded yourself; see [Expand Driver sources](#driver-sources) below.
 
-![The Update driver page: choose an official NVIDIA driver version and click Check and continue.](docs/images/update-en.png)
+<img src="docs/images/update-en.png" width="900" alt="The Update driver page: choose an official NVIDIA driver version and click Check and continue.">
 
 *Choose an official NVIDIA version, then check it before continuing.*
 
@@ -135,7 +107,7 @@ Before asking for confirmation, the manager checks your GPU, kernel and Apps. If
 
 The confirmation window shows the source, version and your system. If it asks whether to save the original driver, choose **Save original and start**; this is the safest choice. If an original is already saved, the button reads **Start update**.
 
-![The Confirm the update window for an official NVIDIA version, with the buttons Save original and start, Start without saving and Back to selection.](docs/images/plan-en.png)
+<img src="docs/images/plan-en.png" width="900" alt="The Confirm the update window for an official NVIDIA version, with the buttons Save original and start, Start without saving and Back to selection.">
 
 *Check the version and system, and save the original driver before starting.*
 
@@ -146,7 +118,7 @@ The confirmation window shows the source, version and your system. If it asks wh
 
 The task page shows the current stage; the live log is further down the page. Only one update runs at a time, and it keeps running if you close the browser. Downloading and building share a default limit of 30 minutes; if it expires before the driver file is replaced, the update stops and the file stays unchanged.
 
-![A task in progress, with the current stage.](docs/images/running-en.png)
+<img src="docs/images/running-en.png" width="900" alt="A task in progress, with the current stage.">
 
 *The task page highlights the current stage.*
 
@@ -157,7 +129,7 @@ The task page shows the current stage; the live log is further down the page. On
 
 The task ends as **Succeeded**, and the post-update check shows your new version. Home shows the same version.
 
-![A finished task that reports Update complete.](docs/images/success-en.png)
+<img src="docs/images/success-en.png" width="900" alt="A finished task that reports Update complete.">
 
 *Confirm both the successful task status and the version in the post-update check.*
 
@@ -170,18 +142,20 @@ After an update, restart the Apps that use the GPU. If the Home page lists Apps 
 
 </details>
 
+## Local drivers
+
 <details>
 <summary>Local drivers: saved versions and available actions</summary>
 
 The **Local drivers** page lists the drivers the manager has built or saved. You can switch between them without downloading again.
 
-![The Local drivers page with the driver in use marked.](docs/images/drivers-en.png)
+<img src="docs/images/drivers-en.png" width="900" alt="The Local drivers page with the driver in use marked.">
 
 *Local drivers marks the version in use and keeps saved versions available.*
 
 </details>
 
-### Driver sources
+## Driver sources
 
 <details>
 <summary>Expand the three driver sources</summary>
@@ -194,7 +168,9 @@ You can choose a driver from three places:
 
 </details>
 
-## If something goes wrong
+## Troubleshooting
+
+After any failure, always check Home to see which driver is loaded.
 
 <details>
 <summary>Expand troubleshooting and recovery guidance</summary>
@@ -232,7 +208,7 @@ No. Every change needs your click on the confirmation window.
 <details>
 <summary>Will it work on other TrueNAS versions or on ARM?</summary>
 
-Only TrueNAS SCALE 25.10.7 on amd64 is tested. Other versions and chips are untested. A version in the list does not promise it works with your GPU or Apps. Read the checks and warnings before you confirm.
+TrueNAS SCALE 25.10.7 and TrueNAS 27.0.0-RC.1 on amd64 are supported and tested. Other versions and architectures are untested. Maxwell, Pascal and Volta GPUs have not been tested on TrueNAS 27. A version in the list does not promise it works with your GPU or Apps. Read the checks and warnings before you confirm.
 
 </details>
 
@@ -290,7 +266,7 @@ The manager's image has no shell inside. That is expected. Use the task page for
 
 Back up the data folder first. With the `latest` tag, open **Apps → Installed**, click your App, and on the **Application Info** card choose **⋮ → Update** when a new image is offered. To move to a fixed version instead, click **Edit**, change the image tag to the version number, and save. Changing the App does not change the NVIDIA driver on the NAS. If you want the original driver back, do that in **Local drivers** first. The [deployment guide](docs/deploy.en.md) has the details. A step-by-step guide for removing the manager is not written yet.
 
-The image tag in the YAML is `latest`. To stay on a fixed version, change it to `0.2.1`: `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.1`.
+The image tag in the YAML is `latest`. To stay on a fixed version, change it to `0.3.0`: `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.0`.
 
 </details>
 
@@ -309,7 +285,7 @@ The image tag in the YAML is `latest`. To stay on a fixed version, change it to 
 <summary>Optional: verify that an image comes from this repository</summary>
 
 ```bash
-gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.2.1 --repo sky-zhang01/truenas-nvidia-driver-manager
+gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.0 --repo sky-zhang01/truenas-nvidia-driver-manager
 ```
 
 </details>

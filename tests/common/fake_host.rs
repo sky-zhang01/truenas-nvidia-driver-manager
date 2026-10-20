@@ -206,6 +206,52 @@ struct Clock {
     offset: Duration,
 }
 
+/// A repeating extra reference: busy while the phase is at most `high`, idle for the following `low`.
+#[derive(Clone)]
+struct PeriodicOpen {
+    module: String,
+    high: Duration,
+    low: Duration,
+    phase_at_zero: Duration,
+}
+
+/// One extra reference while the fake clock offset is in `[starts_at, starts_at + duration)`.
+#[derive(Clone)]
+struct SustainedOpen {
+    module: String,
+    starts_at: Duration,
+    duration: Duration,
+}
+
+fn extra_refcount(
+    at: Duration,
+    module: &str,
+    periodic: &[PeriodicOpen],
+    sustained: &[SustainedOpen],
+) -> u64 {
+    let mut extra = 0u64;
+    for open in periodic.iter().filter(|open| open.module == module) {
+        let period = open.high.saturating_add(open.low);
+        if period.is_zero() {
+            continue;
+        }
+        let phase = at
+            .as_millis()
+            .saturating_add(open.phase_at_zero.as_millis())
+            % period.as_millis();
+        if phase <= open.high.as_millis() {
+            extra += 1;
+        }
+    }
+    for open in sustained.iter().filter(|open| open.module == module) {
+        let end = open.starts_at.saturating_add(open.duration);
+        if at >= open.starts_at && at < end {
+            extra += 1;
+        }
+    }
+    extra
+}
+
 /// One planned read modification: the `nth` read of the path returns a copy with one byte changed,
 /// the file itself is untouched.
 struct ReadChange {
@@ -233,6 +279,25 @@ struct Inner {
     sysext_since: Mutex<u64>,
     refresh_missing: Mutex<bool>,
     driver_version: Mutex<Option<String>>,
+    /// Kernel reading frozen at an actual core-module load, independently of the merged image.
+    loaded_version: Mutex<Option<String>>,
+    loaded_text: Mutex<Option<String>>,
+    merged_identity: Mutex<Option<String>>,
+    autoload_phases: Mutex<BTreeSet<String>>,
+    refuse_correction: Mutex<BTreeSet<String>>,
+    periodic_opens: Mutex<Vec<PeriodicOpen>>,
+    sustained_opens: Mutex<Vec<SustainedOpen>>,
+    /// Consumed on the first `rmmod` of that module, before the in-use decision.
+    unload_delays: Mutex<BTreeMap<String, Duration>>,
+    /// Remove these modules at the start of the given 1-based `/proc/modules` generation.
+    proc_modules_drops: Mutex<Vec<(String, u64)>>,
+    /// Advance the fake clock at the start of the given 1-based `/proc/modules` generation,
+    /// before that reading's reference counts are computed.
+    proc_modules_advances: Mutex<Vec<(u64, Duration)>>,
+    proc_modules_reads: Mutex<u64>,
+    /// Called at the start of `Host::wait`, before the fake clock moves.
+    on_wait: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    fail_state_phases: Mutex<BTreeSet<String>>,
     exe: Mutex<Vec<u8>>,
     uname: Mutex<String>,
     listings: Mutex<BTreeMap<String, String>>,
@@ -561,6 +626,19 @@ impl FakeHost {
                 sysext_since: Mutex::new(1_000_000),
                 refresh_missing: Mutex::new(false),
                 driver_version: Mutex::new(Some("580.173.02".into())),
+                loaded_version: Mutex::new(None),
+                loaded_text: Mutex::new(None),
+                merged_identity: Mutex::new(None),
+                autoload_phases: Mutex::new(BTreeSet::new()),
+                refuse_correction: Mutex::new(BTreeSet::new()),
+                periodic_opens: Mutex::new(Vec::new()),
+                sustained_opens: Mutex::new(Vec::new()),
+                unload_delays: Mutex::new(BTreeMap::new()),
+                proc_modules_drops: Mutex::new(Vec::new()),
+                proc_modules_advances: Mutex::new(Vec::new()),
+                proc_modules_reads: Mutex::new(0),
+                on_wait: Mutex::new(None),
+                fail_state_phases: Mutex::new(BTreeSet::new()),
                 exe: Mutex::new(b"#!/bin/fake-runner".to_vec()),
                 uname: Mutex::new(KERNEL.into()),
                 listings: Mutex::new(BTreeMap::new()),
@@ -633,6 +711,10 @@ impl FakeHost {
         host.mkdir("/sys/class/drm");
         host.mkdir("/run");
         host.mkdir("/boot");
+        host.put_text(
+            &format!("/boot/config-{KERNEL}"),
+            "CONFIG_CC_VERSION_TEXT=\"gcc (Debian 12.2.0-14+deb12u1) 12.2.0\"\n",
+        );
         host.mkdir("/etc");
         host.mkdir("/proc");
         host.mkdir("/mnt/<pool>/data/manager/secrets");
@@ -976,14 +1058,47 @@ impl FakeHost {
             }
         }
         if path == "/proc/modules" {
+            let nth = {
+                let mut reads = self.inner.proc_modules_reads.lock().unwrap();
+                *reads += 1;
+                *reads
+            };
+            let dropping: Vec<String> = self
+                .inner
+                .proc_modules_drops
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, at)| *at == nth)
+                .map(|(name, _)| name.clone())
+                .collect();
+            for name in dropping {
+                self.unload_module(&name);
+            }
+            let advances: Vec<Duration> = self
+                .inner
+                .proc_modules_advances
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(at, _)| *at == nth)
+                .map(|(_, by)| *by)
+                .collect();
+            for by in advances {
+                self.advance(by);
+            }
+            let at = self.offset();
+            let periodic = self.inner.periodic_opens.lock().unwrap().clone();
+            let sustained = self.inner.sustained_opens.lock().unwrap().clone();
             let modules = self.inner.modules.lock().unwrap();
             let mut text = String::new();
             for (name, m) in modules.iter() {
+                let refcount = m.refcount + extra_refcount(at, name, &periodic, &sustained);
                 text.push_str(&format!(
                     "{} {} {} {} Live 0x0000000000000000\n",
                     name,
                     m.size,
-                    m.refcount,
+                    refcount,
                     if m.deps.is_empty() {
                         "-".to_string()
                     } else {
@@ -994,18 +1109,13 @@ impl FakeHost {
             return Ok(Some(text.into_bytes()));
         }
         if path == "/proc/driver/nvidia/version" {
-            let Some(version) = self.driver_reading() else {
+            let Some(text) = self.inner.loaded_text.lock().unwrap().clone() else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "no such file",
                 ));
             };
-            return Ok(Some(
-                format!(
-                    "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  {version}  Release Build\n"
-                )
-                .into_bytes(),
-            ));
+            return Ok(Some(text.into_bytes()));
         }
         if path == "/proc/self/mountinfo" {
             // The App container's own table; `mount`/`umount` never change it.
@@ -1222,16 +1332,53 @@ impl FakeHost {
         }
     }
 
-    /// The version the loaded `nvidia` module reports: the merged image's version when one was
-    /// read, otherwise the module's own reading; `None` when `nvidia` is not loaded.
+    /// Refreshing userspace never changes a module already resident in the kernel.
     fn driver_reading(&self) -> Option<String> {
-        if !self.inner.modules.lock().unwrap().contains_key("nvidia") {
-            return None;
+        self.inner.loaded_version.lock().unwrap().clone()
+    }
+
+    /// Inject an external module load at the persisted write phase, after the pass unloaded
+    /// modules and before it changes the image. Each selected phase fires only once.
+    pub fn autoload_on_write(&self, restore: bool) {
+        self.inner
+            .autoload_phases
+            .lock()
+            .unwrap()
+            .insert(if restore { "restore_write" } else { "write" }.into());
+    }
+
+    pub fn refuse_correction_unload(&self, module: &str) {
+        self.inner
+            .refuse_correction
+            .lock()
+            .unwrap()
+            .insert(module.into());
+    }
+
+    pub fn fail_state_phase(&self, phase: &str) {
+        self.inner
+            .fail_state_phases
+            .lock()
+            .unwrap()
+            .insert(phase.into());
+    }
+
+    fn persisted_phase(&self) -> Option<String> {
+        let states = self
+            .real_path(&format!("{HOST_DATA_DIR}/manager/state"))
+            .ok()?;
+        for entry in std::fs::read_dir(states).ok()?.flatten() {
+            if entry.path().extension().is_some_and(|ext| ext == "json") {
+                if let Ok(bytes) = std::fs::read(entry.path()) {
+                    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        if value["status"] == "RUNNING" {
+                            return value["phase"].as_str().map(str::to_string);
+                        }
+                    }
+                }
+            }
         }
-        if let Some(merged) = self.inner.merged_version.lock().unwrap().clone() {
-            return Some(merged);
-        }
-        self.inner.driver_version.lock().unwrap().clone()
+        None
     }
 
     /// Model a host reboot: units are gone, `/run` is cleared, the modelled locks and the container
@@ -1270,11 +1417,15 @@ impl FakeHost {
         } else {
             None
         };
+        *self.inner.loaded_version.lock().unwrap() = None;
+        *self.inner.loaded_text.lock().unwrap() = None;
         match version {
             Some(version) => {
-                self.load_module("nvidia", 0, &[]);
                 *self.inner.merged.lock().unwrap() = true;
                 *self.inner.merged_version.lock().unwrap() = Some(version);
+                *self.inner.merged_identity.lock().unwrap() =
+                    self.file(CANONICAL_PATH).map(|b| super::sha256_hex(&b));
+                self.load_module("nvidia", 0, &[]);
             }
             None => {
                 *self.inner.merged.lock().unwrap() = false;
@@ -1295,6 +1446,10 @@ impl FakeHost {
         self.inner.clock.lock().unwrap().offset += d;
     }
 
+    fn offset(&self) -> Duration {
+        self.inner.clock.lock().unwrap().offset
+    }
+
     pub fn set_wall_ms(&self, ms: u64) {
         self.inner.clock.lock().unwrap().wall_base_ms = ms;
     }
@@ -1302,6 +1457,27 @@ impl FakeHost {
     // ---- modules -------------------------------------------------------
 
     pub fn load_module(&self, name: &str, refcount: u64, deps: &[&str]) {
+        if name == "nvidia" && !self.inner.modules.lock().unwrap().contains_key(name) {
+            let version = self
+                .inner
+                .merged_version
+                .lock()
+                .unwrap()
+                .clone()
+                .or_else(|| self.inner.driver_version.lock().unwrap().clone());
+            let identity = self
+                .inner
+                .merged_identity
+                .lock()
+                .unwrap()
+                .clone()
+                .or_else(|| self.file(CANONICAL_PATH).map(|b| super::sha256_hex(&b)))
+                .unwrap_or_default();
+            *self.inner.loaded_text.lock().unwrap() = version.as_ref().map(|v| format!(
+                "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  {v}  Release Build\nBuild identity: {identity}\n"
+            ));
+            *self.inner.loaded_version.lock().unwrap() = version;
+        }
         self.inner.modules.lock().unwrap().insert(
             name.to_string(),
             facts::ModuleLine {
@@ -1315,6 +1491,10 @@ impl FakeHost {
 
     pub fn unload_module(&self, name: &str) {
         self.inner.modules.lock().unwrap().remove(name);
+        if name == "nvidia" {
+            *self.inner.loaded_version.lock().unwrap() = None;
+            *self.inner.loaded_text.lock().unwrap() = None;
+        }
     }
 
     pub fn open_device(&self, name: &str) {
@@ -1322,6 +1502,84 @@ impl FakeHost {
         if let Some(m) = modules.get_mut(name) {
             m.refcount += 1;
         }
+    }
+
+    /// Raise the displayed reference count for about `high`, then drop it for about `low`, repeating.
+    /// `phase_at_zero` is the phase when the fake clock offset is zero. Busy while the phase is
+    /// at most `high`.
+    pub fn periodic_open(
+        &self,
+        module: &str,
+        high: Duration,
+        low: Duration,
+        phase_at_zero: Duration,
+    ) {
+        self.inner
+            .periodic_opens
+            .lock()
+            .unwrap()
+            .push(PeriodicOpen {
+                module: module.to_string(),
+                high,
+                low,
+                phase_at_zero,
+            });
+    }
+
+    /// Add one displayed reference while the fake offset is in `[starts_at, starts_at + duration)`.
+    pub fn sustain_open(&self, module: &str, starts_at: Duration, duration: Duration) {
+        self.inner
+            .sustained_opens
+            .lock()
+            .unwrap()
+            .push(SustainedOpen {
+                module: module.to_string(),
+                starts_at,
+                duration,
+            });
+    }
+
+    /// Advance the fake clock while generating `/proc/modules` for the `nth` time (1-based),
+    /// before that reading's reference counts are computed.
+    pub fn advance_on_proc_read(&self, nth: u64, by: Duration) {
+        self.inner
+            .proc_modules_advances
+            .lock()
+            .unwrap()
+            .push((nth, by));
+    }
+
+    /// Run `hook` at the start of each `Host::wait`, before the fake clock moves.
+    pub fn on_wait(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.inner.on_wait.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    /// Remove `module` while generating `/proc/modules` for the `nth` time (1-based),
+    /// before that reading is rendered. Earlier readings still show the module.
+    pub fn drop_module_on_proc_read(&self, module: &str, nth: u64) {
+        self.inner
+            .proc_modules_drops
+            .lock()
+            .unwrap()
+            .push((module.to_string(), nth));
+    }
+
+    /// The first `rmmod` of `module` advances the fake clock by `delay` before the in-use decision.
+    pub fn unload_takes(&self, module: &str, delay: Duration) {
+        self.inner
+            .unload_delays
+            .lock()
+            .unwrap()
+            .insert(module.to_string(), delay);
+    }
+
+    /// Stored reference count plus any time-based hold at fake offset `at`. Does not move the clock.
+    pub fn displayed_refcount_at(&self, module: &str, at: Duration) -> Option<u64> {
+        let periodic = self.inner.periodic_opens.lock().unwrap().clone();
+        let sustained = self.inner.sustained_opens.lock().unwrap().clone();
+        let modules = self.inner.modules.lock().unwrap();
+        let stored = modules.get(module)?;
+        Some(stored.refcount + extra_refcount(at, module, &periodic, &sustained))
     }
 
     pub fn refuse_unload(&self, name: &str) {
@@ -1405,6 +1663,8 @@ impl FakeHost {
             Some(target) => {
                 *self.inner.merged.lock().unwrap() = true;
                 *self.inner.merged_version.lock().unwrap() = self.listing_version(&target);
+                *self.inner.merged_identity.lock().unwrap() =
+                    self.file(&target).map(|b| super::sha256_hex(&b));
                 *self.inner.sysext_since.lock().unwrap() += 1;
             }
             None => self.model_sysext_unmerge(),
@@ -1417,6 +1677,13 @@ impl FakeHost {
 
     pub fn set_driver_version(&self, version: &str) {
         *self.inner.driver_version.lock().unwrap() = Some(version.to_string());
+        // An explicit test override changes the kernel reading, independently of refresh.
+        if self.inner.modules.lock().unwrap().contains_key("nvidia") {
+            *self.inner.loaded_version.lock().unwrap() = Some(version.to_string());
+            *self.inner.loaded_text.lock().unwrap() = Some(format!(
+                "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  {version}  Release Build\n"
+            ));
+        }
     }
 
     // ---- gpus ----------------------------------------------------------
@@ -2188,6 +2455,24 @@ impl FakeHost {
                     .last()
                     .map(|a| a.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                if self.inner.modules.lock().unwrap().contains_key(&name) {
+                    return Some(FakeOutput::code(0));
+                }
+                if name != "nvidia"
+                    && self.driver_reading().is_some_and(|v| {
+                        self.inner
+                            .merged_version
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(|m| m != &v)
+                    })
+                {
+                    return Some(
+                        FakeOutput::code(1)
+                            .with_stderr("modprobe: Invalid argument (version mismatch)"),
+                    );
+                }
                 if self.inner.fail_reload.lock().unwrap().contains(&name) {
                     return Some(
                         FakeOutput::code(1)
@@ -2210,11 +2495,23 @@ impl FakeHost {
                     .last()
                     .map(|a| a.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                if self.inner.refuse_unload.lock().unwrap().contains(&name) {
+                let delay = self.inner.unload_delays.lock().unwrap().remove(&name);
+                if let Some(delay) = delay {
+                    self.advance(delay);
+                }
+                let correction = self
+                    .persisted_phase()
+                    .is_some_and(|p| p.ends_with("align_modules"));
+                if self.inner.refuse_unload.lock().unwrap().contains(&name)
+                    || (correction && self.inner.refuse_correction.lock().unwrap().contains(&name))
+                {
                     return Some(FakeOutput::code(1).with_stderr(&format!(
                         "rmmod: ERROR: Module {name} is in use by: holder"
                     )));
                 }
+                let at = self.offset();
+                let periodic = self.inner.periodic_opens.lock().unwrap().clone();
+                let sustained = self.inner.sustained_opens.lock().unwrap().clone();
                 {
                     let modules = self.inner.modules.lock().unwrap();
                     let Some(module) = modules.get(&name) else {
@@ -2223,8 +2520,11 @@ impl FakeHost {
                         )));
                     };
                     // An open device raises the reference count; a loaded module in the holder list
-                    // (`/proc/modules` dependencies) refuses the unload.
-                    if module.refcount > 0 {
+                    // (`/proc/modules` dependencies) refuses the unload. A time-based opener adds
+                    // the same extra count `/proc/modules` displays.
+                    let refcount =
+                        module.refcount + extra_refcount(at, &name, &periodic, &sustained);
+                    if refcount > 0 {
                         return Some(
                             FakeOutput::code(1)
                                 .with_stderr(&format!("rmmod: ERROR: Module {name} is in use")),
@@ -2304,13 +2604,54 @@ impl FakeHost {
                         return Some(out.clone());
                     }
                 }
-                Some(FakeOutput::stdout("[]"))
+                // The default fixture exposes virt; callers can override container.* for 27.
+                if key.starts_with("call container.") {
+                    Some(FakeOutput::code(1).with_stderr("[ENOMETHOD] Method does not exist"))
+                } else {
+                    Some(FakeOutput::stdout("[]"))
+                }
             }
             "curl" => Some(self.curl(cmd)),
-            "nvidia-smi" => match self.driver_reading() {
-                Some(version) => Some(FakeOutput::stdout(&format!("{version}\n"))),
-                None => Some(FakeOutput::code(9).with_stderr("nvidia-smi: no devices")),
-            },
+            "nvidia-smi"
+                if arg_strings(cmd).first().map(String::as_str)
+                    == Some("--query-gpu=name,pci.bus_id") =>
+            {
+                if self.driver_reading().is_some_and(|v| {
+                    self.inner
+                        .merged_version
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .is_some_and(|m| m != &v)
+                }) {
+                    Some(
+                        FakeOutput::code(18).with_stderr(
+                            "Failed to initialize NVML: Driver/library version mismatch",
+                        ),
+                    )
+                } else {
+                    Some(FakeOutput::stdout("NVIDIA Example GPU, 00000000:01:00.0\n"))
+                }
+            }
+            "nvidia-smi" => {
+                match self.driver_reading() {
+                    Some(version)
+                        if self
+                            .inner
+                            .merged_version
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(|m| m != &version) =>
+                    {
+                        Some(FakeOutput::code(18).with_stderr(
+                            "Failed to initialize NVML: Driver/library version mismatch",
+                        ))
+                    }
+                    Some(version) => Some(FakeOutput::stdout(&format!("{version}\n"))),
+                    None => Some(FakeOutput::code(9).with_stderr("nvidia-smi: no devices")),
+                }
+            }
             "systemd-sysext" => {
                 let args = arg_strings(cmd);
                 match args.first().map(|s| s.as_str()) {
@@ -2341,6 +2682,10 @@ impl FakeHost {
                     }
                     _ => Some(FakeOutput::code(0)),
                 }
+            }
+            "sleep" => {
+                self.advance(Duration::from_secs(2));
+                Some(FakeOutput::code(0))
             }
             "ldconfig" => Some(FakeOutput::code(0)),
             "cat" => {
@@ -3596,12 +3941,40 @@ impl Host for FakeHost {
                 }
             }
         }
+        let state_phase = if to.contains("/manager/state/") && to.ends_with(".json") {
+            self.file(&from)
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|value| value["phase"].as_str().map(str::to_string))
+        } else {
+            None
+        };
+        if state_phase
+            .as_ref()
+            .is_some_and(|phase| self.inner.fail_state_phases.lock().unwrap().contains(phase))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "state phase refused",
+            ));
+        }
         let real_from = self.resolve(&from, false)?;
         let real_to = self.resolve(&to, false)?;
         if let Some(parent) = real_to.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         std::fs::rename(real_from, real_to)?;
+        if state_phase
+            .is_some_and(|phase| self.inner.autoload_phases.lock().unwrap().remove(&phase))
+        {
+            // Seed the current merged view before loading, just as a runtime hook would.
+            if self.inner.merged_version.lock().unwrap().is_none() {
+                *self.inner.merged_version.lock().unwrap() = self.listing_version(CANONICAL_PATH);
+                *self.inner.merged_identity.lock().unwrap() =
+                    self.file(CANONICAL_PATH).map(|b| super::sha256_hex(&b));
+            }
+            self.load_module("nvidia", 0, &[]);
+            self.load_module("nvidia_uvm", 0, &[]);
+        }
         let mut listings = self.inner.listings.lock().unwrap();
         let moved = listings
             .keys()
@@ -3722,6 +4095,16 @@ impl Host for FakeHost {
         Instant::now() + self.inner.clock.lock().unwrap().offset
     }
 
+    fn wait(&self, duration: Duration) {
+        let hook = self.inner.on_wait.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+        if !duration.is_zero() {
+            self.advance(duration);
+        }
+    }
+
     fn wall_ms(&self) -> u64 {
         let clock = self.inner.clock.lock().unwrap();
         clock.wall_base_ms + clock.offset.as_millis() as u64
@@ -3748,7 +4131,7 @@ pub fn prime_default_scene(host: &FakeHost) {
     host.mkdir("/boot");
     host.put_text(
         &format!("/boot/config-{KERNEL}"),
-        "CONFIG_CC_VERSION_TEXT=\"gcc-12 (Debian 12.2.0)\"\n",
+        "CONFIG_CC_VERSION_TEXT=\"gcc (Debian 12.2.0-14+deb12u1) 12.2.0\"\n",
     );
     host.mkdir("/usr/src/linux-headers-truenas-production-amd64/include/linux");
     host.mkdir("/usr/src/linux-headers-truenas-production-amd64/include/drm");
@@ -3760,3 +4143,28 @@ pub fn prime_default_scene(host: &FakeHost) {
 }
 
 pub const CANONICAL_PATH_FOR_TESTS: &str = "/usr/share/truenas/sysext-extensions/nvidia.raw";
+
+/// Supported host/compiler scenes share the same implementation path.
+pub fn prime_kernel_scene(host: &FakeHost, kernel: &str, truenas: &str, compiler: &str) {
+    // Scene resets must override this response too: the midclt map survives resets.
+    let containers = if truenas.starts_with("27.") {
+        FakeOutput::stdout("[]")
+    } else {
+        FakeOutput::code(1).with_stderr("[ENOMETHOD] Method does not exist")
+    };
+    host.set_midclt("call container.query", containers);
+    host.set_uname(kernel);
+    host.put_text(
+        "/data/manifest.json",
+        &serde_json::json!({"version":truenas}).to_string(),
+    );
+    host.put_text(
+        &format!("/boot/config-{kernel}"),
+        &format!("CONFIG_CC_VERSION_TEXT=\"{compiler}\"\n"),
+    );
+    host.mkdir("/usr/src/linux-headers-truenas-production-amd64/include/config");
+    host.put_text(
+        "/usr/src/linux-headers-truenas-production-amd64/include/config/auto.conf",
+        &format!("CONFIG_CC_VERSION_TEXT={compiler}\n"),
+    );
+}

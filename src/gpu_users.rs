@@ -1,6 +1,6 @@
 //! Objects that requested the GPU.
 //!
-//! Docker containers and Incus containers are queried independently; one failing category
+//! Docker containers and TrueNAS container instances are queried independently; one failing category
 //! does not stop the other.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,14 +16,15 @@ use crate::host::{At, Cmd, Host};
 #[serde(rename_all = "lowercase")]
 pub enum UserKind {
     Docker,
-    Incus,
+    #[serde(rename = "incus")]
+    TrueNasContainer,
 }
 
 impl UserKind {
     pub fn as_str(self) -> &'static str {
         match self {
             UserKind::Docker => "docker",
-            UserKind::Incus => "incus",
+            UserKind::TrueNasContainer => "incus",
         }
     }
 }
@@ -307,7 +308,7 @@ fn run_midclt(
     }
 }
 
-/// One Incus instance of the query.
+/// One TrueNAS container instance of the query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instance {
     pub id: String,
@@ -383,7 +384,7 @@ pub fn parse_devices(json: &[u8]) -> Result<Vec<Device>, String> {
 }
 
 /// Pure rule: containers with a GPU device, sorted by name.
-pub fn incus_gpu_instances(
+pub fn container_gpu_instances(
     instances: &[Instance],
     devices: &BTreeMap<String, Vec<Device>>,
 ) -> Vec<GpuUser> {
@@ -398,14 +399,14 @@ pub fn incus_gpu_instances(
         })
         .map(|i| GpuUser {
             name: i.name.clone(),
-            kind: UserKind::Incus,
+            kind: UserKind::TrueNasContainer,
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
-/// Docker GPU-user query–Incus GPU-user query/query both categories. The caller passes the
+/// Docker GPU-user query–TrueNAS instance GPU-user query/query both categories. The caller passes the
 /// timeout of its side: the web process uses `HOST_QUERY_TIMEOUT`, the runner uses
 /// `HOST_CMD_TIMEOUT`, so the timeout reason carries the timeout that actually applied.
 pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
@@ -532,14 +533,48 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
         }
     }
 
-    // Incus.
-    match run_midclt(h, &["call", "virt.instance.query"], timeout) {
+    match run_midclt(h, &["call", "container.query"], timeout) {
+        Ok(bytes) => match parse_container_users(h, &bytes) {
+            Ok(users) => result.users.extend(users),
+            Err(reason) => result.errors.push(CategoryError {
+                kind: UserKind::TrueNasContainer,
+                reason: crate::task_state::ReasonValue::new(reason, serde_json::json!({})),
+            }),
+        },
+        Err(out) if method_missing(&out, "container", "query") => {
+            list_virt_instances(h, timeout, &mut result);
+        }
         Err(out) => result
             .errors
-            .push(category_error(UserKind::Incus, &out, timeout)),
+            .push(category_error(UserKind::TrueNasContainer, &out, timeout)),
+    }
+
+    result
+}
+
+// Preserve the stored `incus` category key so existing task records still render.
+fn method_missing(out: &crate::host::Output, service: &str, method: &str) -> bool {
+    matches!(out.exit, crate::host::Exit::Code(code) if code != 0)
+        && out.stderr_text().lines().any(|line| {
+            let line = line
+                .trim()
+                .strip_prefix("[ENOMETHOD] ")
+                .unwrap_or(line.trim());
+            line == "Method does not exist"
+                || line == format!("Method '{method}' not found in '{service}'")
+                || line == format!("Service '{service}' not found")
+        })
+}
+
+fn list_virt_instances(h: &dyn Host, timeout: Duration, result: &mut GpuUsers) {
+    match run_midclt(h, &["call", "virt.instance.query"], timeout) {
+        Err(out) if method_missing(&out, "virt.instance", "query") => {}
+        Err(out) => result
+            .errors
+            .push(category_error(UserKind::TrueNasContainer, &out, timeout)),
         Ok(bytes) => match parse_instances(&bytes) {
             Err(_) => result.errors.push(CategoryError {
-                kind: UserKind::Incus,
+                kind: UserKind::TrueNasContainer,
                 reason: crate::task_state::ReasonValue::new(
                     REASON_FORMAT_UNRECOGNIZED,
                     serde_json::json!({}),
@@ -555,7 +590,7 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
                 for i in &running {
                     if !instance_id_ok(&i.id) {
                         failed = Some(CategoryError {
-                            kind: UserKind::Incus,
+                            kind: UserKind::TrueNasContainer,
                             reason: crate::task_state::ReasonValue::new(
                                 REASON_FORMAT_UNRECOGNIZED,
                                 serde_json::json!({}),
@@ -565,7 +600,8 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
                     }
                     match run_midclt(h, &["call", "virt.instance.device_list", &i.id], timeout) {
                         Err(out) => {
-                            failed = Some(category_error(UserKind::Incus, &out, timeout));
+                            failed =
+                                Some(category_error(UserKind::TrueNasContainer, &out, timeout));
                             break;
                         }
                         Ok(bytes) => match parse_devices(&bytes) {
@@ -574,7 +610,7 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
                             }
                             Err(_) => {
                                 failed = Some(CategoryError {
-                                    kind: UserKind::Incus,
+                                    kind: UserKind::TrueNasContainer,
                                     reason: crate::task_state::ReasonValue::new(
                                         REASON_FORMAT_UNRECOGNIZED,
                                         serde_json::json!({}),
@@ -590,13 +626,104 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
                 } else {
                     result
                         .users
-                        .extend(incus_gpu_instances(&instances, &devices));
+                        .extend(container_gpu_instances(&instances, &devices));
                 }
             }
         },
     }
+}
 
-    result
+// `container.query` includes `container.device.query` entries in `devices`.
+#[derive(Deserialize)]
+struct ContainerEntry {
+    id: u64,
+    name: String,
+    status: ContainerStatus,
+    devices: Vec<ContainerDevice>,
+}
+
+#[derive(Deserialize)]
+struct ContainerStatus {
+    state: String,
+}
+
+#[derive(Deserialize)]
+struct ContainerDevice {
+    attributes: serde_json::Value,
+}
+
+fn parse_container_users(h: &dyn Host, bytes: &[u8]) -> Result<Vec<GpuUser>, &'static str> {
+    let entries: Vec<ContainerEntry> =
+        serde_json::from_slice(bytes).map_err(|_| REASON_FORMAT_UNRECOGNIZED)?;
+    let mut users = Vec::new();
+    for entry in entries {
+        if entry.id == 0
+            || entry.name.is_empty()
+            || !matches!(
+                entry.status.state.as_str(),
+                "RUNNING" | "STOPPED" | "SUSPENDED"
+            )
+        {
+            return Err(REASON_FORMAT_UNRECOGNIZED);
+        }
+        if entry.status.state != "RUNNING" {
+            continue;
+        }
+        let mut requested = false;
+        for device in entry.devices {
+            let attributes = &device.attributes;
+            match attributes.get("dtype").and_then(|v| v.as_str()) {
+                Some("GPU") => {
+                    let vendor = attributes
+                        .get("gpu_type")
+                        .and_then(|v| v.as_str())
+                        .filter(|v| matches!(*v, "NVIDIA" | "AMD" | "INTEL"))
+                        .ok_or(REASON_FORMAT_UNRECOGNIZED)?;
+                    attributes
+                        .get("pci_address")
+                        .and_then(|v| v.as_str())
+                        .filter(|v| !v.is_empty())
+                        .ok_or(REASON_FORMAT_UNRECOGNIZED)?;
+                    requested |= vendor == "NVIDIA";
+                }
+                Some("FILESYSTEM") => {
+                    let source = attributes
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .ok_or(REASON_FORMAT_UNRECOGNIZED)?;
+                    let mut mapping = InspectedContainer {
+                        devices: vec![DeviceMapping {
+                            path_on_host: Some(source.to_string()),
+                        }],
+                        ..Default::default()
+                    };
+                    if let Some(node) = source.strip_prefix("/dev/dri/by-path/") {
+                        if let Ok(target) = h.read_link(&h.view(Path::new(source))) {
+                            mapping
+                                .by_path_targets
+                                .insert(node.to_string(), target.to_string_lossy().into_owned());
+                        }
+                    }
+                    let nodes = if source.starts_with("/dev/dri") {
+                        nvidia_dri_nodes(h)?
+                    } else {
+                        BTreeSet::new()
+                    };
+                    requested |= docker_requests_gpu(&mapping, &nodes);
+                }
+                Some("NIC" | "USB") => {}
+                _ => return Err(REASON_FORMAT_UNRECOGNIZED),
+            }
+        }
+        if requested {
+            users.push(GpuUser {
+                name: entry.name,
+                kind: UserKind::TrueNasContainer,
+            });
+        }
+    }
+    users.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(users)
 }
 
 #[cfg(test)]
@@ -683,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn incus_rule() {
+    fn container_rule() {
         let instances = vec![
             Instance {
                 id: "a".into(),
@@ -711,10 +838,10 @@ mod tests {
                 dev_type: "GPU".into(),
             }],
         );
-        let users = incus_gpu_instances(&instances, &devices);
+        let users = container_gpu_instances(&instances, &devices);
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].name, "media");
-        assert_eq!(users[0].kind, UserKind::Incus);
+        assert_eq!(users[0].kind, UserKind::TrueNasContainer);
     }
 
     #[test]

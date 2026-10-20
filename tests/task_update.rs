@@ -1268,7 +1268,12 @@ fn an_occupancy_refusal_before_the_first_unload_is_settled() {
     ));
     state.replace.push(ReplaceRecord {
         pass: Pass::Update,
+        module_version_before: None,
+        file_changed: None,
+        module_correction: None,
         unloaded: Vec::new(),
+        unload_waits: Vec::new(),
+        occupancy_waits: Vec::new(),
         reloaded: Vec::new(),
         refresh_exit: None,
         ldconfig_exit: None,

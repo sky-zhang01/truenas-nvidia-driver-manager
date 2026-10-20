@@ -492,7 +492,12 @@ fn killed_in_write_phase(host: &FakeHost) {
     };
     state.replace.push(ReplaceRecord {
         pass: Pass::Update,
+        module_version_before: None,
+        file_changed: None,
+        module_correction: None,
         unloaded: vec!["nvidia_uvm".to_string()],
+        unload_waits: Vec::new(),
+        occupancy_waits: Vec::new(),
         reloaded: Vec::new(),
         refresh_exit: None,
         ldconfig_exit: None,
@@ -968,4 +973,117 @@ fn release_requires_a_durable_marker_before_removing_directory() {
     release_scene(&host);
     host.fail_rename_to_suffix(&format!("{RELEASE_X}.json"));
     assert_release_kept(&host);
+}
+
+#[test]
+fn interrupted_module_corrections_keep_phase_accounts_and_inputs_without_restarting() {
+    for phase in [Phase::AlignModules, Phase::RestoreAlignModules] {
+        for reboot in [false, true] {
+            let host = default_host();
+            let mut state = write_state(&host, ID, Status::Running, Some(phase));
+            state.rootfs = Some(truenas_nvidia_driver_manager::task_state::Rootfs {
+                dataset: USR_DATASET.into(),
+                readonly_before: "on".into(),
+            });
+            state.replace.push(ReplaceRecord {
+                pass: if phase == Phase::AlignModules {
+                    Pass::Update
+                } else {
+                    Pass::Restore
+                },
+                module_version_before: None,
+                file_changed: Some(true),
+                module_correction: Some(partial_module_correction()),
+                unloaded: vec!["nvidia".into()],
+                unload_waits: Vec::new(),
+                occupancy_waits: Vec::new(),
+                reloaded: vec![],
+                readback_ok: Some(true),
+                refresh_exit: Some(serde_json::json!({"code": 0})),
+                ldconfig_exit: Some(serde_json::json!({"code": 0})),
+                readonly_after: None,
+            });
+            if phase == Phase::RestoreAlignModules {
+                use truenas_nvidia_driver_manager::task_state::{
+                    CheckRecord, ReadingJson, Restore, RestoreDecision, RestoreOriginal,
+                };
+                state.checks.push(CheckRecord {
+                    pass: Pass::Update,
+                    since_before: ReadingJson::value(1),
+                    since_after: ReadingJson::value(2),
+                    refresh_ok: true,
+                    nvidia_smi: ReadingJson::value("580.173.02".into()),
+                    proc_version: ReadingJson::value("580.173.02".into()),
+                    expected: "580.178.04".into(),
+                    version_ok: false,
+                    passed: false,
+                });
+                state.restore = Some(Restore {
+                    decision: RestoreDecision::Restore,
+                    reason: None,
+                    read_reason: None,
+                    original: Some(RestoreOriginal {
+                        row_id: format!("{ID}-original"),
+                        version: "580.173.02".into(),
+                        saved_at: 1,
+                    }),
+                });
+            }
+            task_state::write(&host, &paths(), &state).unwrap();
+            let input = paths().task_dir(ID).join("in/driver.run");
+            host.put_text(input.to_str().unwrap(), "retained recovery input");
+            let original = paths()
+                .row_dir(&format!("{ID}-original"))
+                .join("nvidia.raw");
+            host.put_text(original.to_str().unwrap(), "saved original bytes");
+            host.set_unit(ID, "failed", "failed", "signal", 9);
+            if reboot {
+                host.reboot_host();
+            }
+            for _ in 0..2 {
+                let result = truenas_nvidia_driver_manager::tasks::reconcile(&host, &paths());
+                assert_eq!(
+                    result.state_of(ID).unwrap().status,
+                    Some(Status::Interrupted)
+                );
+                let kept = kept_record(&host);
+                assert_eq!(kept["phase"], phase.as_str());
+                assert_eq!(
+                    kept["replace"][0]["module_correction"]["unloads"][0]["module"],
+                    "nvidia_uvm"
+                );
+                assert!(kept["released_by"].is_null());
+                assert_eq!(
+                    host.file_text(input.to_str().unwrap()).as_deref(),
+                    Some("retained recovery input")
+                );
+                assert_eq!(
+                    host.file_text(original.to_str().unwrap()).as_deref(),
+                    Some("saved original bytes")
+                );
+            }
+            assert_eq!(host.count("systemd-run"), 0);
+            assert_eq!(host.count("rmmod"), 0);
+            assert_eq!(host.count("modprobe"), 0);
+        }
+    }
+}
+
+#[test]
+fn later_verified_replacement_can_release_material_from_either_correction_phase() {
+    for phase in [Phase::AlignModules, Phase::RestoreAlignModules] {
+        let host = default_host();
+        release_scene(&host);
+        let mut old = release_state(&host, RELEASE_X);
+        old.phase = Some(phase);
+        old.replace[0].module_correction = Some(partial_module_correction());
+        old.replace[0].readback_ok = Some(true);
+        task_state::write(&host, &paths(), &old).unwrap();
+        truenas_nvidia_driver_manager::tasks::reconcile(&host, &paths());
+        let kept = release_state(&host, RELEASE_X);
+        assert_eq!(kept.released_by.as_deref(), Some(RELEASE_L));
+        assert_eq!(kept.phase, Some(phase));
+        assert!(kept.replace[0].module_correction.is_some());
+        assert!(!host.exists(paths().task_dir(RELEASE_X).to_str().unwrap()));
+    }
 }

@@ -121,6 +121,10 @@ jobs:
         run: bash ci/check-compose-test.sh
       - name: compose template checks
         run: bash ci/check-compose.sh
+      - name: README compose controls
+        run: bash ci/check-readme-compose-test.sh
+      - name: README installation YAML
+        run: python3 ci/check-readme-compose.py
       - name: change routing controls
         run: bash ci/changes-test.sh
       - name: gate controls

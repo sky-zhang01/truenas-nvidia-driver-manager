@@ -1536,7 +1536,8 @@ function rustOwner(tokens: string[], kind: string, name: string): string[] {
 
 /** Keep a named expression's scope, rather than finding a key elsewhere in its function. */
 function rustLet(tokens: string[], name: string): string[] {
-  const start = tokens.findIndex((token, i) => token === "let" && tokens[i + 1] === name);
+  const start = tokens.findIndex((token, i) =>
+    token === "let" && (tokens[i + 1] === name || (tokens[i + 1] === "mut" && tokens[i + 2] === name)));
   assert.ok(start >= 0, `missing Rust let ${name}`);
   let depth = 0;
   let end = start + 2;

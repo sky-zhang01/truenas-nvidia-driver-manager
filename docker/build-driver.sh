@@ -20,7 +20,6 @@ DRIVER_RUN=/in/driver.run
 COMMUNITY_ARCHIVE=/in/community-patches.debian.tar.xz
 TOOLKIT_DIR=/in/toolkit
 HOST_HEADERS=/usr/src/linux-headers-truenas-production-amd64
-KERNEL_CONFIG="/boot/config-${KERNEL}"
 MODULES_UNDER="/usr/lib/modules/${KERNEL}"
 STAGE=/tmp/nvm-stage
 MARK=/tmp/nvm-mark
@@ -92,34 +91,11 @@ for rel in \
 done
 
 step compiler
-cc_major=""
-for cfg in "${HOST_HEADERS}/include/config/auto.conf" "${KERNEL_CONFIG}" ; do
-    [ -f "${cfg}" ] || continue
-    line="$(grep -m1 '^CONFIG_CC_VERSION_TEXT=' "${cfg}" 2>/dev/null || true)"
-    [ -n "${line}" ] || continue
-    value="${line#CONFIG_CC_VERSION_TEXT=}"
-    value="${value%\"}"
-    value="${value#\"}"
-    # Require gcc in the kernel compiler string and use its final dotted version.
-    case "${value,,}" in
-        *gcc*) ;;
-        *) continue ;;
-    esac
-    rest="${value}"
-    major=""
-    while [[ "${rest}" =~ ([0-9]+)\.[0-9]+\.[0-9]+ ]]; do
-        major="${BASH_REMATCH[1]}"
-        rest="${rest#*"${BASH_REMATCH[0]}"}"
-    done
-    if [ -n "${major}" ]; then
-        cc_major="${major}"
-        break
-    fi
-done
-[ -n "${cc_major}" ] || fail kernel_gcc_unknown
-command -v "gcc-${cc_major}" >/dev/null 2>&1 || fail "compiler_missing:gcc-${cc_major}"
-export CC="gcc-${cc_major}" HOSTCC="gcc-${cc_major}" IGNORE_CC_MISMATCH=1
-info "cc=gcc-${cc_major}"
+# The host runner selected this before any downloads; do not parse kernel config here.
+[ -n "${NVM_BUILD_COMPILER:-}" ] || fail kernel_gcc_unknown
+command -v "${NVM_BUILD_COMPILER}" >/dev/null 2>&1 || fail "compiler_missing:${NVM_BUILD_COMPILER}"
+export CC="${NVM_BUILD_COMPILER}" HOSTCC="${NVM_BUILD_COMPILER}" IGNORE_CC_MISMATCH=1
+info "cc=${CC}"
 
 step probe
 sh "${DRIVER_RUN}" --extract-only --target "${PROBE_DIR}" || fail extract_failed
