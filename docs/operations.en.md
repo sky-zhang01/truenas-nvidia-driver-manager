@@ -2,17 +2,14 @@
 
 [简体中文](operations.zh-CN.md)
 
-## Return to the saved stock driver
+## Return to the saved original driver
 
-Open the local drivers table and select a usable **original** row. Review and confirm its
-plan just as for another replacement. It uses the saved image without downloading or building;
-without a usable original for the current kernel and TrueNAS version, this action is unavailable.
-A downloaded NVIDIA version is not a replacement for the saved TrueNAS stock image.
+In Local drivers, choose a usable Original row, click Restore this version, and confirm the plan. This uses the saved TrueNAS image without downloading or building. It requires an original compatible with the current kernel and TrueNAS version; an NVIDIA download cannot supply that saved image.
 
-The automatic restore path runs after a replacement's driver check fails, when a usable stock
+The automatic restore path runs after a replacement's driver check fails, when a usable original
 copy exists. It does not cover every download, build, unload, or write failure, and restoration
-can fail too. `STOCK_RESTORED` means recovery succeeded, not that the requested update succeeded.
-Inspect task check records and loaded versions; App availability must be checked separately.
+can fail too. With `STOCK_RESTORED`, the original driver is back and the requested update failed.
+Inspect task check records and loaded versions; app availability must be checked separately.
 
 ## Troubleshooting and reporting a problem
 
@@ -29,19 +26,42 @@ paths, credentials, cookies, tokens, and private keys. Report suspected vulnerab
 [SECURITY.md](../SECURITY.md). Keep unresolved recovery files until the manager's checks allow
 release; do not delete task directories to bypass a block.
 
+## Manual uploads and returning from confirmation
+
+On Update driver, choose Upload files manually…. The window lists one `.run` driver
+installer and four amd64 toolkit `.deb` packages of the same version, with official download
+links beside each row. The toolkit version comes from the official index, with `1.20.1-1` used
+when it cannot be read. Skip `-dev`, `-dbg` and checksum files. The driver version at the top
+only generates download links; the file content determines the version to install.
+
+Choosing files starts the upload immediately, with `.deb` files first and `.run` last. Check
+each row's state, reason and suggested action. The footer shows the ready count while files are incomplete, then a completion summary. The progress
+bar has no percentage while the manager reads a file. Cancel upload asks for confirmation,
+deletes the partial file and keeps files already received. Use Clear and start again to
+replace the whole group. Unused-file notices can be dismissed individually.
+
+Once all five are ready, choose Check and continue. The window stays open during the check
+and on failure so you can resolve the problem. It opens confirmation only after success.
+Back to selection returns to the checklist with the files kept. Canceling a plan releases its lock
+on the staged files. Once the task starts, its uploaded files cannot be replaced. Fingerprints
+and checksums are under File details in confirmation.
+
+The manager checks content, architecture and versions and runs the installer's own integrity
+check at build time. It does not verify NVIDIA signatures or compare official checksums. Passing
+these checks does not prove the source is trustworthy: only upload files downloaded from NVIDIA
+that you trust. Offline builds also need the build image and packages in the
+[deployment guide](deploy.en.md).
+
 ## SSH key sign-in
 
-The administrator account can register SSH public keys. The login page then grows a
-collapsed "Sign in with an SSH key" section: copy a one-time challenge, sign it with
-your private key in your own terminal, paste the signature back and you are signed in
-without typing the password. The password entrance always stays.
+Register SSH public keys on the Account page. To sign in, expand "Sign in with an SSH key",
+copy the one-time challenge, sign it in your terminal, and paste back the signature.
+Password sign-in remains available.
 
 - Accepted key algorithms: `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`
   (no RSA, sk-* or certificates). At most 5 keys.
-- The private key never enters this program: the page only submits public keys and
-  signatures. If private key material is pasted into the public key box, the comment
-  box or the signature box, the client refuses it, clears that input and sends
-  nothing to the server.
+- Only public keys and signatures reach the server. Private key material pasted into a
+  public-key, comment or signature field is refused and cleared before transmission.
 - Registration lives in the "SSH sign-in keys" section of the Account page; keys can be
   registered immediately after setup.
 - The terminal signing command (replace `<challenge>` with the current challenge on
@@ -59,7 +79,7 @@ without typing the password. The password entrance always stays.
   ```
 
   With several keys in the agent, `<(ssh-add -L)` silently picks the first one; use
-  the ready-made per-key command under each key on the account page, or point `-f`
+  the signing command under each key on the Account page, or point `-f`
   at the registered public key file. 1Password needs its SSH agent enabled in its
   settings.
 - Deleting a key immediately ends every signed-in session (this browser receives a
@@ -72,8 +92,8 @@ without typing the password. The password entrance always stays.
 The credentials file lives in the data directory:
 `<data-directory>/manager/secrets/web-credentials.json`. To reset it:
 
-1. Open the **host's** Shell in the TrueNAS web UI (System → Shell) or log in to the host
-   over SSH. The app's own **Shell** button cannot be used: the image is empty-base (`scratch`) and
+1. Open the host's Shell in the TrueNAS web UI (System → Shell) or log in to the host
+   over SSH. The app's own Shell button cannot be used: the image is empty-base (`scratch`) and
    carries no shell (see the [deployment guide](deploy.en.md)).
 2. Delete the credentials file. This resets the account and removes all registered SSH keys;
    it does not delete drivers or tasks:
@@ -82,12 +102,12 @@ The credentials file lives in the data directory:
    rm '<data-directory>/manager/secrets/web-credentials.json'
    ```
 
-3. **Without restarting the App**, reload the manager page. It shows setup and writes a new
-   code to the App logs. In TrueNAS, open **Apps → Installed → this App → Workloads** and click
-   the container row's document icon, **View Logs**. Copy the whole code from `msg` in the newest
+3. Without restarting the app, reload the manager page. It shows setup and writes a new
+   code to the app logs. In TrueNAS, open Apps → Installed → this app → Workloads and click
+   the container row's document icon, View Logs. Copy the whole code from `msg` in the newest
    JSON log message containing `SETUP CODE:`.
 4. Enter that code on the manager page, choose and repeat a new password, and click
-   **Create administrator**. Register any needed SSH public keys again.
+   Create administrator. Register any needed SSH public keys again.
 
 Notes:
 
@@ -95,11 +115,11 @@ Notes:
   local driver records and the saved original are unaffected. The data folder is the host directory
   you entered in the YAML volume mapping; the login page shows a generic credentials path with
   a data-folder placeholder.
-- A code works once, expires after 24 hours, and is invalidated by an App restart. After expiry,
+- A code works once, expires after 24 hours, and is invalidated by an app restart. After expiry,
   reopening the page or submitting setup writes a new code; copy the code from `msg` in the
   newest log message containing `SETUP CODE:`. A live code is never replaced just because
   someone submits a wrong code.
-- The setup code appears only in the `msg` of the `setup_code_issued` App log event. It is never
+- The setup code appears only in the `msg` of the `setup_code_issued` app log event. It is never
   written to task logs or task state. App log readers and collectors can see it while it is live;
   redact setup-code messages before sharing logs. Passwords, hashes, challenges, signatures,
   full public keys and session tokens are not logged.
@@ -120,21 +140,16 @@ backup if you need to return to that release.
   records (including the saved original driver file).
 - `<data-dir>/manager/build-kit-cache/` holds the verified build packages (about 88 MiB). It can be
   deleted at any time; the next build downloads those packages again.
-- To restore, put the whole data directory back in place and start the App with the same compose
+- To restore, put the whole data directory back in place and start the app with the same compose
   file. The credentials file decides the account and password in use; restore it too and you do not
   have to rebuild the account.
 
 ## Loaded module alignment
 
-After reloading modules, each update or original-driver restore reads the loaded kernel version.
-If another host component loaded the previous image's modules during replacement, the task page
-shows **Aligning loaded driver modules**, or **Restoring the original driver · Aligning loaded
-driver modules**. The same stage also covers a missing version file or an unchanged full kernel
-version text after switching to different image bytes with the same version number. Unparseable
-version text goes directly to the normal post-update check.
+After update or original-driver restoration, the loaded kernel driver version is read. The task enters Aligning loaded driver modules if another component loaded the previous image's modules, the version file is missing, or different image bytes with the same version leave the full version text unchanged. During restoration the title starts with Restoring the original driver. Unparseable text proceeds directly to the post-update check.
 
 Before the image is written, again before the alignment round unloads anything, and again before
-a restore unload, the program reads `/proc/modules`. If the GPU is in use it waits, re-reading
+a restore unload, the manager reads `/proc/modules`. If the GPU is in use it waits, re-reading
 about every 0.2 seconds, for at most about 30 seconds, and continues as soon as every `nvidia*`
 module's reference count drops to the number of modules that depend on it. An unreadable reading
 does not wait. Container start, health checks, and `exec` through the NVIDIA runtime can hold
@@ -171,7 +186,7 @@ ends with a restore-check failure.
 
 ## Interrupted tasks
 
-A replacement runs in a host systemd unit and can survive an App-container restart. If the host
+A replacement runs in a host systemd unit and can survive an app-container restart. If the host
 restarts, loses power, or the runner ends before recording a terminal result, reconciliation can
 mark the task `INTERRUPTED`. The notice at the top of the home page says what the step it stopped on
 means, and the task page's details give that step and the task id.
@@ -184,7 +199,7 @@ means, and the task page's details give that step and the task id.
 - Stopped while writing, refreshing or reloading, or during the matching unload, write, refresh or
   reload of a restore: this page cannot tell whether the driver file was replaced, and driver modules
   may be unloaded without having been loaded again.
-- Stopped during either module alignment stage: **the driver file has already been written**.
+- Stopped during either module alignment stage: the driver file has already been written.
   Modules may be unloaded without having been loaded again. Reconciliation keeps the stage and
   its separate attempt records; it does not resume the task or start another update automatically.
 - What to do: check the loaded driver version on the home page and the check records in the task
@@ -194,19 +209,21 @@ means, and the task page's details give that step and the task id.
   so the system can merge the current sysext image and load its modules again. This is not a
   guarantee of recovery from a damaged or unsuitable image.
 - An unsettled task keeps its directory and inputs until a later task finishes with a verified
-  replacement or restore. During an idle refresh, the program releases them automatically only
+  replacement or restore. During an idle refresh, the manager releases them automatically only
   after checking that the later task's library image and permanent image still match, its target
   modules are loaded, both driver version readings match, and the host's writable mount and
   read-only properties are reset. A reboot or re-merge is allowed when those readings still match.
   Any retained task with host leftovers blocks release for all tasks and refuses a new update.
-- A terminal task whose directory is retained offers **Release recovery material**. After
+- A terminal task whose directory is retained offers Release recovery material. After
   confirmation it runs the same checks immediately and explains any refusal; it cannot force
   release. The state file and log stay as history, including the release time and the later task's
   id. If directory removal fails after the release is recorded, the next idle refresh retries it.
 - The `<id>-build` image in the local driver library uses separate space. Releasing task inputs
   keeps that image; delete it separately in the local drivers table when it is no longer needed.
 
-GPU-user queries list Docker containers and TrueNAS container instances. The program first calls `container.query` (including its device list), then uses `virt.instance.*` only when the host reports that the first API does not exist. If neither API exists, the instance list is empty. The task page also shows the GPU names and PCI addresses reported by a read-only `nvidia-smi` query during each post-replacement check, or the read failure reason. This is diagnostic only: it does not decide success or trigger recovery. After a recovery check, the row describes that latest check.
+When the GPU is busy, the list appears beside the update button after a fixed-height placeholder within about one second and refreshes silently about every two seconds. The task page shows it below the waiting message. Stop applications marked "Using the GPU now" and the wait continues automatically; terminal notices retain the usage labels and snapshot time if the wait expires. Check again retries the same selection. Cancel waiting ends only the browser check; the server check finishes naturally and an immediate retry may queue. Task waits have no cancellation. Disappeared applications show "✓ Stopped" for about four seconds, or disappear immediately with reduced motion. The manager never stops applications for the user.
+
+GPU-user queries list Docker apps and Incus instances. The manager first calls `container.query` (including its device list), then uses `virt.instance.*` only when the host reports that the first API does not exist. If neither API exists, the instance list is empty. "Using the GPU now" means that container's own processes currently have `/dev/nvidia*` or NVIDIA-driven `/dev/dri` devices open. "Requested only" means GPU configuration exists but no device is open. Only those processes' fd link targets are read; processes outside the list, process names, command lines and environments are not inspected. Any unreadable step is "Unknown", as are instances without reliable member-process information. The list sorts using, unknown and requested-only applications in that order. The task page also shows the GPU names and PCI addresses reported by a read-only `nvidia-smi` query during each post-replacement check, or the read failure reason. This is diagnostic only: it does not decide success or trigger recovery. After a recovery check, the row describes that latest check.
 
 
 ## Logs

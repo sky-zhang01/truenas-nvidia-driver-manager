@@ -1,0 +1,1469 @@
+{
+  "admission.lock_busy": [],
+  "admission.lock_dir_invalid": [],
+  "admission.lock_timeout": [],
+  "admission.lock_unsupported": [],
+  "app.purpose": [],
+  "app.title": [],
+  "auth.origin_mismatch": [],
+  "auth.required": [],
+  "branch.follow_pfn_removed": [],
+  "branch.installer_loads_module": [],
+  "branch.nvidia_drm_not_loaded": [],
+  "branch.nvidia_not_loaded": [],
+  "branch.output_poll_changed_removed": [],
+  "branch.pci_resize_resource_args": [],
+  "build.artifact.deliver_failed": [],
+  "build.artifact.kernel_ambiguous": [],
+  "build.artifact.kernel_mismatch": [
+    "built_kernel",
+    "current_kernel"
+  ],
+  "build.artifact.sha_mismatch": [],
+  "build.artifact.tool_missing": [
+    "program"
+  ],
+  "build.artifact.unreadable": [],
+  "build.artifact.version_mismatch": [
+    "built_version",
+    "target"
+  ],
+  "build.artifact.version_unreadable": [],
+  "build.capture_failed": [],
+  "build.community_patch_failed": [
+    "patch"
+  ],
+  "build.community_patch_failed.archive": [],
+  "build.compiler_missing": [
+    "version"
+  ],
+  "build.container_exit": [
+    "code"
+  ],
+  "build.deb_extract_failed": [
+    "package"
+  ],
+  "build.depmod_failed": [],
+  "build.docker_run_failed": [],
+  "build.extract_failed": [],
+  "build.installer_failed": [],
+  "build.installer_kernel_module_failed": [],
+  "build.installer_userspace_failed": [],
+  "build.kernel_gcc_unknown": [],
+  "build.kernel_module_build_failed": [],
+  "build.kernel_module_install_failed": [
+    "module"
+  ],
+  "build.kernel_module_missing": [
+    "module"
+  ],
+  "build.kernel_module_type_unsupported": [],
+  "build.mksquashfs_failed": [],
+  "build.modules_copy_failed": [],
+  "build.options_unreadable": [],
+  "build.release_write_failed": [],
+  "build.run_check_failed": [],
+  "build.unexpected": [
+    "line"
+  ],
+  "catalog.gpu.not_listed": [
+    "branch",
+    "gpu_name"
+  ],
+  "catalog.gpu.not_listed.from": [
+    "branch",
+    "gpu_name"
+  ],
+  "catalog.help": [],
+  "catalog.no_usable_version": [],
+  "catalog.no_usable_version.one": [],
+  "check.expected.refresh": [],
+  "check.expected.version": [
+    "target"
+  ],
+  "check.fail": [],
+  "check.item.refresh": [],
+  "check.item.version": [],
+  "check.observed.refresh_after_absent": [],
+  "check.observed.refresh_before_absent": [],
+  "check.observed.refresh_before_unmerged": [],
+  "check.observed.refresh_both": [
+    "after",
+    "before"
+  ],
+  "check.observed.refresh_unconfirmed": [
+    "after",
+    "before"
+  ],
+  "check.observed.status_unreadable": [],
+  "check.observed.version_both": [
+    "proc_version",
+    "smi_version"
+  ],
+  "check.observed.version_unreadable": [],
+  "check.pass": [],
+  "check.reason": [
+    "check_item",
+    "expected",
+    "observed"
+  ],
+  "code.BUILD_FAILED": [],
+  "code.BUILD_TIMEOUT": [],
+  "code.DOWNLOAD_FAILED": [],
+  "code.REPLACE_DEADLINE_EXCEEDED": [
+    "deadline",
+    "old"
+  ],
+  "code.REPLACE_DEADLINE_EXCEEDED.not_unloaded": [
+    "deadline",
+    "old"
+  ],
+  "code.REPLACE_DEADLINE_EXCEEDED.reload_failed": [
+    "deadline",
+    "reload_reason"
+  ],
+  "code.SAVE_ORIGINAL_FAILED": [
+    "save_reason"
+  ],
+  "code.WRITE_FAILED": [
+    "old",
+    "write_reason"
+  ],
+  "code.WRITE_FAILED.not_unloaded": [
+    "old",
+    "write_reason"
+  ],
+  "code.WRITE_FAILED.reload_failed": [
+    "reload_reason",
+    "write_reason"
+  ],
+  "code.explanation": [
+    "code"
+  ],
+  "confirm.back": [],
+  "confirm.community_patch": [],
+  "confirm.file_details": [],
+  "confirm.file_values": [
+    "checksum",
+    "fingerprint"
+  ],
+  "confirm.how.local": [],
+  "confirm.how.official": [],
+  "confirm.how.upload": [],
+  "confirm.kernel": [],
+  "confirm.original": [],
+  "confirm.original.ask": [],
+  "confirm.original.unsavable": [],
+  "confirm.save": [],
+  "confirm.skip": [],
+  "confirm.source": [],
+  "confirm.source.local": [
+    "checksum",
+    "source"
+  ],
+  "confirm.source.official": [],
+  "confirm.source.upload": [],
+  "confirm.start": [],
+  "confirm.truenas": [],
+  "confirm.upload_trust": [],
+  "confirm.version": [],
+  "credentials.reason.directory_unreadable": [],
+  "credentials.reason.field_invalid": [],
+  "credentials.reason.not_json": [],
+  "credentials.unreadable": [
+    "reason"
+  ],
+  "credentials.unreadable.file_unreadable": [],
+  "credentials.unsaved": [
+    "write_reason"
+  ],
+  "credentials.unsaved_reason.directory": [],
+  "credentials.unsaved_reason.file": [],
+  "delete.cancel_button": [],
+  "delete.canonical_unreadable": [],
+  "delete.confirm": [
+    "row",
+    "row_count"
+  ],
+  "delete.confirm.one": [
+    "row"
+  ],
+  "delete.confirm_button": [],
+  "delete.done": [
+    "row_count"
+  ],
+  "delete.done.one": [],
+  "delete.failed": [
+    "deleted_count",
+    "reason"
+  ],
+  "delete.refused.in_use": [
+    "source",
+    "version"
+  ],
+  "delete.refused.in_use.id_only": [
+    "version"
+  ],
+  "delete.refused.kept": [
+    "version"
+  ],
+  "delete.refused.unknown": [
+    "source",
+    "version"
+  ],
+  "delete.refused.unknown.id_only": [
+    "version"
+  ],
+  "delete.row_missing": [],
+  "delete.task_running": [],
+  "delete.task_state_unknown": [],
+  "dialog.close": [],
+  "dialog.confirm": [],
+  "dialog.precheck": [],
+  "download.checksum_mismatch": [
+    "file_name"
+  ],
+  "download.http_status": [
+    "file_name",
+    "status"
+  ],
+  "download.progress": [
+    "done",
+    "total"
+  ],
+  "download.request_failed": [
+    "file_name"
+  ],
+  "download.toolkit_entry_unexpected": [
+    "package"
+  ],
+  "download.toolkit_index_unreadable": [],
+  "download.toolkit_no_common_version": [],
+  "download.toolkit_too_old": [
+    "driver_version",
+    "toolkit_version"
+  ],
+  "drain.pending_job": [
+    "unit"
+  ],
+  "drain.state_scan_failed": [
+    "name"
+  ],
+  "drain.unexplained_unit_row": [
+    "row"
+  ],
+  "driver.kernel_mismatch": [
+    "current_kernel",
+    "target_kernel"
+  ],
+  "driver.kernel_mismatch.original": [
+    "current_kernel",
+    "target_kernel"
+  ],
+  "driver.kernel_mismatch.upload": [
+    "current_kernel",
+    "target_kernel"
+  ],
+  "drivers.col.actions": [],
+  "drivers.col.date": [],
+  "drivers.col.keep": [],
+  "drivers.col.kernel": [],
+  "drivers.col.size": [],
+  "drivers.col.source": [],
+  "drivers.col.status": [],
+  "drivers.col.version": [],
+  "drivers.delete_disabled_in_use": [],
+  "drivers.delete_disabled_kept": [],
+  "drivers.delete_row": [],
+  "drivers.delete_selected": [],
+  "drivers.empty": [],
+  "drivers.keep.off": [],
+  "drivers.keep.on": [],
+  "drivers.restore_row": [],
+  "drivers.row_unknown": [],
+  "drivers.select_all": [],
+  "drivers.select_row": [
+    "source",
+    "version"
+  ],
+  "drivers.size_value": [
+    "size"
+  ],
+  "drivers.sort": [
+    "column"
+  ],
+  "drivers.source.official": [],
+  "drivers.source.original": [],
+  "drivers.source.upload": [
+    "fingerprint"
+  ],
+  "drivers.status.available": [],
+  "drivers.status.in_use": [],
+  "drivers.status.kernel_mismatch": [],
+  "drivers.update_row": [],
+  "extension.missing": [],
+  "gpu.announce.stopped": [
+    "name"
+  ],
+  "gpu.badge.in_use": [],
+  "gpu.badge.requested": [],
+  "gpu.badge.requested.hint": [],
+  "gpu.badge.stopped": [],
+  "gpu.badge.unknown": [],
+  "gpu.badge.unknown.hint": [],
+  "gpu.cancel": [],
+  "gpu.empty": [],
+  "gpu.free": [],
+  "gpu.howto.docker": [],
+  "gpu.howto.incus": [],
+  "gpu.kind.docker": [],
+  "gpu.kind.incus": [],
+  "gpu.list.loading": [],
+  "gpu.popup.action": [],
+  "gpu.popup.action_task": [],
+  "gpu.popup.fallback": [],
+  "gpu.popup.recheck": [],
+  "gpu.popup.snapshot": [
+    "time"
+  ],
+  "gpu.popup.title": [],
+  "gpu.popup.title_unreadable": [],
+  "gpu.popup.waited": [],
+  "gpu.unreadable": [],
+  "gpu.unreadable.assumed_in_use": [],
+  "gpu.wait.headline": [],
+  "help.reset_account": [],
+  "home.active_task": [
+    "task_id"
+  ],
+  "home.active_task.unknown": [
+    "task_id"
+  ],
+  "home.canonical_checksum": [],
+  "home.canonical_version": [],
+  "home.gpus": [],
+  "home.gpus.basis": [],
+  "home.gpus.meta": [
+    "address",
+    "device"
+  ],
+  "home.gpus.none": [],
+  "home.gpus.passthrough": [],
+  "home.gpus.unknown": [],
+  "home.gpus.unlisted": [
+    "device"
+  ],
+  "home.interrupted": [
+    "discovered",
+    "phase",
+    "source",
+    "time",
+    "version"
+  ],
+  "home.interrupted.artifact": [],
+  "home.interrupted.basis": [],
+  "home.interrupted.details": [],
+  "home.interrupted.file_kept": [
+    "discovered",
+    "phase",
+    "source",
+    "time",
+    "version"
+  ],
+  "home.interrupted.file_written": [
+    "discovered",
+    "phase",
+    "source",
+    "time",
+    "version"
+  ],
+  "home.interrupted.modules": [
+    "discovered",
+    "phase",
+    "source",
+    "time",
+    "version"
+  ],
+  "home.interrupted.next": [],
+  "home.interrupted.phase_unknown": [
+    "discovered",
+    "source",
+    "time",
+    "version"
+  ],
+  "home.interrupted.task": [
+    "task_id"
+  ],
+  "home.interrupted.unload": [
+    "discovered",
+    "phase",
+    "source",
+    "time",
+    "version"
+  ],
+  "home.kernel": [],
+  "home.latest.none": [],
+  "home.latest.record": [
+    "source",
+    "status",
+    "time",
+    "version"
+  ],
+  "home.link": [],
+  "home.link.elsewhere": [
+    "link_target"
+  ],
+  "home.link.missing": [],
+  "home.link.ok": [],
+  "home.loaded_version": [],
+  "home.loaded_version.none": [],
+  "home.open_task": [],
+  "home.original": [],
+  "home.original.none": [],
+  "home.original.saved": [
+    "date",
+    "original"
+  ],
+  "home.truenas_version": [],
+  "host.readonly_leftover": [
+    "dataset",
+    "expected",
+    "reading"
+  ],
+  "host.rw_mount_leftover": [
+    "mount"
+  ],
+  "internal": [
+    "reason"
+  ],
+  "internal.request_failed": [],
+  "keep.not_original": [],
+  "keep.row_unreadable": [],
+  "keep.unsaved": [
+    "reason"
+  ],
+  "lang.control": [],
+  "lang.option.en": [],
+  "lang.option.zh": [],
+  "level.error": [],
+  "level.info": [],
+  "level.warning": [],
+  "link.new_tab": [],
+  "list.object": [
+    "name",
+    "type"
+  ],
+  "log.applications.entry": [
+    "name",
+    "type"
+  ],
+  "log.applications.none": [],
+  "log.applications.query_failed": [
+    "type"
+  ],
+  "log.artifact_check_failed": [
+    "build_reason"
+  ],
+  "log.artifact_checked": [
+    "target_kernel",
+    "version"
+  ],
+  "log.build_compiler": [
+    "compiler"
+  ],
+  "log.build_container": [
+    "container"
+  ],
+  "log.build_deadline_set": [
+    "minutes",
+    "time"
+  ],
+  "log.build_flag_unsupported": [
+    "flag"
+  ],
+  "log.build_install_mode": [
+    "install_mode"
+  ],
+  "log.build_kit_cache": [
+    "reason"
+  ],
+  "log.build_step": [
+    "build_step"
+  ],
+  "log.build_step.capture": [],
+  "log.build_step.check": [],
+  "log.build_step.community_patch": [],
+  "log.build_step.compiler": [],
+  "log.build_step.depmod": [],
+  "log.build_step.install": [],
+  "log.build_step.install_kernel_module": [],
+  "log.build_step.install_userspace": [],
+  "log.build_step.modules": [],
+  "log.build_step.package": [],
+  "log.build_step.probe": [],
+  "log.build_step.release": [],
+  "log.build_step.result": [],
+  "log.build_step.toolkit": [],
+  "log.build_timeout": [],
+  "log.canonical_written": [],
+  "log.check_item": [
+    "check_item",
+    "check_result",
+    "expected",
+    "observed"
+  ],
+  "log.cleanup": [],
+  "log.cleanup_failed": [
+    "cleanup_step",
+    "reason"
+  ],
+  "log.cleanup_step.delete_temp": [],
+  "log.cleanup_step.readonly": [],
+  "log.cleanup_step.remove_container": [],
+  "log.cleanup_step.state_tmp": [],
+  "log.cleanup_step.task_dir": [],
+  "log.cleanup_step.unmount": [],
+  "log.cmd": [
+    "command",
+    "exit",
+    "ms"
+  ],
+  "log.deadline_exceeded": [
+    "deadline"
+  ],
+  "log.deadline_ok": [
+    "seconds"
+  ],
+  "log.exit.code": [
+    "code"
+  ],
+  "log.exit.signal": [
+    "signal"
+  ],
+  "log.exit.spawn_failed": [],
+  "log.exit.timed_out": [],
+  "log.file_downloaded": [
+    "bytes",
+    "file_name"
+  ],
+  "log.finished": [
+    "status"
+  ],
+  "log.gpu_users": [
+    "applications"
+  ],
+  "log.install_mode.single": [],
+  "log.install_mode.two_pass": [],
+  "log.install_mode.userspace-make": [],
+  "log.loaded_version": [
+    "version"
+  ],
+  "log.loaded_version_none": [],
+  "log.loaded_version_unknown": [
+    "read_reason"
+  ],
+  "log.module_readings.entry": [
+    "dependents",
+    "module",
+    "refcount"
+  ],
+  "log.module_readings.none": [],
+  "log.module_reload_failed": [
+    "module",
+    "raw"
+  ],
+  "log.module_reloaded": [
+    "module"
+  ],
+  "log.module_unload_refused": [
+    "module",
+    "unload_reason"
+  ],
+  "log.module_unload_wait": [
+    "module",
+    "result",
+    "retries",
+    "waited_ms"
+  ],
+  "log.module_unloaded": [
+    "module"
+  ],
+  "log.occupancy": [
+    "module_readings",
+    "usage_result"
+  ],
+  "log.occupancy_wait": [
+    "result",
+    "waited_ms"
+  ],
+  "log.occupancy_wait.released": [],
+  "log.occupancy_wait.still_in_use": [],
+  "log.original_exists": [],
+  "log.original_saved": [
+    "checksum",
+    "target_kernel",
+    "version"
+  ],
+  "log.phase_enter": [
+    "phase"
+  ],
+  "log.readback": [
+    "readback_result"
+  ],
+  "log.readback.match": [],
+  "log.readback.mismatch": [],
+  "log.reading.off": [],
+  "log.reading.on": [],
+  "log.reading.unreadable": [],
+  "log.readonly_restored": [
+    "dataset",
+    "reading",
+    "value"
+  ],
+  "log.reload_target_default": [],
+  "log.restore_none": [
+    "reason"
+  ],
+  "log.restore_start": [
+    "date",
+    "original"
+  ],
+  "log.row_created": [
+    "source",
+    "version"
+  ],
+  "log.rw_mount_confirmed": [
+    "dataset",
+    "value"
+  ],
+  "log.since": [
+    "after",
+    "before"
+  ],
+  "log.since.none": [],
+  "log.temp_verified": [
+    "bytes",
+    "checksum"
+  ],
+  "log.toolkit_selected": [
+    "version"
+  ],
+  "log.unload_wait.other": [],
+  "log.unload_wait.refused": [],
+  "log.unload_wait.unloaded": [],
+  "log.unload_wait.unreadable": [],
+  "log.usage.busy": [],
+  "log.usage.not_in_use": [],
+  "log.usage.unreadable": [],
+  "log.write_stopped": [
+    "write_reason"
+  ],
+  "login.failed": [],
+  "login.fields_required": [],
+  "login.help.after_reinstall": [],
+  "login.help.forgot_password": [],
+  "login.help.hint": [],
+  "login.help.no_account": [],
+  "login.help.reset_location_unknown": [],
+  "login.help.reset_path": [],
+  "login.help.summary": [],
+  "login.intro": [],
+  "login.password": [],
+  "login.rate_limited": [
+    "seconds"
+  ],
+  "login.submit": [],
+  "login.username": [],
+  "logout.done": [],
+  "logout.unsaved": [],
+  "nav.change_password": [],
+  "nav.drivers": [],
+  "nav.home": [],
+  "nav.logout": [],
+  "nav.tasks": [],
+  "nav.tasks.active": [],
+  "nav.tasks.interrupted": [],
+  "nav.update": [],
+  "not_found": [],
+  "notice.gpu_in_use": [
+    "name",
+    "type"
+  ],
+  "notice.gpu_in_use.empty_note": [],
+  "notice.gpu_in_use.task": [
+    "name",
+    "type"
+  ],
+  "notice.gpu_in_use.task_unreadable": [
+    "name",
+    "read_reason",
+    "type"
+  ],
+  "notice.gpu_in_use.unreadable": [
+    "name",
+    "read_reason",
+    "type"
+  ],
+  "notice.no_restore": [
+    "check_reason",
+    "no_original_reason",
+    "target"
+  ],
+  "notice.restore_failed": [
+    "check_reason",
+    "original",
+    "restore_reason",
+    "target"
+  ],
+  "notice.restore_failed.before_write": [
+    "check_reason",
+    "original",
+    "restore_reason",
+    "target"
+  ],
+  "notice.restore_failed.before_write.not_unloaded": [
+    "check_reason",
+    "original",
+    "restore_reason",
+    "target"
+  ],
+  "notice.restore_failed.before_write.reload_failed": [
+    "check_reason",
+    "original",
+    "reload_reason",
+    "restore_reason",
+    "target"
+  ],
+  "notice.restore_failed.written": [
+    "check_reason",
+    "original",
+    "restore_reason",
+    "target"
+  ],
+  "notice.restore_failed.written.reload_failed": [
+    "check_reason",
+    "original",
+    "restore_reason",
+    "target"
+  ],
+  "notice.restore_stopped": [
+    "check_reason",
+    "current",
+    "name",
+    "original",
+    "target",
+    "type"
+  ],
+  "notice.restore_stopped.busy": [
+    "current",
+    "name",
+    "type"
+  ],
+  "notice.restore_stopped.busy.empty_list": [
+    "current"
+  ],
+  "notice.restore_stopped.empty_list": [
+    "check_reason",
+    "current",
+    "original",
+    "target"
+  ],
+  "notice.restore_stopped.unload_refused": [
+    "check_reason",
+    "current",
+    "module",
+    "original",
+    "target",
+    "unload_reason"
+  ],
+  "notice.restore_stopped.unload_refused.not_unloaded": [
+    "check_reason",
+    "current",
+    "module",
+    "original",
+    "target",
+    "unload_reason"
+  ],
+  "notice.restore_stopped.unload_refused.reload_failed": [
+    "check_reason",
+    "module",
+    "original",
+    "reload_reason",
+    "target",
+    "unload_reason"
+  ],
+  "notice.restore_stopped.unload_refused.waited": [
+    "check_reason",
+    "current",
+    "module",
+    "original",
+    "target",
+    "unload_reason"
+  ],
+  "notice.restore_stopped.unload_refused.waited.not_unloaded": [
+    "check_reason",
+    "current",
+    "module",
+    "original",
+    "target",
+    "unload_reason"
+  ],
+  "notice.restore_stopped.unload_refused.waited.reload_failed": [
+    "check_reason",
+    "module",
+    "original",
+    "reload_reason",
+    "target",
+    "unload_reason"
+  ],
+  "notice.restore_stopped.unreadable": [
+    "check_reason",
+    "name",
+    "original",
+    "read_reason",
+    "target",
+    "type"
+  ],
+  "notice.restore_stopped.unreadable.empty_list": [
+    "check_reason",
+    "original",
+    "read_reason",
+    "target"
+  ],
+  "notice.restored": [
+    "check_reason",
+    "date",
+    "original",
+    "target"
+  ],
+  "notice.unload_refused": [
+    "module",
+    "name",
+    "old",
+    "type",
+    "unload_reason"
+  ],
+  "notice.unload_refused.not_unloaded": [
+    "module",
+    "name",
+    "old",
+    "type",
+    "unload_reason"
+  ],
+  "notice.unload_refused.reload_failed": [
+    "module",
+    "name",
+    "reload_reason",
+    "type",
+    "unload_reason"
+  ],
+  "notice.unload_refused.waited": [
+    "module",
+    "name",
+    "old",
+    "type",
+    "unload_reason"
+  ],
+  "notice.unload_refused.waited.not_unloaded": [
+    "module",
+    "name",
+    "old",
+    "type",
+    "unload_reason"
+  ],
+  "notice.unload_refused.waited.reload_failed": [
+    "module",
+    "name",
+    "reload_reason",
+    "type",
+    "unload_reason"
+  ],
+  "notice.update_complete": [
+    "version"
+  ],
+  "notice.update_complete.reload_warning": [
+    "modules",
+    "version"
+  ],
+  "notice.version_changed": [
+    "name",
+    "new",
+    "old",
+    "type"
+  ],
+  "original.already_saved": [
+    "date",
+    "original"
+  ],
+  "original.skip_warning": [],
+  "page.login": [],
+  "page.task": [
+    "task_id"
+  ],
+  "password.changed": [],
+  "password.mismatch": [],
+  "password.new": [],
+  "password.repeat": [],
+  "password.rule.placeholder": [],
+  "password.rule.too_long": [],
+  "password.rule.too_short": [],
+  "password.rule.whitespace": [],
+  "password.section": [],
+  "password.submit": [],
+  "password.title_voluntary": [],
+  "phase.align_modules": [],
+  "phase.build": [],
+  "phase.check": [],
+  "phase.download": [],
+  "phase.read_loaded_version": [],
+  "phase.read_loaded_version_end": [],
+  "phase.refresh": [],
+  "phase.reload": [],
+  "phase.restore_align_modules": [],
+  "phase.restore_check": [],
+  "phase.restore_refresh": [],
+  "phase.restore_reload": [],
+  "phase.restore_unload": [],
+  "phase.restore_write": [],
+  "phase.save_original": [],
+  "phase.unload": [],
+  "phase.write": [],
+  "plan.button_invalid": [],
+  "plan.changed": [
+    "changed_items"
+  ],
+  "plan.changed.after_open": [
+    "changed_items"
+  ],
+  "plan.changed.item.gpus": [],
+  "plan.changed.item.kernel": [],
+  "plan.changed.item.original": [],
+  "plan.changed.item.source": [],
+  "plan.changed.item.truenas_version": [],
+  "plan.changed.item.version": [],
+  "plan.changed.one": [
+    "changed_items"
+  ],
+  "plan.source_invalid.branch_unbuildable": [
+    "branch",
+    "unbuildable_reason"
+  ],
+  "plan.source_invalid.branch_undecidable": [],
+  "plan.source_invalid.local_row_missing": [],
+  "plan.source_invalid.upload_group_gone": [],
+  "plan.source_invalid.upload_incomplete": [
+    "packages"
+  ],
+  "plan.source_invalid.upload_problem": [],
+  "plan.source_invalid.upload_version_not_candidate": [
+    "version"
+  ],
+  "plan.source_invalid.upload_version_required": [],
+  "plan.source_invalid.version_below_470": [],
+  "plan.source_invalid.version_format": [],
+  "plan.uncomputable": [
+    "item"
+  ],
+  "plan.upload_passed": [],
+  "plan.used": [],
+  "precheck.failed": [
+    "item"
+  ],
+  "precheck.item.host_not_restored": [
+    "reason"
+  ],
+  "precheck.item.link_elsewhere": [
+    "link_target"
+  ],
+  "precheck.item.local_checksum_mismatch": [],
+  "query.failed": [
+    "query_object",
+    "reason"
+  ],
+  "query.object.catalog": [],
+  "query.object.current_kernel": [],
+  "query.object.docker": [],
+  "query.object.extension_link": [],
+  "query.object.gpu_usage": [],
+  "query.object.gpus": [],
+  "query.object.host_task_unit": [],
+  "query.object.incus": [],
+  "query.object.kernel_headers": [],
+  "query.object.local_checksum": [],
+  "query.object.local_target_kernel": [],
+  "query.object.running_task": [],
+  "query.object.truenas_version": [],
+  "reason.connect_failed": [],
+  "reason.exit_status": [
+    "code"
+  ],
+  "reason.file_missing": [],
+  "reason.format_unrecognized": [],
+  "reason.http_status": [
+    "status"
+  ],
+  "reason.index_unrecognized": [],
+  "reason.io_error": [],
+  "reason.permission_denied": [],
+  "reason.record_unreadable": [],
+  "reason.signal": [
+    "signal"
+  ],
+  "reason.spawn_failed": [],
+  "reason.startup_check_failed": [],
+  "reason.timed_out": [
+    "seconds"
+  ],
+  "release.cleanup_failed": [],
+  "release.driver_mismatch": [],
+  "release.host_residue": [],
+  "release.lock_busy": [],
+  "release.no_later_success": [],
+  "release.not_terminal": [],
+  "release.record_unreadable": [],
+  "release.recovery_pending": [],
+  "release.state_unknown": [],
+  "release.task_running": [],
+  "release.write_failed": [],
+  "request.invalid": [],
+  "request.not_json": [],
+  "request.too_large": [],
+  "restore.fail.check": [
+    "restore_check_reason"
+  ],
+  "restore.fail.deadline": [
+    "deadline"
+  ],
+  "restore.fail.write": [
+    "write_reason"
+  ],
+  "restore.no_original": [
+    "no_original_reason"
+  ],
+  "restore.no_original.checksum_mismatch": [],
+  "restore.no_original.not_saved": [],
+  "restore.no_original.unreadable": [
+    "read_reason"
+  ],
+  "restore.two_failures": [
+    "check_reason",
+    "original",
+    "restore_reason"
+  ],
+  "save.canonical_unreadable": [],
+  "save.facts_unreadable": [],
+  "save.readback_mismatch": [],
+  "save.write_failed": [],
+  "setting.invalid": [
+    "requirement",
+    "variable"
+  ],
+  "setting.invalid_utf8": [
+    "variable"
+  ],
+  "setting.rule.build_timeout": [],
+  "setting.rule.port": [],
+  "setting.rule.username": [],
+  "setting.unknown": [
+    "variable"
+  ],
+  "setup.administrator": [],
+  "setup.blocked": [],
+  "setup.code": [],
+  "setup.code_help": [],
+  "setup.code_invalid": [],
+  "setup.code_renewed": [],
+  "setup.help.body": [],
+  "setup.help.summary": [],
+  "setup.intro": [],
+  "setup.not_available": [],
+  "setup.note": [],
+  "setup.password_hint": [],
+  "setup.repeat": [],
+  "setup.step.app": [],
+  "setup.step.copy": [],
+  "setup.step.logs": [],
+  "setup.submit": [],
+  "setup.title": [],
+  "ssh.challenge_busy": [],
+  "ssh.challenge_invalid": [],
+  "ssh.key_exists": [
+    "fingerprint"
+  ],
+  "ssh.key_invalid": [
+    "reason"
+  ],
+  "ssh.key_invalid.bad_format": [],
+  "ssh.key_invalid.unsupported_type": [
+    "algorithm"
+  ],
+  "ssh.key_invalid.weak_key": [],
+  "ssh.key_limit": [],
+  "ssh.key_not_found": [],
+  "ssh.key_not_registered": [],
+  "ssh.keys.add_submit": [],
+  "ssh.keys.add_title": [],
+  "ssh.keys.added": [
+    "fingerprint"
+  ],
+  "ssh.keys.comment": [],
+  "ssh.keys.delete": [],
+  "ssh.keys.delete_confirm": [],
+  "ssh.keys.delete_last": [],
+  "ssh.keys.deleted": [],
+  "ssh.keys.empty": [],
+  "ssh.keys.intro": [],
+  "ssh.keys.load_failed": [],
+  "ssh.keys.public_key": [],
+  "ssh.keys.sign_command": [
+    "challenge_placeholder"
+  ],
+  "ssh.keys.title": [],
+  "ssh.keys_unsaved": [
+    "write_reason"
+  ],
+  "ssh.login.challenge_label": [],
+  "ssh.login.command_agent": [],
+  "ssh.login.command_agent_multi": [],
+  "ssh.login.command_file": [],
+  "ssh.login.command_pick": [],
+  "ssh.login.copied": [],
+  "ssh.login.copy": [],
+  "ssh.login.expires": [],
+  "ssh.login.pick_file": [],
+  "ssh.login.refresh": [],
+  "ssh.login.signature_label": [],
+  "ssh.login.step_challenge": [],
+  "ssh.login.step_paste": [],
+  "ssh.login.step_sign": [],
+  "ssh.login.submit": [],
+  "ssh.login.summary": [],
+  "ssh.login_failed": [],
+  "ssh.private_refused": [],
+  "ssh.public_key_bad_format": [],
+  "ssh.signature_bad_format": [],
+  "startup.data_mapping": [
+    "mapping_reason"
+  ],
+  "startup.failed": [
+    "item"
+  ],
+  "startup.mapping.check_mismatch": [],
+  "startup.mapping.check_read_failed": [],
+  "startup.mapping.check_write_failed": [],
+  "startup.mapping.inspect_failed": [
+    "read_reason"
+  ],
+  "startup.mapping.inspect_failed.login": [],
+  "startup.mapping.mount_count": [
+    "mount_count"
+  ],
+  "startup.mapping.mount_under": [
+    "mount_point"
+  ],
+  "startup.mapping.no_hostname_line": [],
+  "startup.mapping.nsenter_failed": [],
+  "startup.mapping.path_characters": [],
+  "startup.pid_host": [],
+  "startup.runtime": [
+    "runtime"
+  ],
+  "state_read_error.reason.incomplete": [],
+  "state_read_error.reason.invalid": [],
+  "state_read_error.reason.io_error": [],
+  "state_read_error.reason.missing": [],
+  "state_read_error.reason.permission_denied": [],
+  "status.FAILED": [],
+  "status.INTERRUPTED": [],
+  "status.RUNNING": [],
+  "status.STOCK_RESTORED": [],
+  "status.SUCCEEDED": [],
+  "status.UNKNOWN": [],
+  "submit.exec_failed": [],
+  "submit.failed": [
+    "submit_reason"
+  ],
+  "submit.runner_copy_failed": [],
+  "submit.state_unwritable": [],
+  "submit.task_dir_failed": [],
+  "submit.unit_not_created": [
+    "code"
+  ],
+  "task.checks": [],
+  "task.details": [],
+  "task.error_code": [],
+  "task.error_reason": [
+    "reason"
+  ],
+  "task.gpus": [],
+  "task.gpus.none": [],
+  "task.gpus.not_read": [],
+  "task.gpus.unreadable": [
+    "reason"
+  ],
+  "task.latest_unknown": [],
+  "task.log": [],
+  "task.none": [],
+  "task.phase": [],
+  "task.raw_output": [],
+  "task.release.button": [],
+  "task.release.confirm_body": [],
+  "task.release.confirm_title": [],
+  "task.release.done": [
+    "task_id",
+    "time"
+  ],
+  "task.release.pending": [
+    "task_id",
+    "time"
+  ],
+  "task.state_file_kept": [
+    "file_name"
+  ],
+  "task.state_unreadable": [
+    "reason"
+  ],
+  "task.status": [],
+  "task.value.unavailable": [],
+  "task.waiting_gpu": [],
+  "task.waiting_gpu.align": [],
+  "task.waiting_gpu.restore": [],
+  "tasks.col.discovered": [],
+  "tasks.col.finished": [],
+  "tasks.col.id": [],
+  "tasks.col.phase": [],
+  "tasks.col.source": [],
+  "tasks.col.started": [],
+  "tasks.col.status": [],
+  "tasks.col.version": [],
+  "tasks.source.local": [
+    "source"
+  ],
+  "tasks.source.official": [],
+  "tasks.steps": [],
+  "tasks.time.basis": [],
+  "tasks.time.not_finished": [],
+  "tasks.time.not_interrupted": [],
+  "tasks.time.unavailable": [],
+  "theme.control": [],
+  "theme.option.focused-dark": [],
+  "theme.option.focused-light": [],
+  "theme.option.plate-dark": [],
+  "theme.option.plate-light": [],
+  "toolkit.below_floor": [
+    "toolkit_version"
+  ],
+  "update.button": [],
+  "update.catalog_label": [],
+  "update.disabled_no_version": [],
+  "update.disabled_setup": [],
+  "update.disabled_task_running_text": [],
+  "update.gpu_option": [
+    "gpu_name",
+    "pci_address"
+  ],
+  "update.gpu_select": [],
+  "upload.action_failed": [],
+  "upload.big_file": [],
+  "upload.busy": [],
+  "upload.cancel": [],
+  "upload.cancel.confirm": [],
+  "upload.cancel.confirm_action": [],
+  "upload.cancel.keep": [],
+  "upload.check_failed": [],
+  "upload.checking": [],
+  "upload.checklist": [],
+  "upload.choose": [],
+  "upload.complete": [
+    "toolkit",
+    "version"
+  ],
+  "upload.complete.manual": [
+    "toolkit",
+    "version"
+  ],
+  "upload.counter": [
+    "n"
+  ],
+  "upload.download.directory": [],
+  "upload.download.run": [],
+  "upload.download.toolkit": [
+    "version"
+  ],
+  "upload.drop": [],
+  "upload.entry.button": [],
+  "upload.entry.hint": [],
+  "upload.err.deb_not_amd64": [
+    "file_name"
+  ],
+  "upload.err.deb_not_needed": [
+    "file_name"
+  ],
+  "upload.err.deb_version_format": [
+    "file_name"
+  ],
+  "upload.err.interrupted": [
+    "file_name"
+  ],
+  "upload.err.run_not_installer": [
+    "file_name"
+  ],
+  "upload.err.run_not_linux64": [
+    "file_name"
+  ],
+  "upload.err.too_large": [
+    "file_name"
+  ],
+  "upload.err.toolkit_too_old": [
+    "pinned",
+    "version"
+  ],
+  "upload.err.unreadable": [
+    "file_name"
+  ],
+  "upload.err.version_mismatch": [
+    "others",
+    "package",
+    "version"
+  ],
+  "upload.err.write_failed": [
+    "file_name"
+  ],
+  "upload.extension": [],
+  "upload.file_ready": [
+    "file_name"
+  ],
+  "upload.files_label": [],
+  "upload.group.missing": [
+    "packages"
+  ],
+  "upload.group.run_missing": [],
+  "upload.group.toolkit_too_old": [
+    "driver_version",
+    "toolkit_version"
+  ],
+  "upload.group.versions_differ": [
+    "versions"
+  ],
+  "upload.group_replaced": [],
+  "upload.how.body": [],
+  "upload.how.nosig": [],
+  "upload.how.title": [],
+  "upload.interrupted": [
+    "file_name"
+  ],
+  "upload.lead": [],
+  "upload.loading": [],
+  "upload.official": [],
+  "upload.progress.bytes": [
+    "done",
+    "total"
+  ],
+  "upload.progress.label": [],
+  "upload.progress.overall": [
+    "file_name",
+    "n",
+    "total"
+  ],
+  "upload.read_failed": [],
+  "upload.read_retry": [],
+  "upload.reading": [],
+  "upload.receipt": [
+    "file_name",
+    "size"
+  ],
+  "upload.rejected": [
+    "file_name"
+  ],
+  "upload.rejected.deb_arch": [
+    "architecture",
+    "file_name"
+  ],
+  "upload.rejected.deb_fields_unreadable": [
+    "file_name"
+  ],
+  "upload.rejected.deb_package_unknown": [
+    "file_name",
+    "package"
+  ],
+  "upload.rejected.deb_version_format": [
+    "file_name",
+    "version"
+  ],
+  "upload.rejected.header_unreadable": [
+    "file_name"
+  ],
+  "upload.rejected.not_run_or_deb": [
+    "file_name"
+  ],
+  "upload.rejected.run_not_linux_x86_64": [
+    "file_name"
+  ],
+  "upload.rejected.run_not_shebang": [
+    "file_name"
+  ],
+  "upload.rejected.too_large": [
+    "file_name"
+  ],
+  "upload.rejected.write_failed": [],
+  "upload.replace": [],
+  "upload.restart": [],
+  "upload.run.label": [],
+  "upload.run.skip": [],
+  "upload.run.skip.body": [],
+  "upload.run.want": [],
+  "upload.run.why": [],
+  "upload.slot.problem": [],
+  "upload.slot.ready": [
+    "version"
+  ],
+  "upload.slot.uploading": [],
+  "upload.slot.waiting": [],
+  "upload.step.run": [],
+  "upload.step.toolkit": [],
+  "upload.title": [],
+  "upload.toolkit.fallback": [
+    "pinned"
+  ],
+  "upload.toolkit.lead": [
+    "pinned"
+  ],
+  "upload.unused": [
+    "n"
+  ],
+  "upload.unused.remove": [],
+  "upload.update": [],
+  "upload.version.choose": [],
+  "upload.version.enter": [],
+  "upload.version.invalid": [],
+  "upload.version.link_hint": [],
+  "upload.version.mismatch": [
+    "selected",
+    "version"
+  ],
+  "upload.version.placeholder": [],
+  "upload.version_label": [],
+  "upload.why.blocked": [],
+  "upload.why.busy": [],
+  "upload.why.gpu": [],
+  "upload.why.missing": [
+    "n"
+  ],
+  "upload.why.problem": [
+    "m",
+    "n"
+  ],
+  "upload.why.problem_only": [
+    "n"
+  ],
+  "upload.why.ready": [],
+  "upload.why.review": [],
+  "upload.why.version": [],
+  "write.dataset_unknown": [],
+  "write.readonly_unreadable": [],
+  "write.rename_failed": [],
+  "write.rw_mount_not_confirmed": [],
+  "write.source_unreadable": [],
+  "write.temp_failed": [],
+  "write.temp_mismatch": []
+}

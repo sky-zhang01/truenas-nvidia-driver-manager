@@ -48,6 +48,7 @@ export interface GpuReading {
   modules: Modules;
   last_branch?: number;
   first_branch?: number;
+  usable_from_branch?: number;
   too_new: string[];
   too_old: string[];
 }
@@ -189,6 +190,7 @@ export interface PrecheckFailure {
 }
 
 export interface GpuBlock {
+  checked_at?: number;
   state: "busy" | "unreadable";
 
   read_reason?: ReasonField;
@@ -197,8 +199,18 @@ export interface GpuBlock {
 }
 
 export interface ObjectEntry {
+  id?: string;
   name: string;
   type: "docker" | "incus";
+  usage?: "in_use" | "requested" | "unknown";
+}
+
+export interface GpuSnapshot {
+  checked_at?: number;
+  state: "busy" | "idle" | "unreadable";
+  users: ObjectEntry[];
+  errors: CategoryError[];
+  read_reason?: ReasonField;
 }
 
 export interface CategoryError {
@@ -325,7 +337,7 @@ export interface TaskDetail {
   checks: CheckRecord[];
   restore: RestoreRecord | null;
   error: TaskError | null;
-  gpu_users: { users: ObjectEntry[]; errors: CategoryError[] } | null;
+  gpu_users: { checked_at?: number; users: ObjectEntry[]; errors: CategoryError[] } | null;
   nvidia_smi_gpus?: Reading<{ name: string; pci_address: string }[]> | null;
   version_change: boolean;
   /** Present only while this running task has been waiting for the GPU for about three seconds. */
@@ -581,6 +593,10 @@ export function getHome(): Promise<HomeResponse> {
   return apiFetch<HomeResponse>("/api/home");
 }
 
+export function getGpuUsers(): Promise<GpuSnapshot> {
+  return apiFetch<GpuSnapshot>("/api/gpu-users");
+}
+
 export function getVersions(): Promise<VersionsResponse> {
   return apiFetch<VersionsResponse>("/api/versions");
 }
@@ -591,6 +607,18 @@ export function openUploadGroup(): Promise<{ group_id: string }> {
 
 export function getCurrentUpload(): Promise<GroupSummary | null> {
   return apiFetch<GroupSummary | null>("/api/uploads/current");
+}
+
+export function getUploadToolkitVersion(): Promise<{ version: string; fallback: boolean }> {
+  return apiFetch("/api/uploads/toolkit-version");
+}
+
+export function recoverUploadPlan(): Promise<Record<string, never>> {
+  return apiFetch("/api/uploads/current/cancel-plan", jsonInit("POST", {}));
+}
+
+export function cancelPlan(id: string): Promise<Record<string, never>> {
+  return apiFetch(`/api/plans/${encodeURIComponent(id)}/cancel`, jsonInit("POST", {}));
 }
 
 export function putUploadFile(
@@ -612,6 +640,9 @@ export function putUploadFile(
     xhr.upload.addEventListener("progress", (ev) => {
       if (onProgress && ev.lengthComputable) onProgress(ev.loaded, ev.total);
     });
+    // Tiny files may have no intermediate progress event. Sending is complete,
+    // but the server may still be inspecting the file before answering.
+    xhr.upload.addEventListener("load", () => onProgress?.(file.size, file.size));
     xhr.addEventListener("error", () => {
       reject(new ApiError(0, "upload.interrupted", { file_name: clientName }, undefined, null));
     });
@@ -637,8 +668,8 @@ export function putUploadFile(
   });
 }
 
-export function postPlan(source: PlanSource): Promise<PlanResponse> {
-  return apiFetch<PlanResponse>("/api/plans", jsonInit("POST", { source }));
+export function postPlan(source: PlanSource, signal?: AbortSignal): Promise<PlanResponse> {
+  return apiFetch<PlanResponse>("/api/plans", { ...jsonInit("POST", { source }), ...(signal ? { signal } : {}) });
 }
 
 export function postTask(

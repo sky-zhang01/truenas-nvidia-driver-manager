@@ -87,7 +87,7 @@ fn emit(level: &str, event: Event, fields: &[(&str, serde_json::Value)]) {
     }
 }
 
-/// Escape every non-ASCII character as \uXXXX so the line stays ASCII JSON.
+/// Escape non-ASCII text as UTF-16 code units so each log line stays ASCII JSON.
 fn ascii_json(text: &str) -> String {
     if text.is_ascii() {
         return text.to_string();
@@ -154,6 +154,21 @@ mod tests {
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn io_reason_preserves_generic_timeout_mapping() {
+        for (kind, expected) in [
+            (std::io::ErrorKind::NotFound, REASON_FILE_MISSING),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                REASON_PERMISSION_DENIED,
+            ),
+            (std::io::ErrorKind::TimedOut, REASON_IO_ERROR),
+            (std::io::ErrorKind::Other, REASON_IO_ERROR),
+        ] {
+            assert_eq!(io_reason_key(&std::io::Error::from(kind)), expected);
         }
     }
 

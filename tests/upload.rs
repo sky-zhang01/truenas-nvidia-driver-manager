@@ -410,6 +410,15 @@ async fn toolkit_floors_apply_to_upload_summaries_and_plans() {
         } else {
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["result"], "ready");
+            let id = body["plan_id"].as_str().unwrap();
+            let (status, _) = post(
+                &app,
+                &format!("/api/plans/{id}/cancel"),
+                json!({}),
+                Some(&cookie),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
         }
     }
 }
@@ -486,7 +495,13 @@ async fn changing_the_uploaded_file_after_the_confirm_is_rejected() {
         replacement.as_bytes(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "upload.busy");
+    // Host-side modification bypasses HTTP locking; submission must still hash the actual bytes.
+    app.host.put_file(
+        &format!("/var/lib/nvm/manager/upload/{group}/driver.run"),
+        replacement.as_bytes(),
+    );
     let (status, body) = post_task(&app, &cookie, &plan_id, "skip").await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"], "plan.changed");
@@ -1010,4 +1025,447 @@ async fn a_queued_upload_open_does_nothing_after_logout() {
     assert_eq!(body["error"], "auth.required");
     assert!(app.ctx.upload.current().is_none());
     assert!(app.host.children("/var/lib/nvm/manager/upload").is_empty());
+}
+
+#[tokio::test]
+async fn confirmed_upload_is_locked_until_cancel_and_can_be_planned_again() {
+    let (app, cookie) = setup().await;
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.178.04").await;
+    let source = json!({"kind": "upload", "group_id": group, "version": "580.178.04", "gpus": []});
+    let (status, body) = post_plan(&app, &cookie, source.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["plan_id"].as_str().unwrap();
+    assert!(app.host.exists(
+        app.ctx
+            .paths
+            .upload_group(&group)
+            .join("driver.run")
+            .to_str()
+            .unwrap()
+    ));
+    let (status, _) = post(&app, "/api/uploads", json!({}), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = upload(&app, &cookie, &group, "replacement.run", RUN_BODY).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = post(
+        &app,
+        &format!("/api/plans/{id}/cancel"),
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = upload(&app, &cookie, &group, "replacement.run", RUN_BODY).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post_plan(&app, &cookie, source).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+fn packages_index(versions: &[(&str, usize)]) -> String {
+    let mut index = String::new();
+    for (version, count) in versions {
+        for name in TOOLKIT_PACKAGES.iter().take(*count) {
+            index.push_str(&format!("Package: {name}\nArchitecture: amd64\nVersion: {version}\nFilename: ./{name}_{version}_amd64.deb\nSize: 8\nSHA256: {}\n\n", "a".repeat(64)));
+        }
+    }
+    index
+}
+
+#[tokio::test]
+async fn toolkit_download_version_uses_the_newest_complete_official_version() {
+    let (app, cookie) = setup().await;
+    app.host.set_curl(
+        TOOLKIT_INDEX_URL,
+        200,
+        packages_index(&[("1.21.0-1", 4), ("1.22.0-1", 3)]).as_bytes(),
+    );
+    let (status, body) = get(&app, "/api/uploads/toolkit-version", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"version": "1.21.0-1", "fallback": false}));
+}
+
+#[tokio::test]
+async fn toolkit_download_version_falls_back_when_index_cannot_be_validated() {
+    let (app, cookie) = setup().await;
+    for (status, index) in [
+        (503, String::new()),
+        (200, "unreadable".to_string()),
+        (302, packages_index(&[("1.22.0-1", 4)])),
+    ] {
+        app.host
+            .set_curl(TOOLKIT_INDEX_URL, status, index.as_bytes());
+        let (status, body) = get(&app, "/api/uploads/toolkit-version", Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body, json!({"version": "1.20.1-1", "fallback": true}));
+    }
+}
+
+#[test]
+fn restart_restores_a_group_without_a_stale_confirmation_lock() {
+    use truenas_nvidia_driver_manager::upload::UploadState;
+    let group = "a".repeat(32);
+    let state = UploadState::with_current(Some(group.clone()));
+    assert_eq!(state.current(), Some(group));
+    assert!(!state.receiving());
+}
+
+#[tokio::test]
+async fn reopening_upload_recovers_an_abandoned_confirmation_without_losing_files() {
+    let (app, cookie) = setup().await;
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.178.04").await;
+    let source = json!({"kind": "upload", "group_id": group, "version": "580.178.04", "gpus": []});
+    let (status, plan) = post_plan(&app, &cookie, source.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    // A new browser dialog no longer knows the abandoned plan id.
+    let (status, _) = post(
+        &app,
+        "/api/uploads/current/cancel-plan",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, summary) = get(&app, "/api/uploads/current", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summary["group_id"], group);
+    assert!(summary["missing"].as_array().unwrap().is_empty());
+    let (status, body) = post_task(&app, &cookie, &plan["plan_id"], "skip").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "plan.used");
+    let (status, next) = post_plan(&app, &cookie, source).await;
+    assert_eq!(status, StatusCode::OK, "{next}");
+    // An old dialog returning later must never unlock the newly confirmed bytes.
+    let old_id = plan["plan_id"].as_str().unwrap();
+    let (status, _) = post(
+        &app,
+        &format!("/api/plans/{old_id}/cancel"),
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = upload(&app, &cookie, &group, "replacement.run", RUN_BODY).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn recovery_without_auth_cannot_unlock_a_confirmation() {
+    let (app, cookie) = setup().await;
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.178.04").await;
+    let (status, plan) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind": "upload", "group_id": group, "version": "580.178.04", "gpus": []}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    let (status, _) = post(&app, "/api/uploads/current/cancel-plan", json!({}), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = upload(&app, &cookie, &group, "replacement.run", RUN_BODY).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn restart_recovers_the_original_group_json_and_all_five_files_unlocked() {
+    use std::sync::Arc;
+    use truenas_nvidia_driver_manager::upload::{self, UploadState};
+    let (app, cookie) = setup().await;
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.178.04").await;
+    let group_path = app.ctx.paths.upload_group(&group);
+    let old_record = app
+        .host
+        .file(group_path.join("group.json").to_str().unwrap())
+        .unwrap();
+    let original_hash = upload::hash_run(&app.host, &app.ctx.paths, &group).unwrap();
+    let (status, body) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind": "upload", "group_id": group, "version": "580.178.04", "gpus": []}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        app.host
+            .file(group_path.join("group.json").to_str().unwrap()),
+        Some(old_record)
+    );
+    // Startup reconstructs only this process-local state; the on-disk format is unchanged.
+    let recovered = Arc::new(UploadState::with_current(upload::staged_group(
+        &app.host,
+        &app.ctx.paths,
+    )));
+    assert_eq!(recovered.current().as_deref(), Some(group.as_str()));
+    let summary = upload::summary(&app.host, &app.ctx.paths, &group);
+    assert!(summary.missing.is_empty());
+    assert_eq!(
+        upload::hash_debs(&app.host, &app.ctx.paths, &group)
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        upload::hash_run(&app.host, &app.ctx.paths, &group).unwrap(),
+        original_hash
+    );
+    // Real replacement uses the reconstructed state, proving that no stale lock survived.
+    let result = upload::receive(
+        Arc::new(app.host.clone()),
+        app.ctx.paths.clone(),
+        app.ctx.startup.host_data_dir.clone(),
+        group,
+        "after-restart.run".into(),
+        Some(RUN_BODY.len() as u64),
+        axum::body::Body::from(RUN_BODY),
+        recovered,
+        &tokio::sync::Mutex::new(()),
+        || true,
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[tokio::test]
+async fn toolkit_index_download_uses_the_confirmed_host_data_mapping() {
+    let (app, cookie) = setup().await;
+    app.host.set_curl(
+        TOOLKIT_INDEX_URL,
+        200,
+        packages_index(&[("1.21.0-1", 4)]).as_bytes(),
+    );
+    let (status, body) = get(&app, "/api/uploads/toolkit-version", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], "1.21.0-1");
+    assert_eq!(body["fallback"], false);
+    let commands = app.host.commands();
+    let command = commands.iter().find(|cmd| cmd.program == "curl").unwrap();
+    for flag in ["--output", "--dump-header"] {
+        let path = command
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == flag)
+            .unwrap()[1]
+            .to_string();
+        assert!(
+            path.starts_with(&format!("{HOST_DATA_DIR}/manager/.toolkit-index-")),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_receive_in_progress_cannot_create_a_confirmation_lock() {
+    let (app, cookie) = setup().await;
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.178.04").await;
+    app.ctx.upload.inner.lock().unwrap().receiving = true;
+    let source = json!({"kind": "upload", "group_id": group, "version": "580.178.04", "gpus": []});
+    let (status, body) = post_plan(&app, &cookie, source.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "upload.busy");
+    assert!(app.ctx.plan.lock().unwrap().0.is_none());
+    assert!(!app.ctx.upload.inner.lock().unwrap().locked);
+    app.ctx.upload.inner.lock().unwrap().receiving = false;
+    let (status, body) = post_plan(&app, &cookie, source).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"], "ready");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reading_upload_fields_keeps_confirmation_and_group_replacement_busy() {
+    let (app, cookie) = setup().await;
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.178.04").await;
+    let source = json!({"kind": "upload", "group_id": group, "version": "580.178.04", "gpus": []});
+    let gate = app.host.set_gate_output(
+        "dpkg-deb",
+        &["--field"],
+        FakeOutput::stdout(
+            "Package: libnvidia-container1\nVersion: 1.20.1-1\nArchitecture: amd64\n",
+        ),
+    );
+    let _release = ReleaseGate(gate.clone());
+    let pending = {
+        let (app, cookie, group) = (app.clone(), cookie.clone(), group.clone());
+        tokio::spawn(async move {
+            upload(&app, &cookie, &group, "replacement.deb", b"replacement deb").await
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !gate.blocked() {
+            assert!(
+                !pending.is_finished(),
+                "upload never reached the field read"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("upload did not reach the field read");
+
+    let (status, body) = post_plan(&app, &cookie, source.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "upload.busy");
+    assert!(app.ctx.upload.receiving());
+    assert!(app.ctx.plan.lock().unwrap().0.is_none());
+    assert!(!app.ctx.upload.inner.lock().unwrap().locked);
+    let (status, body) = post(&app, "/api/uploads", json!({}), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "upload.busy");
+    assert_eq!(app.ctx.upload.current().as_deref(), Some(group.as_str()));
+
+    gate.release();
+    let (status, body) = pending.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!app.ctx.upload.receiving());
+    let (status, body) = post_plan(&app, &cookie, source).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admitted_upload_cannot_replace_files_locked_before_commit() {
+    use truenas_nvidia_driver_manager::upload;
+
+    let (app, cookie) = setup().await;
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.178.04").await;
+    let group_path = app.ctx.paths.upload_group(&group);
+    let run_before = app
+        .host
+        .file(group_path.join("driver.run").to_str().unwrap());
+    let record_before = app
+        .host
+        .file(group_path.join("group.json").to_str().unwrap());
+    let run_hash_before = upload::hash_run(&app.host, &app.ctx.paths, &group).unwrap();
+    let deb_hashes_before = upload::hash_debs(&app.host, &app.ctx.paths, &group).unwrap();
+    let (status, plan) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind": "upload", "group_id": group, "version": "580.178.04", "gpus": []}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    // Admit the request before restoring the real plan's lock at the read barrier.
+    // This isolates the commit check from both the entry check and receiving lifetime.
+    {
+        let _lock = app.ctx.process_lock.lock().await;
+        app.ctx.upload.lock_group(None);
+    }
+    let gate = app.host.set_gate_output(
+        "dpkg-deb",
+        &["--field"],
+        FakeOutput::stdout(
+            "Package: libnvidia-container1\nVersion: 1.20.1-1\nArchitecture: amd64\n",
+        ),
+    );
+    let _release = ReleaseGate(gate.clone());
+    let pending = {
+        let (app, cookie, group) = (app.clone(), cookie.clone(), group.clone());
+        tokio::spawn(async move {
+            upload(&app, &cookie, &group, "replacement.deb", b"replacement deb").await
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !gate.blocked() {
+            assert!(
+                !pending.is_finished(),
+                "upload never reached the field read"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("upload did not reach the field read");
+    assert!(app
+        .host
+        .children(group_path.to_str().unwrap())
+        .iter()
+        .any(|name| name.starts_with(".incoming-")));
+    {
+        let _lock = app.ctx.process_lock.lock().await;
+        app.ctx.upload.lock_group(Some(&group));
+    }
+    gate.release();
+    let (status, body) = pending.await.unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "upload.busy");
+    assert!(!app.ctx.upload.receiving());
+    assert_eq!(body["params"]["file_name"], "replacement.deb");
+    assert_eq!(body["params"]["kind"], "deb");
+    assert_eq!(body["params"]["package"], "libnvidia-container1");
+    assert_eq!(app.ctx.upload.current().as_deref(), Some(group.as_str()));
+    assert!(app.ctx.upload.inner.lock().unwrap().locked);
+    assert_eq!(
+        app.host
+            .file(group_path.join("driver.run").to_str().unwrap()),
+        run_before
+    );
+    assert_eq!(
+        app.host
+            .file(group_path.join("group.json").to_str().unwrap()),
+        record_before
+    );
+    assert_eq!(
+        upload::hash_run(&app.host, &app.ctx.paths, &group).unwrap(),
+        run_hash_before
+    );
+    assert_eq!(
+        upload::hash_debs(&app.host, &app.ctx.paths, &group).unwrap(),
+        deb_hashes_before
+    );
+    assert!(!app
+        .host
+        .children(group_path.to_str().unwrap())
+        .iter()
+        .any(|name| name.starts_with(".incoming-")));
+
+    let (status, body) = post_task(&app, &cookie, &plan["plan_id"], "skip").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let task_id = body["task_id"].as_str().unwrap();
+    assert_eq!(
+        app.host.file(
+            app.ctx
+                .paths
+                .task_dir(task_id)
+                .join("in/driver.run")
+                .to_str()
+                .unwrap()
+        ),
+        run_before
+    );
+    assert_eq!(app.host.count("systemd-run"), 1);
+}
+
+#[tokio::test]
+async fn an_old_580_open_upload_still_reaches_isolated_build_submission() {
+    let (app, cookie) = setup().await;
+    prime_kernel_headers(&app.host, KERNEL);
+    app.host.add_gpu("0000:01:00.0", 0x1e37, Some("nvidia"));
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "580.119.02").await;
+    let (status, plan) = post_plan(
+        &app,
+        &cookie,
+        json!({
+            "kind": "upload", "group_id": group, "version": "580.119.02", "gpus": ["0000:01:00.0"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    assert_eq!(plan["result"], "ready");
+    let (status, task) = post_task(&app, &cookie, &plan["plan_id"], "skip").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{task}");
+    let id = task["task_id"].as_str().unwrap();
+    let state: serde_json::Value = serde_json::from_slice(
+        &app.host
+            .file(&format!("/var/lib/nvm/manager/state/{id}.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(state["plan"]["kernel_module_type"], "open");
+    assert_eq!(state["plan"]["source"]["kind"], "upload");
+    assert_eq!(app.host.count("systemd-run"), 1);
 }

@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Locator, type Page } from "./local-test.js";
 import { BASE, setScenario, signIn } from "./helpers.js";
 
 const CLOSED_OPTIONS = ["580.178.04", "575.64.05", "570.211.01", "565.77", "550.163.01", "470.256.02"];
@@ -23,8 +23,7 @@ async function openUpdate(page: Page, request: APIRequestContext, scenario: stri
 
 const NAV_HOME = ".app-nav a[href='#/home']";
 const CHECK = /^Check and continue$|^检查并继续$/;
-const UPLOAD = /^Upload$|^上传$/;
-const OPEN_UPLOAD = /Upload \.run|上传 \.run/;
+const OPEN_UPLOAD = /Upload files manually…|手动上传文件…/;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,6 +52,7 @@ async function openUploadDialog(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: OPEN_UPLOAD }).click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   return dialog;
 }
 
@@ -113,12 +113,12 @@ test("two counted GPUs show a checkbox group and an empty list until one is pick
   await expect(page.locator(".gpu-notes .notice")).toHaveCount(2);
   await group.locator("input[type=checkbox]").nth(0).uncheck();
   expect(await options(page)).toEqual(OPEN_OPTIONS);
-  await expect(page.locator(".gpu-notes")).toContainText(/starting with the 570 driver|从 570 驱动起才支持/);
+  await expect(page.locator(".gpu-notes")).toContainText(/is supported from driver 580|从 580 驱动起支持/);
 });
 
 test("the upload dialog shares the GPU choice and blocks the conflict", async ({ page, request }) => {
   await openUpdate(page, request, "mixed_1b80_2b85");
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
   const boxes = dialog.locator("fieldset.gpu-select input[type=checkbox]");
@@ -127,8 +127,10 @@ test("the upload dialog shares the GPU choice and blocks the conflict", async ({
   await boxes.nth(1).check();
   await expect(dialog.locator(".conclusion")).toContainText(/No version can drive|没有能驱动所选显卡的版本/);
   const uploadUpdate = dialog.getByRole("button", { name: /^Check and continue$|^检查并继续$/ });
-  await expect(uploadUpdate).toBeDisabled();
-  await expect(uploadUpdate).toHaveAttribute("aria-describedby", "upload-conclusion");
+  await expect(uploadUpdate).toHaveAttribute("aria-disabled", "true");
+  await uploadUpdate.focus();
+  await expect(uploadUpdate).toBeFocused();
+  await expect(uploadUpdate).toHaveAttribute("aria-describedby", "upload-continue-reason");
 });
 
 test("a device outside the table is named by its device id", async ({ page, request }) => {
@@ -142,9 +144,9 @@ test("a device outside the table is named by its device id", async ({ page, requ
   await group.locator("input[type=checkbox]").nth(1).check();
   expect(await options(page)).toEqual(CLOSED_OPTIONS.slice(0, -1));
   await group.locator("input[type=checkbox]").nth(0).uncheck();
-  expect(await options(page)).toEqual([...OPEN_OPTIONS, "550.163.01"]);
+  expect(await options(page)).toEqual(OPEN_OPTIONS);
   await expect(page.locator(".gpu-notes .notice")).toHaveCount(1);
-  await expect(page.locator(".gpu-notes")).toContainText("520");
+  await expect(page.locator(".gpu-notes")).toContainText("580");
 });
 
 test("a GPU bound to vfio-pci is not counted", async ({ page, request }) => {
@@ -152,7 +154,7 @@ test("a GPU bound to vfio-pci is not counted", async ({ page, request }) => {
   await expect(page.locator("fieldset.gpu-select")).toHaveCount(0);
   expect(await options(page)).toEqual(OPEN_OPTIONS);
   await expect(page.locator(".gpu-notes .notice")).toHaveCount(1);
-  await expect(page.locator(".gpu-notes")).toContainText(/starting with the 570 driver|从 570 驱动起才支持/);
+  await expect(page.locator(".gpu-notes")).toContainText(/is supported from driver 580|从 580 驱动起支持/);
 });
 
 test("no counted GPU lists all ten candidates, including 470 and the open exclusions", async ({ page, request }) => {
@@ -188,22 +190,23 @@ test("kernel 6.12.96 with a Blackwell GPU drops the earlier branches", async ({ 
   expect(list).not.toContain("550.163.01");
   expect(list.length).toBeGreaterThan(5);
   await expect(page.locator(".gpu-notes")).toContainText(
-    /is supported starting with the 570 driver|从 570 驱动起才支持/,
+    /is supported from driver 570|从 570 驱动起支持/,
   );
 });
 
 test("the update link next to the list points at the NVIDIA website", async ({ page, request }) => {
   await openUpdate(page, request, "pascal");
-  // upload help next to the upload button carries the same address, with different words; the list's
-  // own link is the one with the link text.
+  // The single NVIDIA website link sits beside the action buttons and opens a new tab.
   const link = page
     .locator("a[href='https://www.nvidia.com/en-us/drivers/unix/#linux64']")
-    .filter({ hasText: /NVIDIA website link|NVIDIA 官网链接/ });
+    .filter({ hasText: /NVIDIA website|NVIDIA 官网/ });
   await expect(link).toHaveCount(1);
-  await expect(link).toHaveText(/NVIDIA website link|NVIDIA 官网链接/);
+  await expect(link).toHaveText(/NVIDIA website|NVIDIA 官网/);
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noopener noreferrer");
 });
 
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -244,7 +247,7 @@ for (const [scenario, version, moduleType, gpus] of [
     await page.getByRole("button", { name: /^Check and continue$|^检查并继续$/ }).click();
     const confirm = page.locator("dialog[open]");
     await expect(confirm).toContainText(version);
-    await confirm.getByRole("button", { name: /Save original and start|保存原版并开始/ }).click();
+    await confirm.getByRole("button", { name: /Save original driver and start|保存原版驱动并开始/ }).click();
     await expect(page.locator("dialog[open]")).toHaveCount(0);
     await expect(page).toHaveURL(/#\/tasks\//);
     await expect(page.locator(".task-state")).toBeFocused();
@@ -266,7 +269,7 @@ test("a file over 1 GiB is refused before any upload request", async ({ page, re
   page.on("request", (req) => {
     if (req.method() === "PUT" && req.url().includes("/api/uploads/")) puts.push(req.url());
   });
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
   const dir = mkdtempSync(join(tmpdir(), "nvm-e2e-"));
@@ -274,9 +277,10 @@ test("a file over 1 GiB is refused before any upload request", async ({ page, re
   writeFileSync(big, "");
   truncateSync(big, 1024 ** 3 + 1);
   try {
+    await expect(dialog.locator("#upload-files")).toBeEnabled();
     await dialog.locator("#upload-files").setInputFiles(big);
-    await dialog.getByRole("button", { name: /^Upload$|^上传$/ }).click();
-    await expect(dialog.locator(".dialog-error")).toContainText("exceeds the 1 GiB limit");
+
+    await expect(dialog.locator(".upload-slot-error, .upload-unused")).toContainText("exceeds the 1 GiB limit");
     expect(puts).toEqual([]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -285,40 +289,41 @@ test("a file over 1 GiB is refused before any upload request", async ({ page, re
 
 test("a .run without Linux-x86_64 is rejected with its own message", async ({ page, request }) => {
   await openUpdate(page, request, "fresh");
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
   // A 10 MB file whose header is not a Linux x86_64 installer.
   const body = Buffer.alloc(10 * 1024 * 1024, 0x41);
   body.write("#!/bin/sh\nlabel=\"something 580.178.04\"\n");
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles({
     name: "bad-header.run",
     mimeType: "application/octet-stream",
     buffer: body,
   });
-  await dialog.getByRole("button", { name: /^Upload$|^上传$/ }).click();
-  await expect(dialog.locator(".dialog-error")).toContainText("does not contain");
-  await expect(dialog.locator(".dialog-error")).toContainText("Linux-x86_64");
+
+  await expect(dialog.locator("#upload-slot-run")).toContainText("not a Linux x86_64 driver");
+  await expect(dialog.locator("#upload-slot-run")).toContainText("Linux 64-bit");
 });
 
 test("a toolkit below the security floor is shown in the dialog", async ({ page, request }) => {
   await openUpdate(page, request, "upload_below_floor");
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   const dialog = page.locator("dialog[open]");
-  await expect(dialog.locator(".upload-summary")).toContainText("below the security baseline");
+  await expect(dialog.locator(".upload-summary")).toContainText("too old");
   await expect(dialog.locator(".upload-summary")).toContainText("1.19.0");
 });
 
 test("several candidates are radios and none takes a manual version", async ({ page, request }) => {
   await openUpdate(page, request, "upload_multi");
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   let dialog = page.locator("dialog[open]");
   await expect(dialog.locator("input[name='upload-version']")).toHaveCount(2);
   await expect(dialog.locator("#upload-version-input")).toHaveCount(0);
-  await dialog.getByRole("button", { name: /Close|关闭/ }).click();
+  await dialog.locator(".upload-footer").getByRole("button", { name: /Close|关闭/ }).click();
 
   await openUpdate(page, request, "upload_manual");
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   dialog = page.locator("dialog[open]");
   const input = dialog.locator("#upload-version-input");
   await expect(input).toBeVisible();
@@ -326,10 +331,10 @@ test("several candidates are radios and none takes a manual version", async ({ p
   await expect(dialog.locator("#upload-version-invalid")).toContainText(
     "two to four groups of digits",
   );
-  await expect(dialog.getByRole("button", { name: /^Check and continue$|^检查并继续$/ })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: /^Check and continue$|^检查并继续$/ })).toHaveAttribute("aria-disabled", "true");
   await input.fill("580.178.04");
   await expect(dialog.locator("#upload-version-invalid")).toHaveText("");
-  await expect(dialog.getByRole("button", { name: /^Check and continue$|^检查并继续$/ })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: /^Check and continue$|^检查并继续$/ })).toHaveAttribute("aria-disabled", "false");
 });
 
 test("back and cancel leave the dialog without a submit", async ({ page, request }) => {
@@ -345,11 +350,11 @@ test("back and cancel leave the dialog without a submit", async ({ page, request
   // reading its buttons.
   await expect(confirm).toBeVisible();
   await expect(confirm.locator("#confirm-how")).toContainText(
-    /downloads the installer from the NVIDIA website|从 NVIDIA 官网下载安装包/,
+    /Downloads the installer from the NVIDIA website|从 NVIDIA 官网下载安装包/,
   );
 
-  await expect(confirm.getByRole("button", { name: /Save original and start|保存原版并开始/ })).toBeVisible();
-  await expect(confirm.getByRole("button", { name: /Start without saving|不保存，直接开始/ })).toBeVisible();
+  await expect(confirm.getByRole("button", { name: /Save original driver and start|保存原版驱动并开始/ })).toBeVisible();
+  await expect(confirm.getByRole("button", { name: /Start without saving|不保存原版驱动并开始/ })).toBeVisible();
   await expect(confirm.getByRole("button")).toHaveCount(3);
   await confirm.getByRole("button", { name: /Back to selection|返回选择/ }).click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
@@ -438,8 +443,9 @@ test("a double click on the update button sends one plan request", async ({ page
 test("an uploaded installer discloses kernel loading before submission", async ({ page, request }) => {
   await openUpdate(page, request, "upload_stage");
   const dialog = await openUploadDialog(page);
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles(runFile("580.178.04"));
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+
   await expect(dialog.locator(".upload-summary")).toContainText("NVIDIA-Linux-x86_64-580.178.04.run");
   const planned = page.waitForResponse((response) => response.url().endsWith("/api/plans") && response.request().method() === "POST");
   await dialog.getByRole("button", { name: CHECK }).click();
@@ -447,12 +453,13 @@ test("an uploaded installer discloses kernel loading before submission", async (
   expect(plan.dialog.source.kind).toBe("upload");
   expect(plan.dialog.confirmation.warnings).toContainEqual({ key: "confirm.upload_trust", params: {} });
   const confirm = page.locator("dialog[open]");
-  await expect(confirm).toContainText("The driver installer you uploaded will be built on this host and loaded into its kernel. Only use an installer you trust.");
+  await expect(confirm).toContainText("The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. Use an installer downloaded from the NVIDIA website.");
   await confirm.getByRole("button", { name: /Back to selection|返回选择/ }).click();
   await page.locator("#lang-control").selectOption("zh");
-  const chineseUpload = await openUploadDialog(page);
+  const chineseUpload = page.locator("dialog.upload-dialog[open]");
+  await expect(chineseUpload).toBeVisible();
   await chineseUpload.getByRole("button", { name: CHECK }).click();
-  await expect(page.locator("dialog[open]")).toContainText("你上传的驱动安装包会在这台主机上构建并加载进内核。请只使用你信任的安装包。");
+  await expect(page.locator("dialog[open]")).toContainText("上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。请使用从 NVIDIA 官网下载的安装包。");
 });
 
 test("a double click in the upload dialog sends one plan request", async ({ page, request }) => {
@@ -464,7 +471,7 @@ test("a double click in the upload dialog sends one plan request", async ({ page
     await route.continue();
   });
   const check = dialog.getByRole("button", { name: CHECK });
-  await expect(check).toBeEnabled({ timeout: 10_000 });
+  await expect(check).toHaveAttribute("aria-disabled", "false", { timeout: 10_000 });
   await check.dblclick();
   await page.waitForTimeout(2200);
 
@@ -499,12 +506,12 @@ test("Escape stops the running batch and a reopened dialog uploads again", async
     await route.continue().catch(() => {});
   });
 
-  await dialog
-    .locator("#upload-files")
-    .setInputFiles([runFile("580.178.04"), runFile("580.178.05")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
+  await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04"), runFile("580.178.05")]);
+
   await expect.poll(() => puts.length, { timeout: 10_000 }).toBe(1);
   await page.keyboard.press("Escape");
+  await dialog.locator(".upload-cancel-confirm").getByRole("button", { name: /^Confirm cancel$|^确认取消上传$/ }).click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
   await page.waitForTimeout(3000);
 
@@ -512,8 +519,9 @@ test("Escape stops the running batch and a reopened dialog uploads again", async
   expect(failed.length).toBe(1);
 
   const reopened = await openUploadDialog(page);
+  await expect(reopened.locator("#upload-files")).toBeEnabled();
   await reopened.locator("#upload-files").setInputFiles([runFile("580.178.06")]);
-  await reopened.getByRole("button", { name: UPLOAD }).click();
+
   await expect(reopened.locator(".upload-summary")).toContainText(
     "NVIDIA-Linux-x86_64-580.178.06.run",
     { timeout: 10_000 },
@@ -531,7 +539,7 @@ test("local replacements and a return to stock use the shared confirmation and v
     await page.goto("/#/drivers");
     const row = page.locator("table.drivers tbody tr").filter({ hasText: version });
     const planned = page.waitForResponse((res) => res.url().endsWith("/api/plans") && res.request().method() === "POST");
-    await row.getByRole("button", { name: /Check this version and continue|用这个版本检查并继续/ }).click();
+    await row.getByRole("button", { name: index === 1 ? /^Restore this version$|^换回此版本$/ : /^Check this version and continue$|^用这个版本检查并继续$/ }).click();
     const plan = await (await planned).json();
     expect(plan.dialog.confirmation.original).toBe("saved");
     expect(plan.dialog.confirmation.buttons).toEqual([{ button: "start", enabled: true }]);
@@ -591,7 +599,7 @@ test("retained task release requires confirmation and renders the confirmed rele
   await expect(button).toBeVisible();
   await button.click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText(/Task records and logs will be kept|任务记录和日志会保留/);
+  await expect(dialog).toContainText(/Task records and logs are kept|任务记录和日志保留/);
   expect(posts).toBe(0);
   await dialog.getByRole("button", { name: /Cancel|取消/ }).click();
   expect(posts).toBe(0);
@@ -611,6 +619,14 @@ test("retained task release requires confirmation and renders the confirmed rele
 });
 
 test("retained task release explains refusals and allows a retry without losing history", async ({ page, request }) => {
+  const screenshotDir = process.env["NVM_COPY_SHOTS"] === "1" ? process.env["NVM_COPY_SCREENSHOT_DIR"] : undefined;
+  if (screenshotDir) {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.addInitScript(() => {
+      localStorage.setItem("nvm.lang", "zh");
+      localStorage.setItem("nvm.theme", "focused-light");
+    });
+  }
   await openSession(page, request, "fresh");
   await page.route("**/api/tasks/retained-task", (route) => route.fulfill({ json: retainedTask() }));
   let error = "release.no_later_success";
@@ -622,17 +638,17 @@ test("retained task release explains refusals and allows a retry without losing 
   const dialog = page.getByRole("dialog");
   const confirm = dialog.getByRole("button", { name: RELEASE_MATERIAL });
   const refusals = [
-    ["release.no_later_success", /no later-created successful task|没有更晚创建/],
+    ["release.no_later_success", /no later-created task that completed a driver replacement and passed its checks is available for verification|没有更晚创建、已完成驱动替换并通过检查的任务可供核对/],
     ["release.driver_mismatch", /do not match a later successful task|与更晚的成功任务记录不符/],
-    ["release.host_residue", /writable mounts from this tool remain|仍有本工具留下的可写挂载/],
+    ["release.host_residue", /writable mounts left by the program|仍有程序留下的可写挂载/],
     ["release.task_running", /while a task is running|有任务正在运行/],
     ["release.lock_busy", /another operation is in progress|另一个操作正在进行/],
     ["release.state_unknown", /could not be confirmed|无法确认任务/],
     ["release.record_unreadable", /unreadable or untrusted|不可读或不可信/],
-    ["release.recovery_pending", /recovery copies|待恢复副本/],
+    ["release.recovery_pending", /recovery record copies remain or state records cannot be read|仍有恢复记录副本，或状态记录无法读取/],
     ["release.not_terminal", /has not finished|尚未结束/],
     ["release.write_failed", /could not be recorded|无法记录/],
-    ["release.cleanup_failed", /could not be fully removed|未能完全删除/],
+    ["release.cleanup_failed", /could not be fully removed|未能全部删除/],
   ] as const;
   for (const [key, text] of refusals) {
     error = key;
@@ -641,6 +657,11 @@ test("retained task release explains refusals and allows a retry without losing 
     await expect(confirm).toBeEnabled();
     await expect(dialog.locator("pre.raw-output")).toContainText("release diagnostic");
     await expect(dialog.getByRole("alert")).not.toContainText("release diagnostic");
+    if (screenshotDir && (key === "release.no_later_success" || key === "release.recovery_pending")) {
+      mkdirSync(screenshotDir, { recursive: true });
+      await page.evaluate(() => document.fonts.ready);
+      await page.screenshot({ path: join(screenshotDir, `${key.replaceAll(".", "-").replaceAll("_", "-")}.png`), fullPage: true });
+    }
   }
   await expect(page.locator(".log-tail")).toBeVisible();
 });
@@ -650,7 +671,7 @@ test("running tasks and tasks without retained material do not offer recovery re
   let detail = retainedTask("RUNNING");
   await page.route("**/api/tasks/retained-task*", (route) => route.fulfill({ json: detail }));
   await page.goto("/#/tasks/retained-task");
-  await expect(page.locator(".task-state")).toContainText(/Not finished|未结束/);
+  await expect(page.locator(".task-state")).toContainText(/Running|进行中/);
   await expect(page.getByRole("button", { name: RELEASE_MATERIAL })).toHaveCount(0);
   detail = retainedTask("INTERRUPTED", false);
   await page.reload();
@@ -719,7 +740,7 @@ test("the 27 kernel scene persists and displays the runner GPU diagnostic", asyn
   await expect(page.locator("main")).toContainText("27.0.0-RC.1");
   await page.goto("/#/drivers");
   const row = page.locator("table.drivers tbody tr").filter({ hasText: "580.178.04" });
-  await row.getByRole("button", { name: /Check this version and continue|用这个版本检查并继续/ }).click();
+  await row.getByRole("button", { name: /^Check this version and continue$|^用这个版本检查并继续$/ }).click();
   await page.locator("dialog[open]").getByRole("button", { name: /Start update|开始更新/ }).click();
   await expect(page).toHaveURL(/#\/tasks\//);
   await expect(page.locator(".task-state")).toContainText(/Succeeded|成功/, { timeout: 15_000 });
@@ -746,7 +767,7 @@ for (const restore of [false, true]) {
     await openSession(page, request, restore ? "module_race_restore" : "module_race_update");
     await page.goto("/#/drivers");
     const row = page.locator("table.drivers tbody tr").filter({ hasText: "580.178.04" });
-    await row.getByRole("button", { name: /Check this version and continue|用这个版本检查并继续/ }).click();
+    await row.getByRole("button", { name: /^Check this version and continue$|^用这个版本检查并继续$/ }).click();
     await page.locator("dialog[open]").getByRole("button", { name: /Start update|开始更新/ }).click();
     await expect(page).toHaveURL(/#\/tasks\//);
     await expect(page.locator(".task-state")).toContainText(restore ? /Original driver restored|原版.*恢复|已恢复原版/ : /Succeeded|成功/, { timeout: 15_000 });
@@ -758,8 +779,169 @@ for (const restore of [false, true]) {
     const record = detail.replace.at(-1);
     expect(record.module_correction.trigger).toBe("version_mismatch");
     expect(record.module_correction.reloaded.every((r: { ok: boolean }) => r.ok)).toBe(true);
-    await expect(page.locator(".task-steps")).toContainText(/核对装载的驱动模块|Aligning loaded driver modules/);
+    await expect(page.locator(".task-steps")).toContainText(/核对已加载的驱动模块|Aligning loaded driver modules/);
     if (restore) await expect(page.locator(".task-steps")).toContainText(/恢复原版驱动|Restoring the original driver/);
     expect(detail.checks.at(-1).passed).toBe(true);
   });
 }
+
+for (const source of ["official", "local"] as const) {
+  test(`${source} check shows live usage labels before the plan response`, async ({ page, request }) => {
+    await openSession(page, request, "gpu_wait");
+    await page.goto(source === "official" ? "/#/update" : "/#/drivers");
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/plans", async (route) => {
+      const response = await route.fetch();
+      await held;
+      await route.fulfill({ response });
+    });
+    let polls = 0;
+    page.on("request", (req) => { if (req.url().endsWith("/api/gpu-users")) polls++; });
+    if (source === "official") {
+      await page.selectOption("#version-select", "580.178.04");
+      await expect(page.locator(".actions a[href^='https://']")).toHaveAttribute("target", "_blank");
+      await expect(page.locator(".actions a[href^='https://']")).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(page.locator(".upload-help")).toHaveCount(0);
+      await page.getByRole("button", { name: CHECK }).click();
+    } else {
+      await page.getByRole("button", { name: /Check this version and continue|用这个版本检查并继续/ }).first().click();
+    }
+    const status = page.locator(".update-check-status");
+    try {
+      await expect(status).toBeVisible({ timeout: 3000 });
+      const rows = status.locator("li");
+      await expect(rows).toHaveCount(2);
+      await expect(rows.nth(0)).toContainText(/Using the GPU now.*gpu-worker|正在使用显卡.*gpu-worker/);
+      await expect(rows.nth(1)).toContainText(/Requested only.*media-idle|仅申请.*media-idle/);
+      await expect.poll(() => polls).toBeGreaterThanOrEqual(2);
+      if (source === "official") {
+        await page.screenshot({ path: "../.implementation/gpu-users-ux/wait-desktop.png", fullPage: true });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await expect(status).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+        await page.screenshot({ path: "../.implementation/gpu-users-ux/wait-mobile.png", fullPage: true });
+      }
+    } finally { release(); }
+    await expect(status).toHaveCount(0);
+    const ended = polls;
+    await page.waitForTimeout(2200);
+    expect(polls).toBe(ended);
+  });
+}
+
+test("cancelled waiting cannot affect an immediate retry, and Check again reuses its source", async ({ page, request }) => {
+  await openUpdate(page, request, "gpu_wait");
+  await page.selectOption("#version-select", "580.178.04");
+  const sources: unknown[] = [];
+  const release: (() => void)[] = [];
+  await page.route("**/api/plans", async (route) => {
+    const index = sources.push(route.request().postDataJSON().source) - 1;
+    const response = await route.fetch();
+    if (index < 2) await new Promise<void>((resolve) => { release[index] = resolve; });
+    try { await route.fulfill({ response }); } catch { /* The first browser request was cancelled. */ }
+  });
+  const check = page.getByRole("button", { name: CHECK });
+  try {
+    await check.click();
+    await expect(page.getByRole("button", { name: /Cancel waiting|取消等待/ })).toBeVisible();
+    await page.getByRole("button", { name: /Cancel waiting|取消等待/ }).click();
+    await expect(page.locator(".update-check-status")).toHaveCount(0);
+    await expect(check).toBeEnabled();
+    await expect(check).toBeFocused();
+    await check.click();
+    await expect(page.locator(".update-check-status")).toBeVisible();
+    release[0]?.();
+    await page.waitForTimeout(100);
+    await expect(page.locator(".update-check-status")).toBeVisible();
+    // A changed selection must not change the same-update recheck request.
+    await page.selectOption("#version-select", "615.71.09");
+    release[1]?.();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator(".dialog-title")).toBeFocused();
+    await expect(dialog.locator(".gpu-snapshot-time")).toContainText(/List taken at|名单取自/);
+    await expect(dialog.locator(".gpu-user-list li")).toHaveCount(2);
+    await dialog.getByRole("button", { name: /Check again|重新检查/ }).click();
+    await expect.poll(() => sources.length).toBe(3);
+    expect(sources[0]).toEqual(sources[1]);
+    expect(sources[1]).toEqual(sources[2]);
+  } finally { for (const done of release) done?.(); }
+});
+
+test("a cancelled plan-change refresh cannot clear the next check's GPU selection", async ({ page, request }) => {
+  await openUpdate(page, request, "mixed_1b80_2b85");
+  const boxes = page.locator("fieldset.gpu-select input");
+  await boxes.nth(0).check(); await page.selectOption("#version-select", "580.178.04");
+  let versionsWaiting = false; let releaseVersions = (): void => {}; let releasePlan = (): void => {};
+  await page.route("**/api/versions", async (route) => {
+    const response = await route.fetch(); versionsWaiting = true;
+    await new Promise<void>((resolve) => { releaseVersions = resolve; });
+    await route.fulfill({ response });
+  });
+  let posts = 0;
+  await page.route("**/api/plans", async (route) => {
+    if (++posts === 1) {
+      await route.fulfill({status:409, contentType:"application/json", body:JSON.stringify({error:"plan.changed",params:{items:["gpus"]}})});
+    } else {
+      const response = await route.fetch();
+      await new Promise<void>((resolve) => { releasePlan = resolve; });
+      await route.fulfill({response});
+    }
+  });
+  try {
+    await page.getByRole("button", {name:CHECK}).click();
+    await expect.poll(() => versionsWaiting).toBe(true);
+    await page.getByRole("button", {name:/Cancel waiting|取消等待/}).click();
+    await boxes.nth(0).uncheck(); await boxes.nth(1).check();
+    await page.selectOption("#version-select", "615.71.09");
+    await page.getByRole("button", {name:CHECK}).click();
+    await expect.poll(() => posts).toBe(2);
+    releaseVersions(); await page.waitForTimeout(150);
+    await expect(boxes.nth(1)).toBeChecked();
+    await expect(page.locator("#version-select")).toHaveValue("615.71.09");
+  } finally { releaseVersions(); releasePlan(); }
+});
+
+test("GPU waiting rows stay readable across four themes, both languages and mobile widths", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  await openUpdate(page, request, "gpu_wait");
+  await page.route("**/api/gpu-users", (route) => route.fulfill({json:{
+    state:"busy", checked_at:1792209600000,
+    users:[
+      {id:"docker:active",name:"gpu-worker",type:"docker",usage:"in_use"},
+      {id:"container:1",name:"compute-instance",type:"incus",usage:"unknown"},
+      {id:"docker:idle",name:"media-idle",type:"docker",usage:"requested"},
+    ],errors:[],
+  }}));
+  const pending: (() => void)[] = [];
+  await page.route("**/api/plans", async (route) => {
+    const response = await route.fetch();
+    await new Promise<void>((resolve) => { pending.push(resolve); });
+    try { await route.fulfill({response}); } catch { /* Cancelled by the language redraw. */ }
+  });
+  try {
+    for (const lang of ["en","zh"]) {
+      await page.locator("#lang-control").selectOption(lang);
+      await page.selectOption("#version-select", "580.178.04");
+      await page.getByRole("button", {name:CHECK}).click();
+      const status = page.locator(".update-check-status");
+      await expect(status.locator(".gpu-user")).toHaveCount(3);
+      expect(await status.locator("[role=status]").count()).toBe(0);
+      await expect(status.locator(".gpu-howto")).toHaveCount(2);
+      for (const theme of ["focused-light","focused-dark","plate-light","plate-dark"]) {
+        await page.locator("#theme-control").selectOption(theme);
+        for (const width of [1280,390]) {
+          await page.setViewportSize({width,height:900});
+          await status.scrollIntoViewIfNeeded();
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          const line = status.locator(".gpu-user-line").first();
+          await expect(line).toContainText(lang === "zh" ? "正在使用显卡" : "Using the GPU now");
+          await page.screenshot({path:`../.implementation/gpu-users-ux/wait-${lang}-${theme}-${width}.png`,fullPage:true});
+        }
+      }
+      await page.getByRole("button", {name:/Cancel waiting|取消等待/}).click();
+      pending.at(-1)?.();
+    }
+  } finally { for (const done of pending) done(); }
+});

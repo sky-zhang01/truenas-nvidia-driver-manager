@@ -142,11 +142,7 @@ pub fn proc_version(ctx: &RunCtx) -> Reading<String> {
             Some(v) => Reading::Value(v.version.text().to_string()),
             None => Reading::Unknown(REASON_FORMAT_UNRECOGNIZED),
         },
-        Err(e) => Reading::Unknown(match e.kind() {
-            std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-            std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-            _ => REASON_IO_ERROR,
-        }),
+        Err(e) => Reading::Unknown(crate::log::io_reason_key(&e)),
     }
 }
 

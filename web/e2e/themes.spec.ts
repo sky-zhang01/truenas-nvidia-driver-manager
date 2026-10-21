@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "./local-test.js";
 import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { setScenario, signIn } from "./helpers";
@@ -361,7 +361,7 @@ test("the sign-in page explains setup and password reset without exposing secret
   expect(await details.getAttribute("open")).toBeNull();
   const hint = page.locator(".login-help-hint");
   await expect(hint).toBeVisible();
-  await expect(hint).toContainText(/deployed this app|部署本应用的人/);
+  await expect(hint).toContainText(/whoever deployed the app|部署者/);
   const formBox = await bounds(page.locator("form.login-form"));
   const hintBox = await bounds(hint);
   expect(hintBox.y, "the hint must sit below the form").toBeGreaterThanOrEqual(
@@ -374,14 +374,14 @@ test("the sign-in page explains setup and password reset without exposing secret
 
   await details.locator("summary").click();
   await expect(details).toHaveAttribute("open");
-  await expect(details).toContainText(/setup page|设置页面/);
+  await expect(details).toContainText(/setup page|设置页/);
   await expect(details).not.toContainText("NVM_INITIAL_ADMIN_PASSWORD");
-  await expect(details).toContainText("App logs");
+  await expect(details).toContainText("app logs");
 
   await page.locator("#lang-control").selectOption("zh");
   await expect(page.locator("details.login-help summary")).toContainText("没有账号");
-  await expect(page.locator("details.login-help")).toContainText("设置页面");
-  await expect(page.locator(".login-help-hint")).toContainText("联系部署本应用的人");
+  await expect(page.locator("details.login-help")).toContainText("设置页");
+  await expect(page.locator(".login-help-hint")).toContainText("联系部署者");
 
   // The interface never shows the real configured secret, a host path, or the conditioned
   // account-reset help file name — only variable names and generic wording.
@@ -556,19 +556,20 @@ test("switching the theme keeps the update page's GPUs, version, staged file and
   expect(chosen).not.toBe("");
 
   // Open the upload dialog and stage a real.run file so the received-file state exists before the switch.
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
   const body = Buffer.alloc(10 * 1024 * 1024, 0x41);
   body.write(
     '#!/bin/sh\nlabel="NVIDIA Accelerated Graphics Driver for Linux-x86_64 580.178.04"\n',
   );
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles({
     name: "theme-check.run",
     mimeType: "application/octet-stream",
     buffer: body,
   });
-  await dialog.getByRole("button", { name: /^Upload$|^上传$/ }).click();
+
   await expect(dialog.locator(".upload-summary")).toContainText("theme-check.run");
   await page.evaluate(() => {
     (document.querySelector("dialog[open]") as HTMLElement).dataset["probe"] = "alive";
@@ -581,7 +582,7 @@ test("switching the theme keeps the update page's GPUs, version, staged file and
   await expect(page.locator(".upload-summary")).toContainText("theme-check.run");
   expect(await boxes.nth(1).isChecked()).toBe(true);
   expect(await page.locator("#version-select").inputValue()).toBe(chosen);
-  await dialog.getByRole("button", { name: /Close|关闭/ }).click();
+  await dialog.locator(".upload-footer").getByRole("button", { name: /Close|关闭/ }).click();
 });
 
 type HomeOverride = { active: boolean; interrupted: boolean };
@@ -631,18 +632,19 @@ test("a very long file name wraps inside the upload dialog and the last CTA stay
     const boxes = page.locator("fieldset.gpu-select input[type=checkbox]");
     await boxes.nth(0).check();
     await page.waitForFunction(() => (document.getElementById("version-select")?.options.length ?? 0) > 0);
-    await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+    await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
     const dialog = page.locator("dialog[open]");
     await expect(dialog).toBeVisible();
+    await expect(dialog.locator("#upload-files")).toBeEnabled();
     await dialog.locator("#upload-files").setInputFiles({
       name: longName,
       mimeType: "application/octet-stream",
       buffer: body,
     });
-    await dialog.getByRole("button", { name: /^Upload$|^上传$/ }).click();
+
     await expect(dialog.locator(".upload-summary").getByText(longName).first()).toBeVisible();
 
-    await expectContentFits(dialog.locator(".upload-summary .notice"), "a notice stretches its dialog");
+    await expectContentFits(dialog.locator(".upload-summary .upload-receipt"), "a notice stretches its dialog");
     const dbox = await bounds(dialog);
     expect(dbox.x).toBeGreaterThanOrEqual(0);
     expect(dbox.x + dbox.width).toBeLessThanOrEqual(width);
@@ -664,7 +666,7 @@ test("a very long file name wraps inside the upload dialog and the last CTA stay
       dlgScroll.c + 1,
     );
 
-    await dialog.getByRole("button", { name: /Close|关闭/ }).click();
+    await dialog.locator(".upload-footer").getByRole("button", { name: /Close|关闭/ }).click();
     await expect(dialog).toHaveCount(0);
   }
 });
@@ -862,13 +864,13 @@ test("the mobile dot anchors to the icon container corner at 320 and 390 without
 
     await page.goto("/#/update");
     await expect(page.locator("#version-select")).toBeVisible();
-    await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+    await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
     const dialog = page.locator("dialog[open]");
     await expect(dialog).toBeVisible();
     const dbox = await bounds(dialog);
     expect(dbox.x).toBeGreaterThanOrEqual(0);
     expect(dbox.x + dbox.width).toBeLessThanOrEqual(width);
-    await dialog.getByRole("button", { name: /Close|关闭/ }).click();
+    await dialog.locator(".upload-footer").getByRole("button", { name: /Close|关闭/ }).click();
     await expect(dialog).toHaveCount(0);
 
     await page.goto("/#/home");
@@ -1341,12 +1343,12 @@ test("capture the official theme screenshots from the real app", async ({ page, 
 
     await page.goto("/#/update");
     await page.waitForFunction(() => (document.getElementById("version-select")?.options.length ?? 0) > 0);
-    await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+    await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
     const upload = page.locator("dialog[open]");
     await expect(upload).toBeVisible();
     await page.waitForTimeout(200);
     await page.screenshot({ path: join(SHOT_DIR, `mobile-${theme}-upload.png`) });
-    await upload.getByRole("button", { name: /Close|关闭/ }).click();
+    await upload.locator(".upload-footer").getByRole("button", { name: /Close|关闭/ }).click();
     await expect(upload).toHaveCount(0);
 
     await page.locator("#version-select").selectOption({ index: 0 });

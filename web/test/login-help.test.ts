@@ -15,9 +15,9 @@ test("all account reset help uses a YAML data-folder placeholder and ignores hos
       renderLogin({ lang, login } as never, container as never);
       assert.match(container.textContent, lang === "zh"
         ? /<数据目录>\/manager\/secrets\/web-credentials\.json/
-        : /<data folder>\/manager\/secrets\/web-credentials\.json/);
+        : /<data directory>\/manager\/secrets\/web-credentials\.json/);
       assert.match(container.textContent, /YAML/);
-      assert.match(container.textContent, lang === "zh" ? /数据目录.*YAML/ : /data folder.*YAML/);
+      assert.match(container.textContent, lang === "zh" ? /数据目录.*YAML/ : /data directory.*YAML/);
     }
   }
 });

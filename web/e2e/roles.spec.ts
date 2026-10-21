@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./local-test.js";
 import { setScenario, signIn } from "./helpers.js";
 
 test("every input has a label and the error area is an alert", async ({ page, request }) => {
@@ -47,5 +47,5 @@ test("the update page ties the select to its descriptions", async ({ page, reque
   await page.goto("/#/update");
   const select = page.locator("#version-select");
   await expect(select).toHaveAttribute("aria-describedby", "catalog-describe");
-  await expect(page.locator("#catalog-describe")).toContainText(/Branches known not to build|已知构建不了的分支/);
+  await expect(page.locator("#catalog-describe")).toContainText(/versions that build on this host and support the selected GPUs|本机能构建、且支持所选显卡的版本/);
 });

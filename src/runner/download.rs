@@ -422,25 +422,26 @@ pub fn all(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailure> {
     Ok(())
 }
 
-pub fn toolkit(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailure> {
-    let dl = ctx.task_dir().join("dl");
-    let _ = ctx.host.create_dir(&dl, 0o755);
-    let Some(left) = remaining(ctx.host.now(), deadline) else {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure());
-    };
+/// The official-source reader and the upload download links share HTTPS/status/index validation.
+pub(crate) fn read_toolkit_index(
+    h: &dyn crate::host::Host,
+    dl: &std::path::Path,
+    host_dl: &std::path::Path,
+    left: Duration,
+    mut execute: impl FnMut(&Cmd) -> crate::host::Output,
+) -> Result<ToolkitPick, DownloadFailure> {
     let index_path = dl.join("Packages");
-    let headers = dl.join("Packages.headers");
+    let host_index_path = host_dl.join("Packages");
+    let headers = host_dl.join("Packages.headers");
     let cmd = curl_cmd(
         TOOLKIT_INDEX_URL,
-        &index_path,
+        &host_index_path,
         &headers,
         left,
         CurlRedirects::Stop,
     );
-    let out = ctx.cmd(&cmd);
+    let out = execute(&cmd);
     if curl_timed_out(out.exit) {
-        ctx.log(LogKey::BuildTimeout, json!({}));
         return Err(timeout_failure_with_output(&cmd, &out));
     }
     if !out.exit.ok() {
@@ -461,9 +462,9 @@ pub fn toolkit(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailur
             command: None,
         });
     }
-    let index = ctx.host.read(&index_path).unwrap_or_default();
-    let pick = match pick_toolkit(&String::from_utf8_lossy(&index)) {
-        Ok(p) => p,
+    let index = h.read(&index_path).unwrap_or_default();
+    match pick_toolkit(&String::from_utf8_lossy(&index)) {
+        Ok(p) => Ok(p),
         Err(e) => {
             let (key, params) = match e {
                 PickError::IndexUnreadable => (DOWNLOAD_TOOLKIT_INDEX_UNREADABLE, json!({})),
@@ -473,12 +474,30 @@ pub fn toolkit(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailur
                     json!({"package": package}),
                 ),
             };
-            return Err(DownloadFailure {
+            Err(DownloadFailure {
                 code: ErrorCode::DownloadFailed,
                 params: json!({"reason": {"key": key, "params": params}}),
                 raw: None,
                 command: None,
-            });
+            })
+        }
+    }
+}
+
+pub fn toolkit(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailure> {
+    let dl = ctx.task_dir().join("dl");
+    let _ = ctx.host.create_dir(&dl, 0o755);
+    let Some(left) = remaining(ctx.host.now(), deadline) else {
+        ctx.log(LogKey::BuildTimeout, json!({}));
+        return Err(timeout_failure());
+    };
+    let pick = match read_toolkit_index(ctx.host.as_ref(), &dl, &dl, left, |cmd| ctx.cmd(cmd)) {
+        Ok(pick) => pick,
+        Err(error) => {
+            if error.code == ErrorCode::BuildTimeout {
+                ctx.log(LogKey::BuildTimeout, json!({}));
+            }
+            return Err(error);
         }
     };
     ctx.log(LogKey::ToolkitSelected, json!({"version": pick.version}));

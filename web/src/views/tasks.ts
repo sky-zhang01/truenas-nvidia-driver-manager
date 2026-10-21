@@ -17,14 +17,14 @@ import {
   expandText,
   formatClock,
   formatDate,
-  formatMB,
+  formatSize,
   formatTaskTime,
   queryFailed,
   renderNotice,
   apiErrorNotice,
   type Params,
 } from "../dom.js";
-import { closeDialog, openDialog } from "../dialog.js";
+import { closeDialog, makeDialog } from "../dialog.js";
 import type { App } from "../main.js";
 import { MESSAGES } from "../messages.js";
 import {
@@ -44,6 +44,7 @@ import {
   versionObserved,
 } from "../rules.js";
 import { startPolling, POLL_MS, type Poller } from "../poll.js";
+import { gpuUserText, gpuUsersNode, watchGpuUsers } from "../gpu-users.js";
 import { plannedSteps, type StepPlan } from "../task-steps.js";
 
 function taskTimeText(ms: number | null | undefined, lang: App["lang"]): string {
@@ -89,7 +90,7 @@ function sourceText(app: App, source: TaskListItem["source"]): string {
   const lang = app.lang;
   if (!source) return expandText("task.value.unavailable", {}, lang);
   if (source.kind === "upload") {
-    return expandText("tasks.source.upload", { fingerprint: source.fingerprint ?? "" }, lang);
+    return expandText("drivers.source.upload", { fingerprint: source.fingerprint ?? "" }, lang);
   }
   if (source.kind === "local") {
 
@@ -547,21 +548,19 @@ export function waitingGpuMessageKey(detail: {
   return "task.waiting_gpu";
 }
 
-export function renderTask(app: App, container: HTMLElement, taskId: string): void {
+function mountTaskShell(app: App, container: HTMLElement, taskId: string) {
   const lang = app.lang;
-  let poller: Poller | null = null;
-
   const heading = el("h2", { text: expandText("page.task", { task_id: taskId }, lang) });
   const statusArea = el("div", { class: "task-state", role: "status" });
   const statusLabel = el("span", { class: "reading-label", text: expandText("task.status", {}, lang) });
   const statusValue = el("span", { class: "reading-value" });
   const phaseLabel = el("span", { class: "reading-label", text: expandText("task.phase", {}, lang) });
   const phaseValue = el("span", { class: "reading-value" });
-  const waitLine = el("p", { class: "task-wait", hidden: true });
+  const waitUsers = el("div", { class: "gpu-users" });
   statusArea.append(
     el("div", { class: "reading" }, [statusLabel, statusValue]),
     el("div", { class: "reading" }, [phaseLabel, phaseValue]),
-    waitLine,
+    waitUsers,
   );
   const startedValue = el("span", { class: "reading-value" });
   const finishedValue = el("span", { class: "reading-value" });
@@ -600,14 +599,12 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
 
   statusArea.tabIndex = -1;
   statusArea.focus();
-  // Page redraws stop this page poller.
-  let releaseDialog: HTMLDialogElement | null = null;
-  app.addCleanup(() => {
-    poller?.stop();
-    if (releaseDialog?.open) releaseDialog.close();
-    releaseDialog?.remove();
-  });
+  return { statusArea, statusValue, phaseValue, waitUsers, startedValue, finishedValue, discoveredValue, gpuValue, stepArea, recoveryArea, downloadArea, noticeArea, readErrorArea, logPre, terminalExtra };
+}
 
+function taskRecovery(app: App, container: HTMLElement, taskId: string, statusArea: HTMLElement, recoveryArea: HTMLElement) {
+  const lang = app.lang;
+  let releaseDialog: HTMLDialogElement | null = null;
   let recoverySignature: string | null = null;
   const renderRecovery = (detail: TaskDetail): void => {
     const signature = JSON.stringify([detail.status, detail.recovery_material_kept, detail.released_by, detail.released_at]);
@@ -626,11 +623,8 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
     });
     releaseButton.addEventListener("click", () => {
       if (releaseDialog?.isConnected) return;
-      const dlg = el("dialog", { class: "nvm-dialog" });
+      const { dialog: dlg, show } = makeDialog({ title: expandText("task.release.confirm_title", {}, lang), trigger: releaseButton });
       releaseDialog = dlg;
-      const title = el("h3", {
-        class: "dialog-title", text: expandText("task.release.confirm_title", {}, lang),
-      });
       const errorArea = el("div", { class: "dialog-error" });
       const confirm = el("button", {
         type: "button", class: "btn-danger", text: expandText("task.release.button", {}, lang),
@@ -679,12 +673,205 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
           }
         })();
       });
-      dlg.append(title, el("p", { text: expandText("task.release.confirm_body", {}, lang) }), errorArea, confirm, cancel);
-      document.body.append(dlg);
-      openDialog(dlg, title, { trigger: releaseButton });
+      dlg.append(el("p", { text: expandText("task.release.confirm_body", {}, lang) }), errorArea, confirm, cancel);
+      show();
     });
     recoveryArea.append(releaseButton);
   };
+
+  return {
+    render: renderRecovery,
+    close: (): void => { if (releaseDialog?.open) releaseDialog.close(); releaseDialog?.remove(); },
+  };
+}
+
+function renderTaskNotice(app: App, noticeArea: HTMLElement, detail: TaskDetail, items: string[]): void {
+  const lang = app.lang;
+  clear(noticeArea);
+  let gpuListRendered = false;
+  if (detail.notice) {
+    const noticeKey = detail.notice.key;
+    const variant = String(detail.notice.variant ?? "");
+    const unreadable = variant.endsWith("unreadable");
+    const gpuListNotice = [
+      "notice.gpu_in_use",
+      "notice.unload_refused",
+      "notice.restore_stopped",
+    ].includes(noticeKey);
+    const emptyUsers = items.length === 0;
+    // Empty GPU-use and unload-refused notices suppress Action, List and Note; restore-stopped
+    // keeps its Local-drivers action. Unreadable notices never show the empty-list note.
+    const hideList = gpuListNotice && emptyUsers && noticeKey !== "notice.restore_stopped";
+    const showEmptyNote = hideList && !unreadable;
+    // Raw command output stays in pre.raw-output outside every alert/status region.
+    const split = splitRawOutput(taskNoticeParams(detail, lang), detail.error?.exit);
+    noticeArea.append(
+      renderNotice(noticeKey, split.params, lang, {
+        variant: detail.notice.variant,
+        items: emptyUsers ? undefined : items,
+        emptyList: hideList,
+        ...(gpuListNotice ? { omitSegments: ["list", "note"] as const } : {}),
+      }),
+    );
+    if (gpuListNotice && detail.gpu_users) {
+      noticeArea.append(gpuUsersNode({
+        ...detail.gpu_users, state: unreadable ? "unreadable" : "busy",
+      }, lang, { snapshot: true, headline: "" }));
+      gpuListRendered = true;
+    }
+    for (const raw of split.raw) {
+      if (raw === detail.error?.raw) continue; // already in the page's raw-output block
+      noticeArea.append(el("pre", { class: "raw-output", text: raw }));
+    }
+    if (showEmptyNote && !detail.gpu_users) {
+      noticeArea.append(renderNotice("notice.gpu_in_use.empty_note", {}, lang));
+    } else if (
+      !detail.gpu_users && noticeKey === "notice.restore_stopped" &&
+      emptyUsers &&
+      !unreadable &&
+      !variant.startsWith("unload_refused")
+    ) {
+
+      noticeArea.append(renderNotice("notice.gpu_in_use.empty_note", {}, lang));
+    }
+  }
+  if (detail.version_change && detail.loaded_version_start && detail.loaded_version_end) {
+    const oldV =
+      "value" in detail.loaded_version_start
+        ? String(detail.loaded_version_start.value)
+        : "UNKNOWN";
+    const newV =
+      "value" in detail.loaded_version_end
+        ? String(detail.loaded_version_end.value)
+        : "UNKNOWN";
+    noticeArea.append(
+      renderNotice("notice.version_changed", { old: oldV, new: newV }, lang, { items }),
+    );
+  }
+  for (const e of detail.gpu_users?.errors ?? []) {
+    if (!gpuListRendered) noticeArea.append(queryFailed(`query.object.${e.type}`, e.reason, e.raw ?? null, lang));
+    else if (e.raw) noticeArea.append(el("pre", { class: "raw-output", text: e.raw }));
+  }
+}
+
+function renderTaskTerminal(app: App, terminalExtra: HTMLElement, detail: TaskDetail): void {
+  const lang = app.lang;
+  clear(terminalExtra);
+  if (detail.error) {
+    // Suppress the standalone code only for this exact known code.explanation notice. Compare
+    // original params before rendering overwrites params.code.
+    const notice = detail.notice;
+    const noticeCode = (notice?.params ?? {})["code"];
+    const codeShownByNotice =
+      notice?.key === "code.explanation" &&
+      typeof noticeCode === "string" &&
+      noticeCode === detail.error.code &&
+      Object.hasOwn(MESSAGES, `code.${noticeCode}`);
+    if (!codeShownByNotice) {
+      terminalExtra.append(el("h3", { text: expandText("task.error_code", {}, lang) }));
+
+      terminalExtra.append(
+        el("p", { class: "error-code" }, [el("code", { text: detail.error.code })]),
+      );
+    }
+    if (detail.error.code === "DOWNLOAD_FAILED" || detail.error.code === "BUILD_FAILED") {
+      const reason = normalizeReason(
+        String((detail.error.params["reason"] as { key?: string } | undefined)?.key ?? ""),
+        ((detail.error.params["reason"] as { params?: Params } | undefined)?.params ?? {}) as Params,
+      );
+      terminalExtra.append(renderNotice("task.error_reason", { reason }, lang));
+    }
+    if (detail.error.raw) {
+      terminalExtra.append(el("h3", { text: expandText("task.raw_output", {}, lang) }));
+      terminalExtra.append(el("pre", { class: "raw-output", text: detail.error.raw }));
+    }
+  }
+  if (detail.unit_query) {
+    terminalExtra.append(
+      queryFailed(QUERY_OBJECT_HOST_TASK_UNIT, detail.unit_query.reason, null, lang),
+    );
+  }
+
+  const details = el("div", {});
+  // Reconciliation preserves the original read failure in state_note.state_read_error; keep showing it.
+  const state_read_error = detail.state_read_error ?? detail.state_note?.state_read_error ?? null;
+  if (state_read_error) {
+    details.append(
+      renderNotice("task.state_unreadable", {
+        reason: { key: stateReadErrorReasonKey(state_read_error), params: {} },
+      }, lang),
+    );
+  }
+  if (detail.state_note && detail.state_note.kept_as) {
+    details.append(
+      renderNotice("task.state_file_kept", { file_name: detail.state_note.kept_as }, lang),
+    );
+  }
+  if (detail.restore && detail.restore.decision === "none" && detail.restore.reason) {
+    details.append(
+      renderNotice(
+        "restore.no_original",
+        // The restore reason already holds a complete key; preserve its nested read_reason.
+        { no_original_reason: noOriginalReasonParam(detail.restore) },
+        lang,
+      ),
+    );
+  }
+  if (detail.checks.length > 0) {
+    details.append(el("h3", { text: expandText("task.checks", {}, lang) }));
+    // Failing check records show failing items; passing records show both actual readings.
+    for (const c of detail.checks) {
+      for (const p of c.passed ? checkItems(c) : checkFailureItems(c)) {
+        details.append(
+          el("p", { text: expandText("check.reason", p as unknown as Params, lang) }),
+        );
+      }
+    }
+  }
+  if (detail.replace.length > 0) {
+    const failed = detail.replace.flatMap((r) => (r.module_correction?.reloaded ?? r.reloaded).filter((x) => !x.ok));
+    for (const f of failed) {
+      details.append(
+        renderNotice("log.module_reload_failed", { module: f.module, raw: f.reason ?? "" }, lang),
+      );
+    }
+  }
+  if (
+    detail.error &&
+    (detail.error.code === "RESTORE_NOT_WRITTEN" || detail.error.code === "RESTORE_CHECK_FAILED")
+  ) {
+    // Keep each restore occurrence separate and retain nested stderr until the split boundary outside the alert.
+    const split = splitRawOutput(
+      {
+        check_reason: checkReasonText(detail, "update", lang),
+        original: detail.restore?.original?.version ?? "UNKNOWN",
+        restore_reason: restoreFailureReason(detail, lang),
+      },
+      detail.error.exit,
+    );
+    details.append(renderNotice("restore.two_failures", split.params, lang));
+    for (const raw of split.raw) {
+      if (raw === detail.error.raw) continue; // already in the page's raw-output block
+      details.append(el("pre", { class: "raw-output", text: raw }));
+    }
+  }
+  if (details.firstChild) {
+    terminalExtra.append(el("section", { class: "task-details" }, [
+      el("h3", { text: expandText("task.details", {}, lang) }), details,
+    ]));
+  }
+}
+
+export function renderTask(app: App, container: HTMLElement, taskId: string): void {
+  const lang = app.lang;
+  let poller: Poller | null = null;
+  let stopUsers: (() => void) | null = null;
+  let currentWaitKey: string | null = null;
+  const clearWaitingUsers = (): void => { stopUsers?.(); stopUsers = null; currentWaitKey = null; };
+
+  const { statusArea, statusValue, phaseValue, waitUsers, startedValue, finishedValue, discoveredValue, gpuValue, stepArea, recoveryArea, downloadArea, noticeArea, readErrorArea, logPre, terminalExtra } = mountTaskShell(app, container, taskId);
+  const recovery = taskRecovery(app, container, taskId, statusArea, recoveryArea);
+  app.addCleanup(() => { poller?.stop(); clearWaitingUsers(); recovery.close(); });
 
   void (async () => {
     let after: number | undefined;
@@ -704,6 +891,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
         if (!container.isConnected) return;
         if (err instanceof ApiError && err.isSessionEnded) {
           poller?.stop();
+          clearWaitingUsers();
           app.sessionEnded();
           return;
         }
@@ -712,6 +900,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
           noticeArea.append(renderNotice("not_found", {}, lang));
           clear(readErrorArea);
           poller?.stop();
+          clearWaitingUsers();
 
           app.reportTaskState(null, "task", taskId);
           return;
@@ -725,7 +914,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
       if (readErrorArea.firstChild) clear(readErrorArea);
       // All response side effects, including the terminal login refresh, belong to the still-live page.
       if (!container.isConnected) return;
-      renderRecovery(detail);
+      recovery.render(detail);
       setText(gpuValue, gpuDiagnosticText(detail.nvidia_smi_gpus, lang));
       after = detail.log.next;
       // Only RUNNING claims the dot for this task. Uncertainty clears this task claim without
@@ -735,12 +924,12 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
       setText(statusValue, expandText(`status.${detail.status}`, {}, lang));
       setText(phaseValue, detail.phase ? expandText(`phase.${detail.phase}`, {}, lang) : expandText("task.value.unavailable", {}, lang));
       const waitKey = waitingGpuMessageKey(detail);
-      const waitText = waitKey ? expandText(waitKey, {}, lang) : "";
-      if (waitLine.textContent !== waitText) {
-        setText(waitLine, waitText);
-        if (waitText === "") waitLine.setAttribute("hidden", "");
-        else waitLine.removeAttribute("hidden");
-      }
+      if (waitKey && currentWaitKey !== waitKey) {
+        clearWaitingUsers(); currentWaitKey = waitKey;
+        stopUsers = watchGpuUsers(waitUsers, lang, undefined, () => {
+          poller?.stop(); clearWaitingUsers(); app.sessionEnded();
+        }, { headline: waitKey });
+      } else if (!waitKey) clearWaitingUsers();
       setText(startedValue, taskTimeText(detail.created_at, lang));
       setText(finishedValue, finishedText(detail.status, detail.finished_at, lang));
       setText(discoveredValue, discoveredText(detail.status, detail.interrupt_discovered_at, lang));
@@ -770,8 +959,8 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
         downloadArea.textContent = expandText(
           "download.progress",
           {
-            done: formatMB(detail.download.done_bytes ?? 0),
-            total: formatMB(detail.download.total_bytes),
+            done: formatSize(detail.download.done_bytes ?? 0),
+            total: formatSize(detail.download.total_bytes),
           },
           lang,
         );
@@ -784,13 +973,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
 
       // Rebuild notices only when the rendered facts change.
       const users = detail.gpu_users?.users ?? [];
-      const items = users.map((u) =>
-        expandText(
-          "list.object",
-          { name: u.name, type: { key: `query.object.${u.type}`, params: {} } },
-          lang,
-        ),
-      );
+      const items = users.map((u) => gpuUserText(u, lang));
       const noticeSig = JSON.stringify([
         detail.notice,
         detail.gpu_users,
@@ -800,62 +983,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
       ]);
       if (noticeSig !== noticeSignature) {
         noticeSignature = noticeSig;
-        clear(noticeArea);
-        if (detail.notice) {
-          const noticeKey = detail.notice.key;
-          const variant = String(detail.notice.variant ?? "");
-          const unreadable = variant.endsWith("unreadable");
-          const gpuListNotice = [
-            "notice.gpu_in_use",
-            "notice.unload_refused",
-            "notice.restore_stopped",
-          ].includes(noticeKey);
-          const emptyUsers = items.length === 0;
-          // Empty GPU-use and unload-refused notices suppress Action, List and Note; restore-stopped
-          // keeps its Local-drivers action. Unreadable notices never show the empty-list note.
-          const hideList = gpuListNotice && emptyUsers && noticeKey !== "notice.restore_stopped";
-          const showEmptyNote = hideList && !unreadable;
-          // Raw command output stays in pre.raw-output outside every alert/status region.
-          const split = splitRawOutput(taskNoticeParams(detail, lang), detail.error?.exit);
-          noticeArea.append(
-            renderNotice(noticeKey, split.params, lang, {
-              variant: detail.notice.variant,
-              items: emptyUsers ? undefined : items,
-              emptyList: hideList,
-            }),
-          );
-          for (const raw of split.raw) {
-            if (raw === detail.error?.raw) continue; // already in the page's raw-output block
-            noticeArea.append(el("pre", { class: "raw-output", text: raw }));
-          }
-          if (showEmptyNote) {
-            noticeArea.append(renderNotice("notice.gpu_in_use.empty_note", {}, lang));
-          } else if (
-            noticeKey === "notice.restore_stopped" &&
-            emptyUsers &&
-            !unreadable &&
-            !variant.startsWith("unload_refused")
-          ) {
-
-            noticeArea.append(renderNotice("notice.gpu_in_use.empty_note", {}, lang));
-          }
-        }
-        if (detail.version_change && detail.loaded_version_start && detail.loaded_version_end) {
-          const oldV =
-            "value" in detail.loaded_version_start
-              ? String(detail.loaded_version_start.value)
-              : "UNKNOWN";
-          const newV =
-            "value" in detail.loaded_version_end
-              ? String(detail.loaded_version_end.value)
-              : "UNKNOWN";
-          noticeArea.append(
-            renderNotice("notice.version_changed", { old: oldV, new: newV }, lang, { items }),
-          );
-        }
-        for (const e of detail.gpu_users?.errors ?? []) {
-          noticeArea.append(queryFailed(`query.object.${e.type}`, e.reason, e.raw ?? null, lang));
-        }
+        renderTaskNotice(app, noticeArea, detail, items);
       }
 
       // The terminal section depends on notice content too, because the notice determines whether a
@@ -875,110 +1003,7 @@ export function renderTask(app: App, container: HTMLElement, taskId: string): vo
       ]);
       if (terminalSig !== terminalSignature) {
         terminalSignature = terminalSig;
-        clear(terminalExtra);
-        if (detail.error) {
-          // Suppress the standalone code only for this exact known code.explanation notice. Compare
-          // original params before rendering overwrites params.code.
-          const notice = detail.notice;
-          const noticeCode = (notice?.params ?? {})["code"];
-          const codeShownByNotice =
-            notice?.key === "code.explanation" &&
-            typeof noticeCode === "string" &&
-            noticeCode === detail.error.code &&
-            Object.hasOwn(MESSAGES, `code.${noticeCode}`);
-          if (!codeShownByNotice) {
-            terminalExtra.append(el("h3", { text: expandText("task.error_code", {}, lang) }));
-
-            terminalExtra.append(
-              el("p", { class: "error-code" }, [el("code", { text: detail.error.code })]),
-            );
-          }
-          if (detail.error.code === "DOWNLOAD_FAILED" || detail.error.code === "BUILD_FAILED") {
-            const reason = normalizeReason(
-              String((detail.error.params["reason"] as { key?: string } | undefined)?.key ?? ""),
-              ((detail.error.params["reason"] as { params?: Params } | undefined)?.params ?? {}) as Params,
-            );
-            terminalExtra.append(renderNotice("task.error_reason", { reason }, lang));
-          }
-          if (detail.error.raw) {
-            terminalExtra.append(el("h3", { text: expandText("task.raw_output", {}, lang) }));
-            terminalExtra.append(el("pre", { class: "raw-output", text: detail.error.raw }));
-          }
-        }
-        if (detail.unit_query) {
-          terminalExtra.append(
-            queryFailed(QUERY_OBJECT_HOST_TASK_UNIT, detail.unit_query.reason, null, lang),
-          );
-        }
-
-        const details = el("div", {});
-        // Reconciliation preserves the original read failure in state_note.state_read_error; keep showing it.
-        const state_read_error = detail.state_read_error ?? detail.state_note?.state_read_error ?? null;
-        if (state_read_error) {
-          details.append(
-            renderNotice("task.state_unreadable", {
-              reason: { key: stateReadErrorReasonKey(state_read_error), params: {} },
-            }, lang),
-          );
-        }
-        if (detail.state_note && detail.state_note.kept_as) {
-          details.append(
-            renderNotice("task.state_file_kept", { file_name: detail.state_note.kept_as }, lang),
-          );
-        }
-        if (detail.restore && detail.restore.decision === "none" && detail.restore.reason) {
-          details.append(
-            renderNotice(
-              "restore.no_original",
-              // The restore reason already holds a complete key; preserve its nested read_reason.
-              { no_original_reason: noOriginalReasonParam(detail.restore) },
-              lang,
-            ),
-          );
-        }
-        if (detail.checks.length > 0) {
-          details.append(el("h3", { text: expandText("task.checks", {}, lang) }));
-          // Failing check records show failing items; passing records show both actual readings.
-          for (const c of detail.checks) {
-            for (const p of c.passed ? checkItems(c) : checkFailureItems(c)) {
-              details.append(
-                el("p", { text: expandText("check.reason", p as unknown as Params, lang) }),
-              );
-            }
-          }
-        }
-        if (detail.replace.length > 0) {
-          const failed = detail.replace.flatMap((r) => (r.module_correction?.reloaded ?? r.reloaded).filter((x) => !x.ok));
-          for (const f of failed) {
-            details.append(
-              renderNotice("log.module_reload_failed", { module: f.module, raw: f.reason ?? "" }, lang),
-            );
-          }
-        }
-        if (
-          detail.error &&
-          (detail.error.code === "RESTORE_NOT_WRITTEN" || detail.error.code === "RESTORE_CHECK_FAILED")
-        ) {
-          // Keep each restore occurrence separate and retain nested stderr until the split boundary outside the alert.
-          const split = splitRawOutput(
-            {
-              check_reason: checkReasonText(detail, "update", lang),
-              original: detail.restore?.original?.version ?? "UNKNOWN",
-              restore_reason: restoreFailureReason(detail, lang),
-            },
-            detail.error.exit,
-          );
-          details.append(renderNotice("restore.two_failures", split.params, lang));
-          for (const raw of split.raw) {
-            if (raw === detail.error.raw) continue; // already in the page's raw-output block
-            details.append(el("pre", { class: "raw-output", text: raw }));
-          }
-        }
-        if (details.firstChild) {
-          terminalExtra.append(el("section", { class: "task-details" }, [
-            el("h3", { text: expandText("task.details", {}, lang) }), details,
-          ]));
-        }
+        renderTaskTerminal(app, terminalExtra, detail);
       }
 
       if (TERMINAL.includes(detail.status) && poller) {

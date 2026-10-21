@@ -565,12 +565,15 @@ fn finish_terminal(ctx: &mut RunCtx, terminal: Option<Status>) -> Result<(), ()>
             }),
         );
         ctx.state.gpu_users = Some(crate::task_state::GpuUsersRecord {
+            checked_at: Some(ctx.host.wall_ms()),
             users: users
                 .users
                 .iter()
                 .map(|u| crate::task_state::GpuUserRecord {
+                    id: Some(u.id.clone()),
                     name: u.name.clone(),
                     kind: u.kind.as_str().to_string(),
+                    usage: Some(u.usage),
                 })
                 .collect(),
             errors: users

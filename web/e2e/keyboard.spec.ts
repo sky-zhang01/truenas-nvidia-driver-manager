@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./local-test.js";
 import { setScenario, signIn } from "./helpers.js";
 
 test("the update flow works with the keyboard only", async ({ page, request }) => {
@@ -27,7 +27,7 @@ test("a dialog takes focus and returns it on Escape", async ({ page, request }) 
   await page.goto("/");
   await signIn(page);
   await page.goto("/#/update");
-  const upload = page.getByRole("button", { name: /Upload \.run|上传 \.run/ });
+  const upload = page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ });
   await upload.focus();
   await page.keyboard.press("Enter");
   const dialog = page.locator("dialog[open]");

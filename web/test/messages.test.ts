@@ -175,12 +175,12 @@ const REQUIRED: string[] = [
   "password.changed",
   "setup.blocked",
   "plan.source_invalid.version_format",
-  "plan.source_invalid.toolkit_too_old",
+  "upload.group.toolkit_too_old",
   "plan.changed",
   "plan.changed.after_open",
   "plan.changed.item.gpus",
   "plan.uncomputable",
-  "plan.precheck_failed",
+  "precheck.failed",
   "submit.failed",
   "submit.unit_not_created",
   "submit.state_unwritable",
@@ -191,9 +191,6 @@ const REQUIRED: string[] = [
   "upload.group.toolkit_too_old",
   "upload.rejected",
   "upload.interrupted",
-  "upload.receiving",
-  "upload.file_ok",
-  "upload.version.detected",
   "delete.done",
   "delete.failed",
   "keep.unsaved",
@@ -205,14 +202,12 @@ const REQUIRED: string[] = [
   "app.purpose",
   "nav.logout",
   "page.task",
-  "dialog.upload",
   "lang.control",
   "home.loaded_version",
   "update.catalog_label",
   "update.gpu_select",
   "update.gpu_option",
   "catalog.help",
-  "catalog.help_upload",
   "catalog.gpu.not_listed",
   "catalog.no_usable_version",
   "confirm.original.unsavable",
@@ -242,7 +237,6 @@ const REQUIRED: string[] = [
   "startup.runtime",
   "startup.data_mapping",
   "internal.request_failed",
-  "internal.data_dir_unreadable",
 
   "notice.version_changed",
   "notice.gpu_in_use",
@@ -253,12 +247,10 @@ const REQUIRED: string[] = [
   "notice.restore_failed",
   "notice.no_restore",
   "download.progress",
-  "update.disabled_task_running",
   "extension.missing",
   "driver.kernel_mismatch",
   "original.already_saved",
   "original.skip_warning",
-  "upload.help",
   "setting.unknown",
   "credentials.unreadable",
   "query.failed",
@@ -272,7 +264,6 @@ const REQUIRED: string[] = [
   "setting.invalid",
   "credentials.unsaved",
   "toolkit.below_floor",
-  "toolkit.help",
   "delete.confirm",
 
   "notice.gpu_in_use.task",
@@ -368,8 +359,8 @@ test("interrupt sentences name the recorded start and leave the task id out", ()
   assert.equal(unknown.includes("Building"), false);
   assert.equal(unknown.includes("at or after the driver file is written"), false);
   assert.match(expandText("home.interrupted.file_kept", params, "en"), /was not replaced/);
-  assert.match(expandText("home.interrupted", params, "en"), /at or after the driver file is written/);
-  assert.match(expandText("home.interrupted.unload", params, "zh"), /驱动模块可能已经卸载/);
+  assert.match(expandText("home.interrupted", params, "en"), /Whether the driver file was replaced cannot be determined/);
+  assert.match(expandText("home.interrupted.unload", params, "zh"), /驱动模块可能已卸载/);
   assert.match(expandText("home.interrupted.artifact", {}, "zh"), /到本地驱动查看已保存的驱动/);
   assert.match(expandText("home.interrupted.artifact", {}, "en"), /See saved drivers in Local drivers/);
   assert.equal(expandText("home.interrupted.artifact", {}, "zh").includes("可能已经"), false);
@@ -380,7 +371,7 @@ test("only the last registered key warns that SSH sign-in will close", () => {
   for (const lang of ["zh", "en"] as const) {
     const last = expandText("ssh.keys.delete_last", {}, lang);
     const confirm = expandText("ssh.keys.delete_confirm", {}, lang);
-    assert.match(confirm, lang === "zh" ? /这个浏览器保持登录/ : /This browser stays signed in/);
+    assert.match(confirm, lang === "zh" ? /本浏览器保持登录/ : /this browser stays signed in/);
     assert.match(confirm, lang === "zh" ? /其他浏览器会退出登录/ : /Other browsers sign out/);
     assert.equal(confirm.includes("最后一把"), false);
     assert.equal(confirm.includes("不再提供 SSH 登录"), false);
@@ -1200,6 +1191,9 @@ function literalsIn(source: string): ScannedLiteral[] {
           block.elements = 0;
           block.keyText = null;
           block.keyPending = false;
+        } else if (block.kind === "object") {
+          // Interface fields use semicolons: the next field must not inherit title/text visibility.
+          comma(block);
         } else {
           note(token);
         }
@@ -1225,6 +1219,13 @@ function offendersIn(source: string): ScannedLiteral[] {
     visibleLiteral(literal.text, literal.before, literal.textPosition, literal.html),
   );
 }
+
+test("typed dialog policy fields do not inherit title visibility", () => {
+  const declaration = 'interface DialogOptions { title: string; onCancel?: "remove" | "ignore" | ((event: Event) => void); }';
+  assert.deepEqual(offendersIn(declaration).map((literal) => literal.text), []);
+  assert.deepEqual(offendersIn(declaration + 'el("button", { text: "remove" }); el("button", { text: "ignore" });')
+    .map((literal) => literal.text), ["remove", "ignore"]);
+});
 
 test("the visible-literal predicate rejects visible strings and accepts technical ones", () => {
 
@@ -1655,6 +1656,43 @@ interface AgentApiContract {
   confirmation_keys: string[];
 }
 
+function rustOwnerSource(root: string, owner: string): string[] {
+  const paths = [join(root, "src", `${owner}.rs`)];
+  if (owner === "web") {
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (entry.isFile() && entry.name.endsWith(".rs")) paths.push(path);
+      }
+    };
+    walk(join(root, "src", "web"));
+  }
+  return paths.flatMap((path) => rustTokens(readFileSync(path, "utf8")));
+}
+
+test("the web Rust owner includes newly added and nested modules", () => {
+  const root = mkdtempSync(join(tmpdir(), "nvm-rust-owner-"));
+  const modules = join(root, "src", "web");
+  mkdirSync(join(modules, "nested"), { recursive: true });
+  try {
+    writeFileSync(join(root, "src", "web.rs"), 'fn router() { Router::new().route("/probe", get(probe)) }');
+    writeFileSync(join(modules, "first.rs"), 'struct ProbeRequest { value: String }');
+    const initial = rustOwnerSource(root, "web");
+    assert.ok(rustOwner(initial, "fn", "router").includes('"/probe"'));
+    assert.ok(rustFields(rustOwner(initial, "struct", "ProbeRequest")).has("value"));
+    writeFileSync(join(modules, "added.rs"), 'fn probe() { ApiError::new(StatusCode::BAD_REQUEST, "probe.invalid") }');
+    writeFileSync(join(modules, "nested", "later.rs"), 'fn nested_probe() {}');
+    writeFileSync(join(modules, "ignored.txt"), 'fn not_rust() {}');
+    const added = rustOwnerSource(root, "web");
+    assert.ok(rustOwner(added, "fn", "probe").includes('"probe.invalid"'));
+    assert.deepEqual(rustOwner(added, "fn", "nested_probe"), []);
+    assert.ok(!added.includes("not_rust"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the agent guide binds every documented API token to its Rust owner", () => {
   const root = repoRoot();
   const guide = readFileSync(join(root, "docs", "agent.en.md"), "utf8");
@@ -1664,7 +1702,7 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
   const json = /```json\s*([\s\S]*?)```/.exec(inventory)?.[1];
   assert.ok(json, "missing contract JSON");
   const contract = JSON.parse(json) as AgentApiContract;
-  const source = (file: string): string[] => rustTokens(readFileSync(join(root, "src", `${file}.rs`), "utf8"));
+  const source = (file: string): string[] => rustOwnerSource(root, file);
   const web = source("web");
   const plan = source("plan");
   const state = source("task_state");
@@ -1690,6 +1728,8 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
   assert.equal((JSON.parse(jsonHeader) as string).toLowerCase(), "content-type");
   assert.ok(apiFn("getTask").includes("` ? after = $ { after } `"), "missing task log cursor query");
   const precheck = rustOwner(plan, "fn", "precheck");
+  const confirmation = rustOwner(plan, "fn", "confirmation_dialog");
+  assert.ok(rustLet(precheck, "dialog").join(" ").startsWith("let dialog = confirmation_dialog ("), "precheck must use the confirmation owner");
   const struct = (tokens: string[], name: string): Set<string> => rustFields(rustOwner(tokens, "struct", name));
   const jsonKeys = (name: string): Set<string> => rustJsonKeys(fn(name));
   const union = (...sets: Set<string>[]): Set<string> => new Set(sets.flatMap((set) => [...set]));
@@ -1721,7 +1761,7 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
     PlanSource: union(struct(plan, "OfficialRequest"), struct(plan, "LocalRequest"), struct(plan, "UploadRequest")),
     PlanReady: jsonKeys("create_plan"),
     PlanDialog: struct(plan, "Dialog"),
-    PlanDialogSource: rustJsonKeys(rustLet(precheck, "source_json")),
+    PlanDialogSource: rustJsonKeys(rustLet(confirmation, "source_json")),
     OriginalSaved: new Set<string>(),
     Confirmation: struct(plan, "Confirmation"),
     ConfirmationButton: struct(plan, "ConfirmationButton"),
@@ -1811,7 +1851,7 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
     if (token.startsWith('"')) reasons.add(JSON.parse(token) as string);
   }
   for (const reason of contract.reasons) assert.ok(reasons.has(reason), `missing live reason ${reason}`);
-  const confirmationKeys = [...new Set(precheck
+  const confirmationKeys = [...new Set(confirmation
     .filter((token) => token.startsWith('"'))
     .map((token) => JSON.parse(token) as string)
     .filter((key) => key.startsWith("confirm.") || key === "original.skip_warning"))];
@@ -1840,10 +1880,10 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
       assert.ok(guideBody.includes(`\`.checks[] | select(.pass == "${pass}")\``), `${file}: missing check array selector for ${pass}`);
     }
     const timeUnits: [RegExp, RegExp] = lang === "en" ? [
-      /`saved_at` is Unix epoch milliseconds \(divide by 1000 for seconds\)\./,
+      /`saved_at` is Unix epoch milliseconds(?: \(divide by 1000 for seconds\)\.|; divide by 1000 for seconds\.)/,
       /`since_before` and `since_after` values are Unix epoch microseconds \(divide by 1000000 for seconds\);/,
     ] : [
-      /`saved_at` 是 Unix epoch 毫秒，换成秒时除以 1000。/,
+      /`saved_at` (?:是|为) Unix epoch 毫秒，(?:换成|转为)秒时除以 1000。/,
       /`since_before` 和 `since_after` 的值是 Unix epoch 微秒，换成秒时除以 1000000；/,
     ];
     assert.match(guideBody, timeUnits[0], `${file}: saved_at must use epoch milliseconds and divisor 1000`);
@@ -1932,13 +1972,13 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
       }
     }
     const paths = contract.endpoints.map((endpoint) => endpoint.split(" ")[1] as string);
-    for (const match of guideBody.matchAll(/\/api\/[a-z/]+(?:\$TASK_ID|\{id\})?/g)) {
+    for (const match of guideBody.matchAll(/\/api\/[a-z/-]+(?:\$TASK_ID|\{id\})?(?:\/[a-z-]+)?/g)) {
       const path = match[0].replace("$TASK_ID", "{id}").replace(/\/$/, "");
       assert.ok(paths.includes(path), `${file}: guide path missing from contract: ${path}`);
     }
   }
   for (const key of contract.confirmation_keys) {
-    assert.ok(precheck.includes(JSON.stringify(key)), `missing confirmation key ${key}`);
+    assert.ok(confirmation.includes(JSON.stringify(key)), `missing confirmation key ${key}`);
     assert.ok(MESSAGES[key], `missing confirmation translation ${key}`);
   }
   const buttonParagraph = /The buttons are ([^\n]+)/.exec(body)?.[1];
@@ -2005,7 +2045,7 @@ test("Rust contract extraction keeps comments, literals and adjacent owners out"
 });
 
 test("setup log guidance finds the newest JSON message containing the code marker", () => {
-  for (const key of ["setup.step.copy", "setup.note", "setup.code_invalid", "setup.help.body"]) {
+  for (const key of ["setup.step.copy"]) {
     for (const lang of ["zh", "en"] as const) {
       const text = MESSAGES[key]![lang];
       assert.match(text, /SETUP CODE:/, `${key}.${lang} names the exact marker`);
@@ -2014,6 +2054,13 @@ test("setup log guidance finds the newest JSON message containing the code marke
       assert.equal(/开头|starts with|SETUP CODE line/i.test(text), false);
     }
   }
+  for (const lang of ["zh", "en"] as const) {
+    assert.match(MESSAGES["setup.code_invalid"]![lang], /SETUP CODE:/);
+    assert.match(MESSAGES["setup.code_invalid"]![lang], lang === "zh" ? /最新一条/ : /newest/);
+    assert.equal(MESSAGES["setup.note"]![lang].includes("SETUP CODE:"), false);
+    assert.match(MESSAGES["setup.help.body"]![lang], lang === "zh" ? /不写入磁盘/ : /never saved to disk/);
+  }
+
 });
 
 
@@ -2021,7 +2068,7 @@ test("Chinese TrueNAS interface guidance uses the translated menu names", () => 
   for (const key of messageKeys()) {
     assert.equal(/\b(?:Shell|Apps|Workloads|View Logs|Discover Apps|More Options|Install via YAML|System Settings)\b/.test(MESSAGES[key]!.zh), false, `${key}.zh uses translated menus`);
   }
-  assert.match(MESSAGES["login.help.forgot_password"]!.zh, /TrueNAS 的命令行/);
-  assert.match(MESSAGES["help.reset_account"]!.zh, /TrueNAS 的命令行/);
+  assert.match(MESSAGES["login.help.forgot_password"]!.zh, /TrueNAS 命令行/);
+  assert.match(MESSAGES["help.reset_account"]!.zh, /TrueNAS 命令行/);
   assert.match(MESSAGES["extension.missing"]!.zh, /TrueNAS 的应用设置/);
 });

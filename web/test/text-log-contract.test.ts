@@ -33,18 +33,18 @@ function placeholders(text: string): string[] {
 test("the Chinese single-row delete texts keep the count", () => {
   assert.equal(
     seg(expand("delete.confirm.one", { row_count: 1 }, "zh"), "body"),
-    "将删除以下 1 个本地驱动。只删除它们在数据目录中的文件,正式路径上的驱动文件不受影响。",
+    "将删除下面这个本地驱动在数据目录中的文件。正式路径上的驱动文件保留。",
   );
   assert.equal(
     seg(expand("delete.confirm.one", { row_count: 1 }, "en"), "body"),
-    "The local driver below will be deleted. Only their files in the data directory are removed; the driver file at the permanent path is not affected.",
+    "This deletes the data-directory file of the local driver below. The driver file at the permanent path stays.",
   );
   assert.equal(expandText("delete.done.one", { row_count: 1 }, "zh"), "已删除 1 个本地驱动。");
   assert.equal(expandText("delete.done.one", { row_count: 1 }, "en"), "Deleted the local driver.");
 
   assert.equal(
     seg(expand("delete.confirm", { row_count: 3 }, "zh"), "body"),
-    "将删除以下 3 个本地驱动。只删除它们在数据目录中的文件,正式路径上的驱动文件不受影响。",
+    "将删除以下 3 个本地驱动在数据目录中的文件。正式路径上的驱动文件保留。",
   );
   assert.equal(expandText("delete.done", { row_count: 3 }, "zh"), "已删除 3 个本地驱动。");
 
@@ -96,7 +96,7 @@ test("the pre-delivery failure reason expands from its real shape", () => {
   const sha = logParams("log.artifact_check_failed", { build_reason: "artifact.sha_mismatch" });
   assert.equal(
     expandText("log.artifact_check_failed", sha, "zh"),
-    "交付前核对未通过:构建出的驱动校验值与构建记录不符。",
+    "交付前核对未通过：构建出的驱动校验值与构建记录不符。",
   );
   assert.equal(
     expandText("log.artifact_check_failed", sha, "en"),
@@ -110,7 +110,7 @@ test("the pre-delivery failure reason expands from its real shape", () => {
   });
   assert.equal(
     expandText("log.artifact_check_failed", kernel, "zh"),
-    "交付前核对未通过:构建出的驱动目标内核为 6.12.105,当前内核为 6.12.96。",
+    "交付前核对未通过：构建出的驱动目标内核为 6.12.105，当前内核为 6.12.96。",
   );
   const version = logParams("log.artifact_check_failed", {
     build_reason: {
@@ -120,7 +120,7 @@ test("the pre-delivery failure reason expands from its real shape", () => {
   });
   assert.equal(
     expandText("log.artifact_check_failed", version, "zh"),
-    "交付前核对未通过:构建出的驱动版本为 580.178.04,目标版本为 590.48.01。",
+    "交付前核对未通过：构建出的驱动版本为 580.178.04，目标版本为 590.48.01。",
   );
   const tool = logParams("log.artifact_check_failed", {
     build_reason: { key: "artifact.tool_missing", params: { program: "nvidia-ctk" } },
@@ -153,7 +153,7 @@ test("the pre-delivery failure reason expands from its real shape", () => {
   // A shape that carries no reason at all is shown as UNKNOWN, never guessed.
   assert.match(
     expandText("log.artifact_check_failed", logParams("log.artifact_check_failed", {}), "zh"),
-    /交付前核对未通过:UNKNOWN。/,
+    /交付前核对未通过：UNKNOWN。/,
   );
 });
 
@@ -173,7 +173,7 @@ test("the six cleanup steps expand to their names", () => {
     });
     assert.equal(
       expandText("log.cleanup_failed", p, "zh"),
-      `清理步骤「${zh}」失败:RAW_FROM_COMMAND。`,
+      `清理步骤「${zh}」失败：RAW_FROM_COMMAND。`,
       code,
     );
     assert.equal(
@@ -190,7 +190,7 @@ test("a signaled cleanup command expands its structured reason in both languages
     reason: { key: "reason.signal", params: { signal: 15 }, raw: "docker: killed" },
   });
   assert.equal(expandText("log.cleanup_failed", p, "zh"),
-    "清理步骤「删除构建容器」失败:命令被信号 15 终止。");
+    "清理步骤「删除构建容器」失败：命令被信号 15 终止。");
   assert.equal(expandText("log.cleanup_failed", p, "en"),
     "Cleanup step \"remove the build container\" failed: the command was terminated by signal 15.");
   assert.equal(logParams("log.cleanup_failed", {
@@ -205,11 +205,11 @@ test("a cache failure expands its I/O reason and says the build continues", () =
   });
   assert.equal(
     expandText("log.build_kit_cache", p, "zh"),
-    "编译包缓存没有用上:没有读取权限。编译继续。",
+    "编译包缓存未使用：没有读取权限，继续构建。",
   );
   assert.equal(
     expandText("log.build_kit_cache", p, "en"),
-    "The build-package cache was not used: permission was denied. The build continues.",
+    "The build-package cache was not used: permission was denied; the build continues.",
   );
 });
 
@@ -225,11 +225,11 @@ test("row_created maps the real source and the published fingerprint", () => {
   });
   assert.equal(
     expandText("log.row_created", upload, "zh"),
-    "本地驱动表新增一行:580.178.04(上传 · 指纹 a1b2c3)。",
+    "本地驱动表新增一行：580.178.04（手动上传文件 · 指纹 a1b2c3）。",
   );
   assert.equal(
     expandText("log.row_created", upload, "en"),
-    "Added a row to Local drivers: 580.178.04 (Upload · fingerprint a1b2c3).",
+    "Added a row to Local drivers: 580.178.04 (Files uploaded manually · fingerprint a1b2c3).",
   );
   const official = logParams("log.row_created", { version: "580.178.04", source: "official" });
   assert.deepEqual(official["source"], {
@@ -245,36 +245,22 @@ test("row_created maps the real source and the published fingerprint", () => {
   assert.equal(missing["source"], "UNKNOWN");
   assert.equal(
     expandText("log.row_created", missing, "zh"),
-    "本地驱动表新增一行:580.178.04(UNKNOWN)。",
+    "本地驱动表新增一行：580.178.04（UNKNOWN）。",
   );
   // Source labels use source_kind, independently of the kind field.
   const kindOnly = logParams("log.row_created", { version: "1", kind: "official" });
   assert.equal(kindOnly["source"], "UNKNOWN");
 });
 
-test("upload.help keeps the upload help text and its link", () => {
-  const zh = MESSAGES["upload.help"].zh;
-  assert.ok(
-    zh.includes(
-      "[[NVIDIA 官网|https://www.nvidia.com/en-us/drivers/unix/#linux64]]的 Linux x86_64/AMD64/EM64T 栏",
-    ),
-    zh,
-  );
-  assert.equal(zh.includes("]] 的"), false, "the extra space after the link is gone");
-  const link = expand("upload.help", {}, "zh")
-    .segments.flatMap((s) => s.nodes)
-    .find((n) => n.kind === "link");
-  assert.equal(link?.kind === "link" ? link.text : null, "NVIDIA 官网");
-  assert.equal(
-    link?.kind === "link" ? link.href : null,
-    "https://www.nvidia.com/en-us/drivers/unix/#linux64",
-  );
-  assert.match(expandText("upload.help", {}, "zh"), /请从 NVIDIA 官网的 Linux/);
-
-  assert.match(
-    expandText("upload.help", {}, "en"),
-    /Download NVIDIA-Linux-x86_64-<version>\.run from the Linux x86_64\/AMD64\/EM64T section of the NVIDIA website/,
-  );
+test("upload guidance names the optional installer and checksum files", () => {
+  assert.equal(MESSAGES["upload.run.skip"]!.zh, "下载页上的其他文件");
+  for (const lang of ["zh", "en"] as const) {
+    const help = expandText("upload.run.skip.body", {}, lang);
+    assert.ok(help.includes("no-compat32"));
+    assert.ok(help.includes(".md5sum"));
+    assert.ok(help.includes(".sha256sum"));
+    assert.match(help, lang === "zh" ? /不用上传/ : /Do not upload/);
+  }
 });
 
 interface GpuBlockFixture {
@@ -326,7 +312,7 @@ test("the plan unreadable GPU block keeps Action and List, and never the Note", 
     note: false,
   });
   assert.match((nonEmpty as unknown as FakeElement).textContent, /media-service/);
-  assert.match((nonEmpty as unknown as FakeElement).textContent, /以下是申请了显卡的应用/);
+  assert.match((nonEmpty as unknown as FakeElement).textContent, /请停止标为「正在使用显卡」的应用/);
 
   const empty = gpuBlockNode(app, { ...unreadable, users: [] } as never);
   assert.deepEqual(noticeParts(empty as unknown as AnyNode), {
@@ -418,9 +404,8 @@ test("task status keeps each label paired with its value in both languages", asy
     const readings = status.children.filter((node) => node instanceof FakeElement) as FakeElement[];
     const labeled = readings.filter((node) => node.className === "reading");
     assert.equal(labeled.length, 2);
-    const wait = readings.find((node) => node.className.split(/\s+/).includes("task-wait"));
+    const wait = readings.find((node) => node.className === "gpu-users");
     assert.ok(wait);
-    assert.equal(wait.getAttribute("hidden"), "");
     assert.equal(wait.textContent, "");
     for (const [index, key] of ["task.status", "task.phase"].entries()) {
       const reading = labeled[index]!;
@@ -488,7 +473,7 @@ test("the task-detail unreadable notice keeps Action and List and never the Note
 
   const busyEmpty = await renderDetail(taskDetail([], "task"));
   assert.deepEqual(noticeParts(busyEmpty), { action: false, list: false, note: true });
-  assert.match(busyEmpty.textContent, /没有找到申请了显卡的应用/);
+  assert.match(busyEmpty.textContent, /没有找到申请显卡的应用/);
 });
 
 test("unreadable refresh readings keep their own phrase", () => {
@@ -728,13 +713,13 @@ test("a successful update with a module that did not come back warns and says wh
     );
     assert.ok(area, lang);
     const title =
-      lang === "zh" ? "部分驱动模块没有重新加载" : "some driver modules were not reloaded";
+      lang === "zh" ? "部分驱动模块未重新加载" : "some driver modules were not reloaded";
     const action = lang === "zh" ? "重启主机" : "Restart the host";
     assert.ok(area.textContent.includes(title), area.textContent);
     assert.ok(area.textContent.includes("nvidia_uvm"), area.textContent);
     assert.ok(area.textContent.includes(action), area.textContent);
 
-    assert.equal(area.textContent.includes("成功检查通过。"), false, area.textContent);
+    assert.equal(area.textContent.split(lang === "zh" ? "成功检查通过。" : "the post-update check passed.").length - 1, 1, area.textContent);
   }
 });
 
@@ -827,7 +812,7 @@ test("a non-object log payload renders UNKNOWN and does not stop later lines", a
   );
   assert.ok(logTail, "the log tail was rendered");
   assert.match(logTail.textContent, /UNKNOWN/);
-  assert.match(logTail.textContent, /驱动扩展刷新:通过/);
+  assert.match(logTail.textContent, /驱动扩展刷新：通过/);
 });
 
 test("malformed fields inside object log payloads do not stop later lines", async () => {
@@ -887,7 +872,7 @@ test("invalid log fields remain UNKNOWN instead of inventing an exit or result",
     logParams("log.check_item", { check_item: "refresh", passed: false, since_before: { value: 1 }, since_after: { value: 2 } }),
     "zh",
   );
-  assert.match(valid, /驱动扩展刷新:未通过/);
+  assert.match(valid, /驱动扩展刷新：未通过/);
 });
 
 test("the readback log line keeps match, mismatch and an unknown hash apart", () => {
@@ -925,8 +910,8 @@ test("GPU application kinds use only the Docker and Incus keys", () => {
     "zh",
   );
   assert.match(text, /one · UNKNOWN/);
-  assert.match(text, /two · Docker 容器/);
-  assert.match(text, /TrueNAS 容器实例查询失败/);
+  assert.match(text, /two · Docker 应用/);
+  assert.match(text, /Incus 实例 查询失败/);
   assert.equal(text.includes("query.object.bogus"), false);
   assert.match(expandText("log.gpu_users", logParams("log.gpu_users", {}), "zh"), /UNKNOWN/);
 });
@@ -982,7 +967,7 @@ test("the build script's two-pass install mode uses the log phrase", async () =>
   assert.deepEqual(mode["install_mode"], { key: "log.install_mode.two_pass", params: {} });
   assert.equal(
     expandText("log.build_install_mode", mode, "zh"),
-    "安装方式:两遍(先用户态,后内核模块)。",
+    "安装方式：两遍（先用户态，后内核模块）。",
   );
   assert.equal(
     expandText("log.build_install_mode", mode, "en"),
@@ -1007,7 +992,7 @@ test("the build script's two-pass install mode uses the log phrase", async () =>
     n.className.split(/\s+/).includes("log-tail"),
   );
   assert.ok(logTail);
-  assert.match(logTail.textContent, /安装方式:两遍\(先用户态,后内核模块\)/);
+  assert.match(logTail.textContent, /安装方式：两遍（先用户态，后内核模块）/);
   assert.equal(logTail.textContent.includes("UNKNOWN"), false);
 });
 
@@ -1053,12 +1038,12 @@ test("a recorded release with retained material offers a cleanup retry", async (
 
 test("occupancy wait copy is a Chinese and English pair", () => {
   assert.equal(
-    expandText("update.checking", {}, "zh"),
-    "正在检查更新条件。如果显卡正被使用,会等它空闲,最多约 30 秒。",
+    expandText("gpu.wait.headline", {}, "zh"),
+    "显卡正被使用。停止标为「正在使用显卡」的应用后，更新会自动继续。",
   );
   assert.equal(
-    expandText("update.checking", {}, "en"),
-    "Checking update conditions. If the GPU is in use, this waits for it to become free, for up to about 30 seconds.",
+    expandText("gpu.wait.headline", {}, "en"),
+    "The GPU is in use. Once you stop the apps marked \"Using the GPU now\", the update continues automatically.",
   );
   for (const [phase, key] of [
     ["unload", "task.waiting_gpu"],
@@ -1086,7 +1071,7 @@ test("occupancy wait copy is a Chinese and English pair", () => {
     "The GPU was in use. After waiting 1000 ms, result: released.",
   );
   const held = logParams("log.occupancy_wait", { waited_ms: 30000, result: "still_in_use" });
-  assert.match(expandText("log.occupancy_wait", held, "zh"), /仍被占用/);
+  assert.match(expandText("log.occupancy_wait", held, "zh"), /仍被使用/);
   assert.match(expandText("log.occupancy_wait", held, "en"), /still in use/);
 
   const immediate = expand(
@@ -1100,10 +1085,10 @@ test("occupancy wait copy is a Chinese and English pair", () => {
     { module: "nvidia", unload_reason: "in use", old: "580.173.02", waited_in_use: true },
     "zh",
   );
-  assert.match(seg(waited, "body"), /程序等待了约 30 秒,驱动模块 nvidia 仍无法卸载/);
+  assert.match(seg(waited, "body"), /等待约 30 秒后仍无法卸载驱动模块 nvidia/);
 
   const busy = expand("notice.restore_stopped", { current: "580.173.02" }, "en", "busy");
-  assert.match(seg(busy, "body"), /The GPU stayed in use/);
+  assert.match(seg(busy, "body"), /the GPU stayed in use/);
   assert.match(seg(busy, "body"), /permanent path/);
   const busyEmpty = expand(
     "notice.restore_stopped",
@@ -1111,20 +1096,23 @@ test("occupancy wait copy is a Chinese and English pair", () => {
     "zh",
     "busy",
   );
-  assert.match(seg(busyEmpty, "action"), /如有应用正在反复重启,请先让它停止/);
-  assert.match(seg(expand("notice.gpu_in_use", {}, "zh"), "body"), /程序等待了约 30 秒,显卡仍被占用/);
-  assert.match(seg(expand("notice.gpu_in_use.empty_note", {}, "en"), "note"), /No app that requested the GPU was found/);
+  assert.match(seg(busyEmpty, "action"), /如有应用在反复重启，请先停止它/);
+  assert.match(seg(expand("notice.gpu_in_use", {}, "zh"), "body"), /已等待约 30 秒，驱动文件未改动/);
+  assert.match(seg(expand("notice.gpu_in_use.empty_note", {}, "en"), "note"), /No app requesting the GPU was found/);
 });
 
 test("a running wait shows one status line and does not rewrite it while it stays", async () => {
   let fire: (() => void) | null = null;
+  let fireGpu: (() => void) | null = null;
+  let gpuStopped = false;
   const previousWindow = (globalThis as unknown as { window: unknown }).window;
   (globalThis as unknown as { window: unknown }).window = {
-    setInterval: (fn: () => void): number => {
+    setInterval: (fn: () => void, ms: number): number => {
+      if (ms === 2000) { fireGpu = fn; return 2; }
       fire = fn;
       return 1;
     },
-    clearInterval: (): void => {},
+    clearInterval: (id: number): void => { if (id === 2) gpuStopped = true; },
   };
   const detail = {
     ...taskDetail([], "task"),
@@ -1132,10 +1120,11 @@ test("a running wait shows one status line and does not rewrite it while it stay
     phase: "align_modules",
     waiting_gpu: true,
   };
-  (globalThis as unknown as { fetch: unknown }).fetch = async (): Promise<unknown> => ({
+  (globalThis as unknown as { fetch: unknown }).fetch = async (url: string): Promise<unknown> => ({
     ok: true,
     status: 200,
-    json: async (): Promise<unknown> => detail,
+    json: async (): Promise<unknown> => url === "/api/gpu-users"
+      ? { state: "busy", users: [{name: "worker", type: "docker", usage: "in_use"}], errors: [] } : detail,
   });
   const container = new FakeElement("div");
   renderTask(
@@ -1147,10 +1136,14 @@ test("a running wait shows one status line and does not rewrite it while it stay
   await new Promise((resolve) => setTimeout(resolve, 0));
   const status = allElements(container).find((node) => node.getAttribute("role") === "status");
   assert.ok(status);
-  const wait = allElements(status).find((node) => node.className.split(/\s+/).includes("task-wait"));
+  const wait = allElements(status).find((node) => node.className.split(/\s+/).includes("gpu-list-headline"));
   assert.ok(wait);
   assert.equal(wait.getAttribute("hidden"), null);
   assert.equal(wait.textContent, MESSAGES["task.waiting_gpu.align"]?.en);
+  const users = allElements(status).find((node) => node.className === "gpu-users");
+  assert.ok(users);
+  assert.match(users.textContent, /Using the GPU now.*worker.*Docker app/);
+  const children = [...users.children];
   const descriptor = Object.getOwnPropertyDescriptor(FakeElement.prototype, "textContent");
   assert.ok(descriptor?.set && descriptor.get);
   let writes = 0;
@@ -1168,16 +1161,25 @@ test("a running wait shows one status line and does not rewrite it while it stay
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(writes, 0);
+  const gpuTick = fireGpu as (() => void) | null;
+  gpuTick?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(users.children, children);
+  detail.waiting_gpu = false;
+  tick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(users.children.length, 0);
+  assert.equal(gpuStopped, true);
   (globalThis as unknown as { window: unknown }).window = previousWindow;
 });
 
-test("the update check status appears after about 2 seconds and leaves when the request ends", () => {
+test("the update check status appears after about 1 second and leaves when the request ends", () => {
   const timers = new Map<number, () => void>();
   let next = 1;
   const previousWindow = (globalThis as unknown as { window: Window }).window;
   (globalThis as unknown as { window: unknown }).window = {
     setTimeout: (fn: () => void, ms?: number): number => {
-      assert.equal(ms, 2000);
+      assert.equal(ms, 1000);
       const id = next;
       next += 1;
       timers.set(id, fn);
@@ -1199,7 +1201,7 @@ test("the update check status appears after about 2 seconds and leaves when the 
   assert.equal(parent.children.length, 3);
   const status = parent.children[1] as FakeElement;
   assert.equal(status.getAttribute("role"), "status");
-  assert.equal(status.textContent, MESSAGES["update.checking"]?.zh);
+  assert.equal(status.textContent, MESSAGES["gpu.list.loading"]?.zh);
   assert.equal(parent.children[2], after);
   stop();
   assert.equal(parent.children.length, 2);
@@ -1212,4 +1214,14 @@ test("the update check status appears after about 2 seconds and leaves when the 
   assert.equal(timers.has(2), false);
   assert.equal(parentEarly.children.length, 1);
   (globalThis as unknown as { window: unknown }).window = previousWindow;
+});
+
+test("a terminal snapshot renders each category error once and keeps raw output outside alerts", async () => {
+  const detail = taskDetail([{name:"worker",type:"docker"}], "task");
+  const container = await renderDetailContainer({ ...detail, gpu_users: {checked_at:1792209600000, users:[{id:"docker:a",name:"worker",type:"docker",usage:"in_use"}], errors:[{type:"incus",reason:{key:"reason.permission_denied"},raw:"RAW_SNAPSHOT_COMMAND"}] } }, "en");
+  const notice = allElements(container).find((node) => node.className === "task-notice"); assert.ok(notice);
+  assert.equal(notice.textContent.split("permission").length - 1, 1);
+  assert.ok(notice.textContent.includes("List taken at"));
+  assert.ok(notice.textContent.includes("RAW_SNAPSHOT_COMMAND"));
+  assert.equal(allElements(notice).filter((node) => ["alert","status"].includes(node.getAttribute("role") ?? "")).some((node) => node.textContent.includes("RAW_SNAPSHOT_COMMAND")), false);
 });

@@ -52,8 +52,8 @@ test("confirmation renders the server's choices and warnings in both languages",
       assert.equal(body.textContent.includes(expandText("confirm.community_patch", {}, lang)), false);
       assert.equal(body.textContent.includes(expandText("original.skip_warning", {}, lang)), false);
       const trustText = lang === "en"
-        ? "The driver installer you uploaded will be built on this host and loaded into its kernel. Only use an installer you trust."
-        : "你上传的驱动安装包会在这台主机上构建并加载进内核。请只使用你信任的安装包。";
+        ? "The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. Use an installer downloaded from the NVIDIA website."
+        : "上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。请使用从 NVIDIA 官网下载的安装包。";
       assert.equal(body.textContent.includes(trustText), uploadWarning);
     }
   } finally {
@@ -68,7 +68,7 @@ test("a rejected read renders the API's own reason", () => {
   );
   assert.match(
     asElement(refused).textContent,
-    /The request origin does not match this program's address and was refused\./,
+    /The request origin does not match this page's address and was refused\./,
   );
 
   assert.equal(liveRegions(asElement(refused)).length, 1);
@@ -81,7 +81,7 @@ test("a transport failure renders the generic internal error", () => {
   const notice = apiErrorNotice(new TypeError("Failed to fetch"), "en");
   assert.match(
     asElement(notice).textContent,
-    /An internal error occurred in this program: request handling failed\./,
+    /Internal error: request handling failed\./,
   );
 });
 
@@ -89,7 +89,7 @@ test("response-level raw output stays outside the alert region", () => {
   const err = new ApiError(
     500,
     "internal",
-    { reason: { key: "internal.data_dir_unreadable", params: {} } },
+    { reason: { key: "internal.request_failed", params: {} } },
     "RAW_EXTERNAL_TEXT",
     null,
   );
@@ -181,7 +181,7 @@ test("one startup.failed problem carries the startup-check notice items", () => 
   // The sign-in page's startup-check notice line stops at the bracket  and never shows the external
   // command output.
   const loginLine = startupItemText(dataMapping, "en");
-  assert.match(loginLine, /this container's information could not be read \(docker inspect\)/);
+  assert.match(loginLine, /docker inspect failed to read this container's information/);
   assert.equal(loginLine.includes("exit code 2"), false);
   assert.equal(loginLine.includes("docker: external text"), false);
 

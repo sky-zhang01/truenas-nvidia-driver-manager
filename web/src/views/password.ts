@@ -16,7 +16,7 @@ import {
   copyText,
   registeredAgentCommand,
 } from "../ssh.js";
-import { closeDialog, openDialog } from "../dialog.js";
+import { closeDialog, makeDialog } from "../dialog.js";
 import type { App } from "../main.js";
 import type { Lang } from "../messages.js";
 import { writeReasonField } from "./login.js";
@@ -326,8 +326,7 @@ function renderSshKeys(app: App, container: HTMLElement): void {
     last: boolean,
     onDone: () => Promise<void> | void,
   ): void {
-    const dialog = el("dialog", { class: "nvm-dialog" }) as HTMLDialogElement;
-    const title = el("h3", { text: expandText("ssh.keys.delete", {}, lang2) });
+    const { dialog, show } = makeDialog({ title: expandText("ssh.keys.delete", {}, lang2) });
     const lead = el("p");
     if (last) {
       appendInline(lead, expand("ssh.keys.delete_last", {}, lang2).segments.flatMap((s) => s.nodes));
@@ -336,7 +335,7 @@ function renderSshKeys(app: App, container: HTMLElement): void {
     appendInline(body, expand("ssh.keys.delete_confirm", {}, lang2).segments.flatMap((s) => s.nodes));
     const fingerprint = el("p");
     fingerprint.append(el("code", { text: item.fingerprint }));
-    const cancel = el("button", { type: "button", text: expandText("confirm.close", {}, lang2) });
+    const cancel = el("button", { type: "button", text: expandText("dialog.close", {}, lang2) });
     const confirm = el("button", {
       type: "button",
       class: "btn-primary",
@@ -345,11 +344,10 @@ function renderSshKeys(app: App, container: HTMLElement): void {
     const error = el("div", { class: "form-error" });
     const actions = el("div", { class: "dialog-actions" });
     actions.append(cancel, confirm);
-    dialog.append(title);
     if (last) dialog.append(lead);
     dialog.append(body, fingerprint, error, actions);
-    container.append(dialog);
-    openDialog(dialog, title);
+    show();
+    app2.addCleanup(() => { if (dialog.open) dialog.close(); dialog.remove(); });
     cancel.addEventListener("click", () => {
       closeDialog(dialog);
       dialog.remove();

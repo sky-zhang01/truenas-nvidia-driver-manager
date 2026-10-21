@@ -376,6 +376,8 @@ struct Inner {
     forbidden_in_argv: Mutex<Vec<String>>,
     same_namespace: Mutex<bool>,
     dpkg_default: Mutex<Option<String>>,
+    /// Opt-in synthetic package content for browser upload fixtures only.
+    dpkg_fixture_content: Mutex<bool>,
     units: Mutex<BTreeMap<String, UnitState>>,
     /// Injection switch of `systemctl list-units`, the drain's unit query.
     list_units_fails: Mutex<bool>,
@@ -684,6 +686,7 @@ impl FakeHost {
                 forbidden_in_argv: Mutex::new(Vec::new()),
                 same_namespace: Mutex::new(false),
                 dpkg_default: Mutex::new(None),
+                dpkg_fixture_content: Mutex::new(false),
                 units: Mutex::new(BTreeMap::new()),
                 list_units_fails: Mutex::new(false),
                 mount_table_fails: Mutex::new(false),
@@ -748,6 +751,11 @@ impl FakeHost {
 
     pub fn set_dpkg_default(&self, fields: &str) {
         *self.inner.dpkg_default.lock().unwrap() = Some(fields.to_string());
+    }
+
+    /// Only explicit browser-test scenarios may interpret the NVM_TEST_DEB fixture format.
+    pub fn set_dpkg_fixture_content(&self, enabled: bool) {
+        *self.inner.dpkg_fixture_content.lock().unwrap() = enabled;
     }
 
     // ---- sandbox file helpers ------------------------------------------
@@ -2587,6 +2595,26 @@ impl FakeHost {
                 }
                 let args = arg_strings(cmd);
                 let path = args.get(1).cloned().unwrap_or_default();
+                if *self.inner.dpkg_fixture_content.lock().unwrap() {
+                    let fields = self
+                        .read(Path::new(&path))
+                        .ok()
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .and_then(|text| text.strip_prefix("NVM_TEST_DEB\n").map(str::to_owned))
+                        .filter(|fields| {
+                            let lines: Vec<_> = fields.lines().collect();
+                            lines.len() == 3
+                                && lines[0].starts_with("Package: ")
+                                && lines[1].starts_with("Version: ")
+                                && lines[2].starts_with("Architecture: ")
+                        });
+                    return Some(match fields {
+                        Some(fields) => FakeOutput::stdout(&fields),
+                        None => {
+                            FakeOutput::code(1).with_stderr("invalid synthetic package fixture")
+                        }
+                    });
+                }
                 match self.inner.dpkg.lock().unwrap().get(&path).cloned() {
                     Some(f) => Some(FakeOutput::stdout(&f)),
                     None => match self.inner.dpkg_default.lock().unwrap().clone() {

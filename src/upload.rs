@@ -25,6 +25,8 @@ pub struct UploadState {
 pub struct UploadInner {
     pub current: Option<String>,
     pub receiving: bool,
+    /// A confirmation holds these bytes stable until submission or cancellation.
+    pub locked: bool,
 }
 
 impl UploadState {
@@ -38,6 +40,7 @@ impl UploadState {
             inner: Mutex::new(UploadInner {
                 current: group,
                 receiving: false,
+                locked: false,
             }),
         }
     }
@@ -57,11 +60,18 @@ impl UploadState {
             .receiving
     }
 
+    /// Confirmation plans are process-local; a restart preserves files and releases the lock.
+    pub fn lock_group(&self, group: Option<&str>) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.locked = group.is_some() && inner.current.as_deref() == group;
+    }
+
     /// Drop the current-group pointer when it still names `group`.
     pub fn clear_if(&self, group: &str) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.current.as_deref() == Some(group) {
             inner.current = None;
+            inner.locked = false;
         }
     }
 
@@ -128,7 +138,9 @@ fn is_hex(s: &str, len: usize) -> bool {
 /// Rejection of an upload request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadReject {
-    Busy,
+    Busy {
+        params: serde_json::Value,
+    },
     GroupReplaced,
     /// The session was no longer valid at a point that would write.
     Unauthorized,
@@ -316,8 +328,10 @@ pub fn staged_group(h: &dyn Host, p: &Paths) -> Option<String> {
 /// upload creation: open a new group, replacing an unsubmitted staged group.
 pub fn open_group(h: &dyn Host, p: &Paths, st: &UploadState) -> Result<String, UploadReject> {
     let mut inner = st.inner.lock().unwrap_or_else(|e| e.into_inner());
-    if inner.receiving {
-        return Err(UploadReject::Busy);
+    if inner.receiving || inner.locked {
+        return Err(UploadReject::Busy {
+            params: serde_json::json!({}),
+        });
     }
     if let Some(old) = inner.current.clone() {
         let from = p.upload_group(&old);
@@ -1035,12 +1049,14 @@ pub async fn receive(
         if inner.current.as_deref() != Some(group.as_str()) {
             return Err(UploadReject::GroupReplaced);
         }
-        if inner.receiving {
-            return Err(UploadReject::Busy);
+        if inner.receiving || inner.locked {
+            return Err(UploadReject::Busy {
+                params: serde_json::json!({"file_name": client_name}),
+            });
         }
         inner.receiving = true;
     }
-    let guard = ReceivingGuard { st: st.clone() };
+    let guard = Arc::new(ReceivingGuard { st: st.clone() });
     if !name_ok(&client_name) {
         return Err(UploadReject::Rejected {
             file_name: client_name,
@@ -1078,13 +1094,13 @@ pub async fn receive(
         UploadReject::file_reject(&client_name, "write_failed", 500, serde_json::json!({}))
     })?;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(WRITE_QUEUE_FRAMES);
-    // The writer runs on the blocking pool and owns the receiving flag: the
-    // flag is released only when the thread that holds the file has really
-    // ended, so a cancelled future cannot let a second receive start while
-    // this one is still writing.
+    // Both the handler and the blocking writer retain the receiving flag. It
+    // covers content validation and the commit decision, and also outlives a
+    // cancelled handler until the thread holding the file has really ended.
+    let writer_guard = guard.clone();
     let writer = tokio::task::spawn_blocking(move || -> std::io::Result<WriteOutcome> {
         use sha2::{Digest, Sha256};
-        let _guard = guard;
+        let _guard = writer_guard;
         let mut file = file;
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
@@ -1245,18 +1261,10 @@ pub async fn receive(
     // half-finalized group. The old file and the old record survive a failed rewrite.
     let final_path = match (&kind, result.package.as_deref()) {
         (FileKind::Run, _) => p.upload_group(&group).join("driver.run"),
-        (FileKind::Deb, Some(package)) => {
-            let dir = p.upload_group(&group).join("toolkit");
-            if h.create_dir(&dir, 0o755).is_err() {
-                return Err(UploadReject::file_reject(
-                    &client_name,
-                    "write_failed",
-                    500,
-                    serde_json::json!({}),
-                ));
-            }
-            dir.join(format!("{package}.deb"))
-        }
+        (FileKind::Deb, Some(package)) => p
+            .upload_group(&group)
+            .join("toolkit")
+            .join(format!("{package}.deb")),
         (FileKind::Deb, None) => {
             return Err(UploadReject::file_reject(
                 &client_name,
@@ -1277,6 +1285,15 @@ pub async fn receive(
             if inner.current.as_deref() != Some(group.as_str()) {
                 return Err(UploadReject::GroupReplaced);
             }
+            if inner.locked {
+                return Err(UploadReject::Busy {
+                    params: serde_json::json!({
+                        "file_name": client_name,
+                        "kind": result.kind,
+                        "package": result.package,
+                    }),
+                });
+            }
         }
         let file_name = final_path
             .file_name()
@@ -1285,6 +1302,14 @@ pub async fn receive(
         // A slot that still has protected recovery material must get those bytes back before
         // a new replacement snapshots the slot.
         let final_dir = final_path.parent().unwrap_or(std::path::Path::new("."));
+        if kind == FileKind::Deb && h.create_dir(final_dir, 0o755).is_err() {
+            return Err(UploadReject::file_reject(
+                &client_name,
+                "write_failed",
+                500,
+                serde_json::json!({}),
+            ));
+        }
         if store::flush_recovery(h.as_ref(), final_dir, &file_name).is_err() {
             return Err(UploadReject::file_reject(
                 &client_name,

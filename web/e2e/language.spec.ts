@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./local-test.js";
 import { setScenario } from "./helpers.js";
 
 test("a Chinese browser sees Chinese, an English browser sees English", async ({ browser, request }) => {

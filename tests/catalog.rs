@@ -1002,3 +1002,81 @@ async fn submission_persists_the_single_selected_module_type() {
         );
     }
 }
+
+#[tokio::test]
+async fn old_official_580_open_is_rejected_before_starting_a_task() {
+    let (app, cookie) = gpu_setup(&[("0000:01:00.0", 0x1e37, Some("nvidia"))]).await;
+    let (status, body) = post_plan(
+        &app,
+        &cookie,
+        json!({
+            "kind": "official", "version": "580.119.02", "gpus": ["0000:01:00.0"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"], "plan.source_invalid.branch_unbuildable");
+    assert_eq!(body["params"]["branch"], 580);
+    assert_eq!(
+        body["params"]["reasons"],
+        json!([{"key": BRANCH_PCI_RESIZE_RESOURCE_ARGS, "params": {}}])
+    );
+    assert!(app.ctx.plan.lock().unwrap().0.is_none());
+    assert_eq!(app.host.count("systemd-run"), 0);
+    for version in ["580.126.09", "580.178.04"] {
+        app.host
+            .remove("/usr/src/linux-headers-truenas-production-amd64/include/linux/pci.h");
+        let (status, body) = post_plan(
+            &app,
+            &cookie,
+            json!({
+                "kind": "official", "version": version, "gpus": ["0000:01:00.0"],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["result"], "ready");
+    }
+}
+
+#[tokio::test]
+async fn gpu_usable_lower_bound_includes_open_buildability() {
+    let (app, cookie) = gpu_setup(&[
+        ("0000:01:00.0", 0x2b85, Some("nvidia")),
+        ("0000:02:00.0", 0x2684, Some("nvidia")),
+        ("0000:03:00.0", 0x1b80, Some("nvidia")),
+    ])
+    .await;
+    let (_, body) = get(&app, "/api/versions", Some(&cookie)).await;
+    assert_eq!(gpu_entry(&body, "2b85")["usable_from_branch"], 580);
+    assert_eq!(gpu_entry(&body, "2684")["usable_from_branch"], 580);
+    assert_eq!(gpu_entry(&body, "1b80")["usable_from_branch"], 470);
+    assert!(!body["open_unbuildable"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("580.178.04")));
+    for failure in ["catalog", "headers", "modules", "kernel"] {
+        match failure {
+            "catalog" => app.host.set_curl_failure(CATALOG_URL, 6, "unavailable"),
+            "headers" => app
+                .host
+                .remove("/usr/src/linux-headers-truenas-production-amd64/include/linux/pci.h"),
+            "modules" => app.host.fail_read(PROC_MODULES_PATH),
+            "kernel" => app.host.set_uname("invalid!"),
+            _ => unreachable!(),
+        }
+        let (_, body) = get(&app, "/api/versions", Some(&cookie)).await;
+        assert!(
+            body["gpus"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|g| g.get("usable_from_branch").is_none()),
+            "{failure}: {body}"
+        );
+        app.host.clear_failures();
+        app.host.set_uname(KERNEL);
+        prime_kernel_headers(&app.host, KERNEL);
+        app.host.set_curl(CATALOG_URL, 200, INDEX.as_bytes());
+    }
+}

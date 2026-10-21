@@ -1,4 +1,4 @@
-import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
+import { test, expect, type Page, type APIRequestContext } from "./local-test.js";
 import { readFile } from "node:fs/promises";
 import { BASE, PASSWORD, setScenario, setupCode, signIn } from "./helpers.js";
 
@@ -43,7 +43,7 @@ test("wrong codes preserve passwords, clear and focus the code and show help aft
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await fill(page, "0000-0000-0000-0000");
     await submit(page);
-    await expect(page.locator("#setup-code-error")).toContainText("This code does not match");
+    await expect(page.locator("#setup-code-error")).toContainText("The setup code is incorrect.");
     await expect(page.locator("#setup-code")).toHaveValue("");
     await expect(page.locator("#setup-code")).toBeFocused();
     await expect(page.locator("#setup-password")).toHaveValue(PASSWORD);
@@ -61,7 +61,7 @@ test("expired codes renew during submission and explain where to find the replac
   expect((await request.post(`${BASE}/__fake/setup-code/expire`)).ok()).toBeTruthy();
   await fill(page, expired);
   await submit(page);
-  await expect(page.locator("#setup-code-error")).toContainText("That code has expired. A new code is now in the logs.");
+  await expect(page.locator("#setup-code-error")).toContainText("The code has expired. A new code is in the logs.");
   const renewed = await setupCode(request);
   expect(renewed).not.toBe(expired);
   await page.locator("#setup-code").fill(renewed);
@@ -92,7 +92,7 @@ test("setup shares rate limiting and names the wait in seconds", async ({ page, 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await fill(page, "0000-0000-0000-0000");
     await submit(page);
-    await expect(page.locator("#setup-code-error")).toContainText("This code does not match");
+    await expect(page.locator("#setup-code-error")).toContainText("The setup code is incorrect.");
   }
   await page.locator("#setup-code").fill(await setupCode(request));
   await submit(page);
@@ -108,7 +108,7 @@ test("an existing account switches a stale setup page to sign-in", async ({ page
   await fill(page, code);
   await submit(page);
   await expect(page.locator("#login-user")).toBeVisible();
-  await expect(page.locator(".app-main")).toContainText("An administrator already exists. Please sign in.");
+  await expect(page.locator(".app-main")).toContainText("An administrator already exists. Sign in to continue.");
 });
 
 test("a reset sends a stale sign-in page to setup and revokes the previous password", async ({ page, request }) => {
@@ -133,7 +133,7 @@ test("restart invalidates the previous setup code", async ({ page, request }) =>
   expect(current).not.toBe(previous);
   await fill(page, previous);
   await submit(page);
-  await expect(page.locator("#setup-code-error")).toContainText("This code does not match");
+  await expect(page.locator("#setup-code-error")).toContainText("The setup code is incorrect.");
   await page.locator("#setup-code").fill(current);
   await submit(page);
   await expect(page.locator(".readings")).toBeVisible();

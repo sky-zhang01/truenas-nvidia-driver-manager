@@ -471,9 +471,13 @@ impl ErrorRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuUserRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::gpu_users::Usage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -485,6 +489,8 @@ pub struct GpuUserError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuUsersRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
     #[serde(default)]
     pub users: Vec<GpuUserRecord>,
     #[serde(default)]
@@ -1234,6 +1240,7 @@ mod tests {
         st.finished_at = Some(2);
         st.loaded_version_start = Some(ReadingJson::unknown("reason.brand_new_cause"));
         st.gpu_users = Some(GpuUsersRecord {
+            checked_at: None,
             users: Vec::new(),
             errors: vec![GpuUserError {
                 kind: "docker".into(),

@@ -61,6 +61,10 @@ fn only_virt_interface_keeps_existing_container_gpu_behavior() {
     let result = list(&host, Duration::from_secs(2));
     assert!(result.errors.is_empty());
     assert_eq!(result.users[0].name, "cuda");
+    assert_eq!(
+        serde_json::to_value(&result.users[0]).unwrap()["usage"],
+        "unknown"
+    );
 }
 
 #[test]
