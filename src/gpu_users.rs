@@ -29,10 +29,23 @@ impl UserKind {
     }
 }
 
+/// Whether this application's own processes currently hold a GPU device open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Usage {
+    InUse,
+    #[default]
+    Unknown,
+    Requested,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuUser {
+    pub id: String,
     pub name: String,
     pub kind: UserKind,
+    #[serde(default)]
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,9 +57,12 @@ pub struct CategoryError {
 /// The JSON shape used in GPU occupancy, unload/restore failures and version-change lists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuUserJson {
+    pub id: String,
     pub name: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
+    #[serde(default)]
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,8 +75,10 @@ pub struct GpuUserErrorJson {
 impl From<&GpuUser> for GpuUserJson {
     fn from(u: &GpuUser) -> GpuUserJson {
         GpuUserJson {
+            id: u.id.clone(),
             name: u.name.clone(),
             kind: u.kind.as_str(),
+            usage: u.usage,
         }
     }
 }
@@ -93,6 +111,7 @@ pub struct DeviceMapping {
 
 #[derive(Debug, Clone, Default)]
 pub struct InspectedContainer {
+    pub id: String,
     pub name: String,
     pub env: Vec<String>,
     pub device_requests: Vec<DeviceRequest>,
@@ -103,6 +122,8 @@ pub struct InspectedContainer {
 
 #[derive(Deserialize)]
 struct RawInspect {
+    #[serde(rename = "Id")]
+    id: Option<String>,
     #[serde(rename = "Name")]
     name: Option<String>,
     #[serde(rename = "Config")]
@@ -145,6 +166,7 @@ pub fn parse_inspect(json: &[u8]) -> Result<Vec<InspectedContainer>, String> {
     Ok(raw
         .into_iter()
         .map(|c| InspectedContainer {
+            id: c.id.unwrap_or_default(),
             name: c.name.unwrap_or_default(),
             env: c.config.and_then(|c| c.env).unwrap_or_default(),
             device_requests: c
@@ -232,11 +254,9 @@ pub fn docker_requests_gpu(c: &InspectedContainer, nvidia_dri: &BTreeSet<String>
 /// DRM node reading: the set of DRM nodes whose device driver is `nvidia`.
 pub fn nvidia_dri_nodes(h: &dyn Host) -> Result<BTreeSet<String>, &'static str> {
     let dir = Path::new("/sys/class/drm");
-    let names = h.read_dir(dir).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-        std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-        _ => REASON_IO_ERROR,
-    })?;
+    let names = h
+        .read_dir(&h.view(dir))
+        .map_err(|e| crate::log::io_reason_key(&e))?;
     let mut out = BTreeSet::new();
     let mut any_readable = false;
     for name in names {
@@ -251,7 +271,7 @@ pub fn nvidia_dri_nodes(h: &dyn Host) -> Result<BTreeSet<String>, &'static str> 
             continue;
         }
         let link = dir.join(&name).join("device").join("driver");
-        match h.read_link(&link) {
+        match h.read_link(&h.view(&link)) {
             Ok(target) => {
                 any_readable = true;
                 if target.file_name().map(|n| n == "nvidia").unwrap_or(false) {
@@ -264,6 +284,101 @@ pub fn nvidia_dri_nodes(h: &dyn Host) -> Result<BTreeSet<String>, &'static str> 
     }
     let _ = any_readable;
     Ok(out)
+}
+
+/// Query only the listed container, asking Docker for PIDs without process names or arguments.
+/// No host-wide process enumeration or reads of cmdline/environ are needed.
+fn docker_usage(h: &dyn Host, id: &str, timeout: Duration) -> Usage {
+    let out = h.run(
+        &Cmd::new(At::Host, "docker", timeout)
+            .arg("top")
+            .arg(id)
+            .arg("-eo")
+            .arg("pid"),
+    );
+    if !out.exit.ok() {
+        return Usage::Unknown;
+    }
+    let Ok(text) = std::str::from_utf8(&out.stdout) else {
+        return Usage::Unknown;
+    };
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("PID") {
+        return Usage::Unknown;
+    }
+    let mut pids = BTreeSet::new();
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() || !line.bytes().all(|b| b.is_ascii_digit()) {
+            return Usage::Unknown;
+        }
+        match line.parse::<u32>() {
+            Ok(pid) if pid > 0 => {
+                pids.insert(pid);
+            }
+            _ => return Usage::Unknown,
+        }
+    }
+    if pids.is_empty() {
+        return Usage::Unknown;
+    }
+    let mut in_use = false;
+    let mut dri = None;
+    for pid in pids {
+        let dir = h.view(Path::new(&format!("/proc/{pid}/fd")));
+        let Ok(fds) = h.read_dir(&dir) else {
+            return Usage::Unknown;
+        };
+        for fd in fds {
+            let Some(name) = fd.to_str() else {
+                return Usage::Unknown;
+            };
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+                return Usage::Unknown;
+            }
+            let Ok(target) = h.read_link(&dir.join(fd)) else {
+                return Usage::Unknown;
+            };
+            let Some(target) = target.to_str() else {
+                return Usage::Unknown;
+            };
+            let target = target.strip_suffix(" (deleted)").unwrap_or(target);
+            if target.starts_with("/dev/nvidia") {
+                in_use = true;
+            }
+            if let Some(node) = target.strip_prefix("/dev/dri/") {
+                if dri.is_none() {
+                    let Ok(nodes) = nvidia_dri_nodes(h) else {
+                        return Usage::Unknown;
+                    };
+                    dri = Some(nodes);
+                }
+                if node.contains('/') || node.is_empty() {
+                    return Usage::Unknown;
+                }
+                // A missing driver link is unreadable, not evidence of another driver.
+                let link = h.view(
+                    Path::new("/sys/class/drm")
+                        .join(node)
+                        .join("device/driver")
+                        .as_path(),
+                );
+                let Ok(driver) = h.read_link(&link) else {
+                    return Usage::Unknown;
+                };
+                if dri.as_ref().is_some_and(|nodes| nodes.contains(node))
+                    || driver.file_name().is_some_and(|name| name == "nvidia")
+                {
+                    in_use = true;
+                }
+            }
+        }
+    }
+    if in_use {
+        Usage::InUse
+    } else {
+        Usage::Requested
+    }
 }
 
 /// The Docker category error for a failed command: the same command-failure classification as
@@ -398,8 +513,10 @@ pub fn container_gpu_instances(
                 .unwrap_or(false)
         })
         .map(|i| GpuUser {
+            id: format!("virt:{}", i.id),
             name: i.name.clone(),
             kind: UserKind::TrueNasContainer,
+            usage: Usage::Unknown,
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -504,8 +621,17 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
                                 .iter()
                                 .filter(|c| docker_requests_gpu(c, &nodes))
                                 .map(|c| GpuUser {
+                                    id: format!(
+                                        "docker:{}",
+                                        if c.id.is_empty() { &c.name } else { &c.id }
+                                    ),
                                     name: c.name.trim_start_matches('/').to_string(),
                                     kind: UserKind::Docker,
+                                    usage: if ids.contains(&c.id) {
+                                        docker_usage(h, &c.id, timeout)
+                                    } else {
+                                        Usage::Unknown
+                                    },
                                 })
                                 .collect();
                             users.sort_by(|a, b| a.name.cmp(&b.name));
@@ -549,6 +675,12 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
             .push(category_error(UserKind::TrueNasContainer, &out, timeout)),
     }
 
+    result.users.sort_by(|a, b| {
+        a.usage
+            .cmp(&b.usage)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     result
 }
 
@@ -717,8 +849,10 @@ fn parse_container_users(h: &dyn Host, bytes: &[u8]) -> Result<Vec<GpuUser>, &'s
         }
         if requested {
             users.push(GpuUser {
+                id: format!("container:{}", entry.id),
                 name: entry.name,
                 kind: UserKind::TrueNasContainer,
+                usage: Usage::Unknown,
             });
         }
     }
@@ -732,6 +866,7 @@ mod tests {
 
     fn container(env: &[&str], devices: &[&str]) -> InspectedContainer {
         InspectedContainer {
+            id: String::new(),
             name: "/ix-emby-1".into(),
             env: env.iter().map(|s| s.to_string()).collect(),
             device_requests: Vec::new(),

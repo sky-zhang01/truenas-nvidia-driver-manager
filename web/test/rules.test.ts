@@ -32,7 +32,7 @@ const PATCHED_ITEMS = [...ITEMS, "470.256.02"];
 const OPEN_UNBUILDABLE = ["575.64.05", "570.211.01", "565.77", "550.163.01"];
 const OPEN_OPTIONS = ["615.71.09", "610.57.04", "595.104.02", "590.48.01", "580.178.04"];
 const CLOSED_OPTIONS = ["580.178.04", "575.64.05", "570.211.01", "565.77", "550.163.01"];
-const EITHER_OPTIONS = [...OPEN_OPTIONS, "550.163.01"];
+const EITHER_OPTIONS = [...OPEN_OPTIONS];
 
 interface Known {
   device: string;
@@ -40,28 +40,30 @@ interface Known {
   modules: Modules;
   last_branch?: number;
   first?: string;
+  usable_from_branch?: number;
 }
 
+// Simulated backend responses for ITEMS. No support-bound algorithm is duplicated here.
 const TABLE: Record<string, Known> = {
-  "1b80": { device: "1b80", name: "NVIDIA GeForce GTX 1080", modules: "closed_only", last_branch: 580, first: "470.42.01" },
+  "1b80": { device: "1b80", name: "NVIDIA GeForce GTX 1080", modules: "closed_only", last_branch: 580, first: "470.42.01", usable_from_branch: 550 },
   "1180": { device: "1180", name: "GeForce GTX 680", modules: "closed_only", last_branch: 470, first: "470.42.01" },
   "06c0": { device: "06c0", modules: "closed_only", last_branch: 390 },
   "0fc0": { device: "0fc0", name: "NVIDIA GeForce GT 640", modules: "closed_only", last_branch: 470, first: "470.42.01" },
-  "2b85": { device: "2b85", name: "NVIDIA GeForce RTX 5090", modules: "open_only", first: "570.86.16" },
-  "2c33": { device: "2c33", name: "NVIDIA RTX PRO 4000 Blackwell SFF Edition", modules: "open_only", first: "570.190" },
-  "2684": { device: "2684", name: "NVIDIA GeForce RTX 4090", modules: "either", first: "520.56.06" },
-  "1e02": { device: "1e02", modules: "either", first: "470.42.01" },
+  "2b85": { device: "2b85", name: "NVIDIA GeForce RTX 5090", modules: "open_only", first: "570.86.16", usable_from_branch: 580 },
+  "2c33": { device: "2c33", name: "NVIDIA RTX PRO 4000 Blackwell SFF Edition", modules: "open_only", first: "570.190", usable_from_branch: 580 },
+  "2684": { device: "2684", name: "NVIDIA GeForce RTX 4090", modules: "either", first: "520.56.06", usable_from_branch: 580 },
+  "1e02": { device: "1e02", modules: "either", first: "470.42.01", usable_from_branch: 580 },
 };
 
 // Devices outside the table, by device-ID band.
 const OUTSIDE: Record<string, Known> = {
   "101f": { device: "101f", modules: "closed_only", last_branch: 470 },
-  "1b07": { device: "1b07", modules: "closed_only", last_branch: 580 },
-  "1e37": { device: "1e37", modules: "either", first: "470.42.01" },
-  "2bb2": { device: "2bb2", modules: "open_only", first: "570.86.16" },
-  "2c2c": { device: "2c2c", modules: "open_only", first: "570.86.16" },
-  "2c09": { device: "2c09", modules: "open_only", first: "615.71.09" },
-  "3001": { device: "3001", modules: "open_only", first: "615.71.09" },
+  "1b07": { device: "1b07", modules: "closed_only", last_branch: 580, usable_from_branch: 550 },
+  "1e37": { device: "1e37", modules: "either", first: "470.42.01", usable_from_branch: 580 },
+  "2bb2": { device: "2bb2", modules: "open_only", first: "570.86.16", usable_from_branch: 580 },
+  "2c2c": { device: "2c2c", modules: "open_only", first: "570.86.16", usable_from_branch: 580 },
+  "2c09": { device: "2c09", modules: "open_only", first: "615.71.09", usable_from_branch: 615 },
+  "3001": { device: "3001", modules: "open_only", first: "615.71.09", usable_from_branch: 615 },
 };
 
 function gpu(device: string, address = `0000:0a:00.0`, items = ITEMS): GpuReading {
@@ -83,6 +85,9 @@ function gpu(device: string, address = `0000:0a:00.0`, items = ITEMS): GpuReadin
   if (known.name !== undefined) g.name = known.name;
   if (known.last_branch !== undefined) g.last_branch = known.last_branch;
   if (known.first !== undefined) g.first_branch = majorOf(known.first) ?? undefined;
+  const patchedLowerBounds: Record<string, number> = { "1b80": 470, "1180": 470, "0fc0": 470, "101f": 470, "1b07": 470, "1e02": 470, "1e37": 470 };
+  const usable = items === PATCHED_ITEMS ? patchedLowerBounds[device] ?? known.usable_from_branch : known.usable_from_branch;
+  if (usable !== undefined) Object.assign(g, { usable_from_branch: usable });
   return g;
 }
 
@@ -91,6 +96,66 @@ function run(devices: string[], selected: string[], unreadable: Unreadable[] = [
   const picked = selected.map((d) => gpus[devices.indexOf(d)]?.address ?? "");
   return filterVersions(items, OPEN_UNBUILDABLE, unreadable, gpus, picked);
 }
+
+// Explicit API responses: these lower bounds come from the backend, not a frontend calculation.
+test("C14 open support uses the host usable bound instead of first support", () => {
+  const card = { ...gpu("2b85"), usable_from_branch: 580 };
+  const result = filterVersions(ITEMS, OPEN_UNBUILDABLE, [], [card], [card.address]);
+  assert.deepEqual(result.options, OPEN_OPTIONS);
+  assert.deepEqual(result.notes, [{ gpu: card, kind: "from", branch: 580 }]);
+});
+
+test("C14 closed support uses its actual lower bound without open exclusions", () => {
+  const versions = ["580.178.04", "565.77", "550.163.01"];
+  const card = { ...gpu("1b80"), first_branch: 550, usable_from_branch: 565, too_old: ["550.163.01"], too_new: [] };
+  const result = filterVersions(versions, ["565.77"], [], [card], [card.address]);
+  assert.deepEqual(result.options, ["580.178.04", "565.77"]);
+  assert.deepEqual(result.notes, [{ gpu: card, kind: "from", branch: 565 }]);
+});
+
+test("C14 missing usable readings never infer a from note", () => {
+  const { usable_from_branch: _omitted, ...card } = { ...gpu("2b85"), usable_from_branch: 580 };
+  const result = filterVersions(ITEMS, OPEN_UNBUILDABLE, [], [card], [card.address]);
+  assert.deepEqual(result.options, OPEN_OPTIONS);
+  assert.deepEqual(result.notes, []);
+});
+
+test("C14 lower-bound notes require an actual lower catalog exclusion", () => {
+  const card = { ...gpu("2b85"), usable_from_branch: 580, too_old: ["550.163.01"] };
+  const result = filterVersions(OPEN_OPTIONS, OPEN_UNBUILDABLE, [], [card], [card.address]);
+  assert.deepEqual(result.options, OPEN_OPTIONS);
+  assert.deepEqual(result.notes, []);
+  const sameBranch = { ...card, too_old: [] };
+  assert.deepEqual(filterVersions(["580.126.09", "580.119.02"], ["580.119.02"], [], [sameBranch], [sameBranch.address]).notes,
+    [{ gpu: sameBranch, kind: "from", branch: 580 }]);
+  const upperExcluded = { ...card, too_old: [], too_new: ["615.71.09"], last_branch: 610 };
+  assert.deepEqual(filterVersions(OPEN_OPTIONS, ["615.71.09"], [], [upperExcluded], [upperExcluded.address]).notes,
+    [{ gpu: upperExcluded, kind: "last", branch: 610 }]);
+});
+
+test("C14 open exclusions include versions below 555", () => {
+  const versions = ["555.42.02", "550.163.01"];
+  for (const modules of ["open_only", "either"] as Modules[]) {
+    const card = { ...gpu("2684"), modules, too_old: [], too_new: [] };
+    assert.deepEqual(filterVersions(versions, versions, [], [card], [card.address]).options, []);
+  }
+});
+
+test("C14 multi-card notes retain individual bounds, last notes, conflict and selection behavior", () => {
+  const open = { ...gpu("2b85", "0000:02:00.0"), usable_from_branch: 580 };
+  const closed = { ...gpu("1b80", "0000:01:00.0"), usable_from_branch: 550 };
+  const either = { ...gpu("2684", "0000:03:00.0"), usable_from_branch: 580 };
+  const multi = filterVersions(ITEMS, OPEN_UNBUILDABLE, [], [either, open], [either.address, open.address]);
+  assert.deepEqual(multi.options, OPEN_OPTIONS);
+  assert.deepEqual(multi.notes, [{ gpu: open, kind: "from", branch: 580 }, { gpu: either, kind: "from", branch: 580 }]);
+  const clash = filterVersions(ITEMS, OPEN_UNBUILDABLE, [], [open, closed], [open.address, closed.address]);
+  assert.deepEqual(clash.options, []);
+  assert.equal(clash.conflict, true);
+  assert.equal(clash.noUsableVersion, true);
+  assert.deepEqual(clash.notes, [{ gpu: closed, kind: "last", branch: 580 }, { gpu: open, kind: "from", branch: 580 }]);
+  const unselected = filterVersions(ITEMS, OPEN_UNBUILDABLE, [], [open, closed], []);
+  assert.deepEqual(unselected, { options: [], notes: [], noUsableVersion: false, noneSelected: true, conflict: false });
+});
 
 test("version format and ordering", () => {
   assert.equal(versionFormatOk("580.173.02"), true);
@@ -188,7 +253,7 @@ test("a closed-only and an open-only GPU together list nothing", () => {
   assert.equal(res.noUsableVersion, true);
   assert.equal(res.notes.length, 2);
   assert.equal(res.notes[0]?.branch, 580);
-  assert.equal(res.notes[1]?.branch, 570);
+  assert.equal(res.notes[1]?.branch, 580);
 });
 
 test("devices outside the table use their band", () => {
@@ -203,12 +268,13 @@ test("devices outside the table use their band", () => {
 
   const t10 = run(["1e37"], ["1e37"]);
   assert.deepEqual(t10.options, EITHER_OPTIONS);
-  assert.deepEqual(t10.notes, []);
+  assert.equal(t10.notes[0]?.branch, 580);
+  assert.deepEqual(t10.notes.map(({ kind, branch }) => ({ kind, branch })), [{ kind: "from", branch: 580 }]);
 
   const engineering = run(["2c2c"], ["2c2c"]);
   assert.deepEqual(engineering.options, OPEN_OPTIONS);
   assert.equal(engineering.notes[0]?.kind, "from");
-  assert.equal(engineering.notes[0]?.branch, 570);
+  assert.equal(engineering.notes[0]?.branch, 580);
 
   const unknownPrefix = run(["3001"], ["3001"]);
   assert.deepEqual(unknownPrefix.options, ["615.71.09"]);
@@ -216,7 +282,7 @@ test("devices outside the table use their band", () => {
   assert.equal(unknownPrefix.notes[0]?.branch, 615);
 
   const bb2 = run(["2bb2"], ["2bb2"]);
-  assert.equal(bb2.notes[0]?.branch, 570);
+  assert.equal(bb2.notes[0]?.branch, 580);
 });
 
 test("two GPUs selected: one line per excluding GPU, by address", () => {
@@ -241,21 +307,21 @@ test("two or more counted GPUs and none selected lists nothing", () => {
 
 test("module compatibility uses the whole selected group and preserves support notes", () => {
   for (const [devices, selected, options, notes] of [
-    [["2684"], ["2684"], EITHER_OPTIONS, []],
-    [["2b85"], ["2b85"], OPEN_OPTIONS, ["from:570"]],
-    [["2c33"], ["2c33"], OPEN_OPTIONS, ["from:570"]],
+    [["2684"], ["2684"], EITHER_OPTIONS, ["from:580"]],
+    [["2b85"], ["2b85"], OPEN_OPTIONS, ["from:580"]],
+    [["2c33"], ["2c33"], OPEN_OPTIONS, ["from:580"]],
     [["1b80", "2684"], ["1b80", "2684"], CLOSED_OPTIONS, ["last:580"]],
     [["1b07", "2684"], ["1b07", "2684"], CLOSED_OPTIONS, ["last:580"]],
-    [["2684", "2b85"], ["2684", "2b85"], OPEN_OPTIONS, ["from:570"]],
-    [["2b85", "1e37"], ["2b85", "1e37"], OPEN_OPTIONS, ["from:570"]],
-    [["2b85", "2c2c"], ["2b85", "2c2c"], OPEN_OPTIONS, ["from:570", "from:570"]],
-    [["2b85", "2c33"], ["2b85", "2c33"], OPEN_OPTIONS, ["from:570", "from:570"]],
+    [["2684", "2b85"], ["2684", "2b85"], OPEN_OPTIONS, ["from:580", "from:580"]],
+    [["2b85", "1e37"], ["2b85", "1e37"], OPEN_OPTIONS, ["from:580", "from:580"]],
+    [["2b85", "2c2c"], ["2b85", "2c2c"], OPEN_OPTIONS, ["from:580", "from:580"]],
+    [["2b85", "2c33"], ["2b85", "2c33"], OPEN_OPTIONS, ["from:580", "from:580"]],
     [["1b80", "2b85"], ["1b80"], CLOSED_OPTIONS, ["last:580"]],
-    [["1b80", "2b85"], ["2b85"], OPEN_OPTIONS, ["from:570"]],
-    [["1b80", "2684"], ["2684"], EITHER_OPTIONS, []],
-    [["1b07", "2c2c"], ["1b07", "2c2c"], [], ["last:580", "from:570"]],
-    [["1b80", "2c2c"], ["1b80", "2c2c"], [], ["last:580", "from:570"]],
-    [["1b07", "2b85"], ["1b07", "2b85"], [], ["last:580", "from:570"]],
+    [["1b80", "2b85"], ["2b85"], OPEN_OPTIONS, ["from:580"]],
+    [["1b80", "2684"], ["2684"], EITHER_OPTIONS, ["from:580"]],
+    [["1b07", "2c2c"], ["1b07", "2c2c"], [], ["last:580", "from:580"]],
+    [["1b80", "2c2c"], ["1b80", "2c2c"], [], ["last:580", "from:580"]],
+    [["1b07", "2b85"], ["1b07", "2b85"], [], ["last:580", "from:580"]],
   ] as [string[], string[], string[], string[]][]) {
     const res = run(devices, selected);
     assert.deepEqual(res.options, options, selected.join("+"));
@@ -270,8 +336,8 @@ test("qualified 470 GPU inputs retain the exact choices and support notes", () =
   const e = [...EITHER_OPTIONS, r];
   const rows: [string, string[], string[], string[], string[]][] = [
     ["no counted GPU", [], [], PATCHED_ITEMS, []],
-    ["Blackwell", ["2b85"], ["2b85"], h, ["from:570"]],
-    ["Ada", ["2684"], ["2684"], EITHER_OPTIONS, ["from:520"]],
+    ["Blackwell", ["2b85"], ["2b85"], h, ["from:580"]],
+    ["Ada", ["2684"], ["2684"], EITHER_OPTIONS, ["from:580"]],
     ["early Either", ["1e02"], ["1e02"], e, []],
     ["Pascal", ["1b80"], ["1b80"], c, ["last:580"]],
     ["Kepler", ["1180"], ["1180"], [r], ["last:470"]],
@@ -280,16 +346,16 @@ test("qualified 470 GPU inputs retain the exact choices and support notes", () =
     ["new Open band", ["2c09"], ["2c09"], ["615.71.09"], ["from:615"]],
     ["unknown Pascal band", ["1b07"], ["1b07"], c, ["last:580"]],
     ["unknown Either band", ["1e37"], ["1e37"], e, []],
-    ["unknown Open band", ["2c2c"], ["2c2c"], h, ["from:570"]],
+    ["unknown Open band", ["2c2c"], ["2c2c"], h, ["from:580"]],
     ["newest Open band", ["3001"], ["3001"], ["615.71.09"], ["from:615"]],
-    ["Pascal and Ada", ["1b80", "2684"], ["1b80", "2684"], CLOSED_OPTIONS, ["last:580", "from:520"]],
-    ["Pascal and Blackwell", ["1b80", "2b85"], ["1b80", "2b85"], [], ["last:580", "from:570"]],
-    ["Pascal and unknown Open", ["1b80", "2c2c"], ["1b80", "2c2c"], [], ["last:580", "from:570"]],
-    ["Ada and Blackwell", ["2684", "2b85"], ["2684", "2b85"], h, ["from:520", "from:570"]],
+    ["Pascal and Ada", ["1b80", "2684"], ["1b80", "2684"], CLOSED_OPTIONS, ["last:580", "from:580"]],
+    ["Pascal and Blackwell", ["1b80", "2b85"], ["1b80", "2b85"], [], ["last:580", "from:580"]],
+    ["Pascal and unknown Open", ["1b80", "2c2c"], ["1b80", "2c2c"], [], ["last:580", "from:580"]],
+    ["Ada and Blackwell", ["2684", "2b85"], ["2684", "2b85"], h, ["from:580", "from:580"]],
     ["two Pascal cards", ["1b07", "1b80"], ["1b07", "1b80"], c, ["last:580", "last:580"]],
-    ["unknown Pascal and Ada", ["1b07", "2684"], ["1b07", "2684"], CLOSED_OPTIONS, ["last:580", "from:520"]],
-    ["unknown Pascal and Blackwell", ["1b07", "2b85"], ["1b07", "2b85"], [], ["last:580", "from:570"]],
-    ["Blackwell and early Either", ["2b85", "1e37"], ["2b85", "1e37"], h, ["from:570"]],
+    ["unknown Pascal and Ada", ["1b07", "2684"], ["1b07", "2684"], CLOSED_OPTIONS, ["last:580", "from:580"]],
+    ["unknown Pascal and Blackwell", ["1b07", "2b85"], ["1b07", "2b85"], [], ["last:580", "from:580"]],
+    ["Blackwell and early Either", ["2b85", "1e37"], ["2b85", "1e37"], h, ["from:580"]],
   ];
   for (const [label, devices, selected, expected, notes] of rows) {
     const result = run(devices, selected, [], PATCHED_ITEMS);
@@ -306,10 +372,10 @@ test("qualified 470 GPU inputs retain the exact choices and support notes", () =
   }
 });
 
-test("open exclusions start at 555 and do not constrain unspecified module types", () => {
+test("open exclusions have no frontend branch threshold and do not constrain unspecified module types", () => {
   const versions = ["555.42.02", "550.163.01"];
   const either = { ...gpu("2684"), too_old: [], too_new: [] };
-  assert.deepEqual(filterVersions(versions, versions, [], [either], [either.address]).options, ["550.163.01"]);
+  assert.deepEqual(filterVersions(versions, versions, [], [either], [either.address]).options, []);
   assert.deepEqual(filterVersions(versions, versions, [], [either], []).options, versions);
   assert.deepEqual(filterVersions(versions, versions, [], [], []).options, versions);
   assert.deepEqual(filterVersions(versions, [], [], [either], [either.address]).options, versions);
@@ -478,7 +544,7 @@ test("success notice values come from the checks and the restore record", () => 
   assert.equal(String(params["date"]).includes("1790985600000"), false);
   assert.match(String(params["date"]), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   const reason = String(params["check_reason"]);
-  assert.match(reason, /驱动扩展刷新的观测值为/);
+  assert.match(reason, /驱动扩展刷新 的观测值为/);
   assert.match(reason, /期望值为 595\.104\.02/);
   assert.equal(reason.includes("UNKNOWN"), false);
   assert.equal(reason.includes("update:"), false);
@@ -500,11 +566,11 @@ test("two-failures notice and restore-failed notice read the missed deadline wit
   assert.equal(reason.key, "restore.fail.deadline");
   assert.equal(
     expandText(reason.key, reason.params, "zh"),
-    "写入原版驱动文件之前已超过执行期限(10 分钟)",
+    "写入原版驱动文件之前已超过执行期限（10 分钟）",
   );
   const params = taskNoticeParams(detail, "zh");
   assert.deepEqual(params["restore_reason"], reason);
-  assert.match(String(params["check_reason"]), /驱动扩展刷新的观测值为/);
+  assert.match(String(params["check_reason"]), /驱动扩展刷新 的观测值为/);
   assert.equal(checkReasonText(detail, "restore", "zh"), "UNKNOWN");
 });
 
@@ -555,7 +621,7 @@ test("restore-failed notice with nothing unloaded drops the reload sentence", ()
   assert.notEqual(params["reload_failed"], true);
   const text = expandText("notice.restore_failed", params, "en", "before_write");
   assert.equal(text.includes("already unloaded have been reloaded"), false);
-  assert.match(text, /The driver file at the permanent path is still 595\.104\.02/);
+  assert.match(text, /the driver file is still 595\.104\.02/i);
 });
 
 test("a failed reload keeps the reload sentence", () => {
@@ -585,8 +651,8 @@ test("a failed reload keeps the reload sentence", () => {
   assert.equal(params["reload_failed"], true);
   assert.equal(params["not_unloaded"], undefined);
   const text = expandText("notice.restore_failed", params, "en", "before_write");
-  assert.match(text, /Reloading the driver modules failed/);
-  assert.match(text, /Not all of the unloaded driver modules were reloaded/);
+  assert.match(text, /Reloading failed/);
+  assert.match(text, /GPU apps may fail to start/);
   assert.equal(text.includes("already unloaded have been reloaded"), false);
 });
 
@@ -663,5 +729,16 @@ test("reload failure copy follows the last corrective round", () => {
       const params = taskNoticeParams(detail, "en");
       assert.equal(params["reload_failed"], !finalOk);
     }
+  }
+});
+
+
+test("support notes render the backend lower bound as one sentence", () => {
+  const result = run(["2b85"], ["2b85"]);
+  assert.deepEqual(result.notes.map(({ kind, branch }) => ({ kind, branch })), [{ kind: "from", branch: 580 }]);
+  assert.equal("missing" in result.notes[0]!, false);
+  for (const lang of ["zh", "en"] as const) {
+    const plain = expandText("catalog.gpu.not_listed", { gpu_name: "GPU", branch: result.notes[0]!.branch }, lang, "from");
+    assert.equal(plain, lang === "zh" ? "GPU 从 580 驱动起支持。" : "GPU is supported from driver 580.");
   }
 });

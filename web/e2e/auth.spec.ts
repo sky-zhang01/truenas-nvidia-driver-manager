@@ -1,5 +1,5 @@
 import http from "node:http";
-import { test, expect, type APIRequestContext } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "./local-test.js";
 import { BASE, setScenario, signIn } from "./helpers.js";
 
 async function currentScenario(request: APIRequestContext): Promise<string> {
@@ -79,6 +79,8 @@ test("a real cross-site click navigation reaches login while browser API reads a
   const extAddr = externalServer.address();
   const extPort = typeof extAddr === "object" && extAddr ? extAddr.port : 0;
   const externalOrigin = `http://localhost:${extPort}`;
+  // This exact origin belongs to the loopback listener created above; all other hosts remain blocked.
+  await page.route(`${externalOrigin}/**`, (route) => route.continue());
 
   try {
     // 1. Listen for the iframe load and visit the external site. The page is    served (200); the CSP

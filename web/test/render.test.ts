@@ -9,16 +9,16 @@ test("two-failures notice shows only this occurrence's readings", () => {
   const text = expandText(
     "restore.two_failures",
     {
-      check_reason: "驱动扩展刷新的观测值为 x,期望值为 y。",
+      check_reason: "驱动扩展刷新 的观测值为 x,期望值为 y。",
       original: "580.178.04",
-      restore_reason: "写入原版驱动文件之前已超过执行期限(10 分钟)",
+      restore_reason: "写入原版驱动文件之前已超过执行期限（10 分钟）",
     },
     "zh",
   );
   assert.equal(text.includes("三种写法"), false);
   assert.equal(text.includes("UNKNOWN"), false);
-  assert.match(text, /记录 1/);
-  assert.match(text, /记录 2/);
+  assert.match(text, /更新后的成功检查未通过：驱动扩展刷新/);
+  assert.match(text, /恢复原版驱动 580\.178\.04 失败：写入原版驱动文件之前已超过执行期限/);
 });
 
 test("placeholders are filled inside code spans", () => {
@@ -36,8 +36,8 @@ test("placeholders are filled inside code spans", () => {
 test("account-reset help describes setup code renewal and the data that stays", () => {
   for (const lang of ["en", "zh"] as const) {
     const exp = expandText("help.reset_account", {}, lang);
-    assert.match(exp, lang === "en" ? /new setup code appears in the App logs/ : /新的设置码/);
-    assert.match(exp, lang === "en" ? /tasks and drivers stay/ : /任务和驱动不受影响/);
+    assert.match(exp, lang === "en" ? /new setup code appears in the app logs/ : /新的设置码/);
+    assert.match(exp, lang === "en" ? /tasks and drivers are unaffected/ : /任务和驱动不受影响/);
     assert.equal(exp.includes("NVM_INITIAL_ADMIN_PASSWORD"), false);
   }
 });
@@ -91,11 +91,11 @@ function seg(exp: ReturnType<typeof expand>, kind: string): string {
 test("GPU-use notice: the page form, its unreadable form and the two task-page forms", () => {
   const page = expand("notice.gpu_in_use", {}, "zh");
   assert.equal(page.level, "error");
-  assert.match(seg(page, "title"), /无法更新:显卡正被占用/);
+  assert.match(seg(page, "title"), /无法更新：显卡正被使用/);
   assert.equal(messageLine("notice.gpu_in_use", "list"), "{name} · {type}");
 
   const unreadable = expand("notice.gpu_in_use", { read_reason: { key: "reason.io_error", params: {} } }, "zh", "unreadable");
-  assert.match(seg(unreadable, "title"), /无法读取显卡占用状态/);
+  assert.match(seg(unreadable, "title"), /无法读取显卡使用状态/);
   assert.match(seg(unreadable, "body"), /读取出错/);
 
   const task = expand("notice.gpu_in_use", {}, "en", "task");
@@ -121,13 +121,13 @@ test("unload-refused notice: the reload-failed writing", () => {
     "zh",
     "reload_failed",
   );
-  assert.match(seg(failed, "body"), /重新加载驱动模块失败/);
-  assert.match(seg(failed, "body"), /申请了显卡的应用可能无法启动/);
+  assert.match(seg(failed, "body"), /重新加载失败/);
+  assert.match(seg(failed, "body"), /显卡应用可能无法启动/);
 });
 
 test("restore-stopped notice: busy, unreadable, unload-refused and reload-failed", () => {
   const busy = expand("notice.restore_stopped", { target: "595.104.02", check_reason: "x", original: "580.178.04", current: "595.104.02" }, "en", "busy");
-  assert.match(seg(busy, "body"), /The GPU stayed in use/);
+  assert.match(seg(busy, "body"), /the GPU stayed in use/);
 
   const unreadable = expand(
     "notice.restore_stopped",
@@ -135,7 +135,7 @@ test("restore-stopped notice: busy, unreadable, unload-refused and reload-failed
     "en",
     "unreadable",
   );
-  assert.match(seg(unreadable, "body"), /usage state could not be read/);
+  assert.match(seg(unreadable, "body"), /GPU usage state could not be read/);
 
   const refused = expand(
     "notice.restore_stopped",
@@ -151,7 +151,7 @@ test("restore-stopped notice: busy, unreadable, unload-refused and reload-failed
     "zh",
     "unload_refused.reload_failed",
   );
-  assert.match(seg(failed, "body"), /重新加载驱动模块失败:raw/);
+  assert.match(seg(failed, "body"), /重新加载失败：raw/);
 });
 
 test("restore-failed notice: before-write and written, with the reload-failed writing", () => {
@@ -161,7 +161,7 @@ test("restore-failed notice: before-write and written, with the reload-failed wr
     "en",
     "before_write",
   );
-  assert.match(seg(before, "body"), /The driver file at the permanent path is still 595\.104\.02/);
+  assert.match(seg(before, "body"), /the driver file is still 595\.104\.02/i);
   assert.match(seg(before, "action"), /select the original driver 580\.178\.04/i);
 
   const beforeReload = expand(
@@ -170,7 +170,7 @@ test("restore-failed notice: before-write and written, with the reload-failed wr
     "zh",
     "before_write.reload_failed",
   );
-  assert.match(seg(beforeReload, "body"), /重新加载驱动模块失败:nvidia: EPERM/);
+  assert.match(seg(beforeReload, "body"), /重新加载失败：nvidia: EPERM/);
 
   const written = expand(
     "notice.restore_failed",
@@ -178,7 +178,7 @@ test("restore-failed notice: before-write and written, with the reload-failed wr
     "zh",
     "written",
   );
-  assert.match(seg(written, "action"), /请选择其他官网版本/);
+  assert.match(seg(written, "action"), /请另选一个官网版本/);
 });
 
 test("no-original notice: the three no-usable-original reasons are nested", () => {
@@ -224,10 +224,10 @@ test("two-failures notice: the two records, in both languages", () => {
     restore_reason: { key: "restore.fail.write", params: { write_reason: { key: "write.rename_failed", params: {} } } },
   };
   const zh = expand("restore.two_failures", params, "zh");
-  assert.match(seg(zh, "body"), /记录 1/);
+  assert.match(seg(zh, "body"), /更新后的成功检查未通过：driver version was/);
   assert.match(seg(zh, "body"), /mv -T 失败/);
   const en = expand("restore.two_failures", params, "en");
-  assert.match(seg(en, "body"), /Record 2/);
+  assert.match(seg(en, "body"), /Restoring the original driver 580\.178\.04 failed/);
   assert.match(seg(en, "body"), /mv -T failed/);
   assert.ok(
     zh.segments.some((s) => s.nodes.some((n) => n.kind === "code" && n.text === "mv -T")),
@@ -260,7 +260,7 @@ test("both refresh readings agree, refresh item", () => {
   assert.match(en, /driver extension refresh was .* before and .* after the refresh/);
   assert.match(en, /expected a confirmed unmerge and subsequent merge, with a merge time different from before/);
   const zh = expandText("check.reason", items[0] as unknown as Params, "zh");
-  assert.match(zh, /驱动扩展刷新的观测值为 刷新前 .*、刷新后 .*/);
+  assert.match(zh, /驱动扩展刷新 的观测值为 刷新前 .*、刷新后 .*/);
 });
 
 test("version item with an unreadable side", () => {
@@ -309,13 +309,13 @@ test("the refresh item when a reading is missing", () => {
 
 test("code explanation dispatches on the error code and honours the reload flag", () => {
   const dl = expand("code.explanation", { code: "DOWNLOAD_FAILED" }, "en");
-  assert.match(seg(dl, "body"), /The download failed\./);
+  assert.match(seg(dl, "body"), /The download failed;/);
   const write = expand(
     "code.explanation",
     { code: "WRITE_FAILED", reload_failed: true, write_reason: "x", reload_reason: "y" },
     "zh",
   );
-  assert.match(seg(write, "body"), /重新加载驱动模块失败:y/);
+  assert.match(seg(write, "body"), /重新加载失败：y/);
   const before = expand(
     "code.explanation",
     { code: "WRITE_FAILED", reload_failed: false, write_reason: "x", old: "580.178.04" },
@@ -331,7 +331,7 @@ test("the official toolkit floor reason expands in both task languages", () => {
   };
   const zh = expandText("task.error_reason", { reason }, "zh");
   const en = expandText("task.error_reason", { reason }, "en");
-  assert.equal(zh, "失败原因:toolkit 源里 4 个包都有的最新版本 1.20.0 低于驱动 615.71.09 所需的 1.20.1。");
+  assert.equal(zh, "失败原因：toolkit 源里 4 个包都有的最新版本 1.20.0 低于驱动 615.71.09 所需的 1.20.1。");
   assert.equal(en, "Reason: the newest toolkit version 1.20.0 shared by all four packages in the toolkit repository is below the 1.20.1 required by driver 615.71.09.");
 });
 
@@ -344,7 +344,7 @@ test("the runtime flags select the writings", () => {
   };
   // `reload_failed` alone selects the not-all-reloaded writing.
   const failed = expand("notice.unload_refused", { ...refused, reload_failed: true }, "en");
-  assert.match(seg(failed, "body"), /Not all of the unloaded driver modules were reloaded/);
+  assert.match(seg(failed, "body"), /Reloading failed/);
   // Nothing unloaded: the "already reloaded" sentence is left out.
   const none = expand("notice.unload_refused", { ...refused, not_unloaded: true }, "en");
   assert.equal(seg(none, "body").includes("already unloaded have been reloaded"), false);
@@ -355,7 +355,7 @@ test("the runtime flags select the writings", () => {
     "en",
   );
   assert.equal(seg(write, "body").includes("already unloaded have been reloaded"), false);
-  assert.match(seg(write, "body"), /The driver is still 580\.178\.04/);
+  assert.match(seg(write, "body"), /the driver is still 580\.178\.04/);
 });
 
 test("restore-stopped notice with an empty application list keeps its Local-drivers action", () => {
@@ -370,7 +370,7 @@ test("restore-stopped notice with an empty application list keeps its Local-driv
   assert.equal(seg(busy, "list"), "");
   assert.match(
     seg(busy, "action"),
-    /Select the original driver in Local drivers and update\. If an app keeps restarting, stop it first\./,
+    /Select the original driver in Local drivers and update again\. If an app keeps restarting, stop it first\./,
   );
   assert.equal(seg(busy, "action").includes("Stop the applications below"), false);
   const unreadable = expand(
@@ -380,7 +380,7 @@ test("restore-stopped notice with an empty application list keeps its Local-driv
     "unreadable",
   );
   assert.equal(seg(unreadable, "list"), "");
-  assert.match(seg(unreadable, "action"), /请在「本地驱动」中选择原版驱动 580\.178\.04 进行更新。/);
+  assert.match(seg(unreadable, "action"), /请在「本地驱动」中选择原版驱动 580\.178\.04 重新更新。/);
 });
 
 test("runner log records map to the placeholder values", () => {
@@ -420,7 +420,7 @@ test("runner log records map to the placeholder values", () => {
   });
   assert.match(
     expandText("log.gpu_users", users, "en"),
-    /Applications that requested the GPU: jellyfin · Docker container\./,
+    /Applications that requested the GPU: jellyfin · Docker app\./,
   );
   const none = logParams("log.gpu_users", { applications: [], errors: [] });
   assert.match(expandText("log.gpu_users", none, "en"), /Applications that requested the GPU: none\./);
@@ -430,7 +430,7 @@ test("runner log records map to the placeholder values", () => {
   });
   assert.match(
     expandText("log.gpu_users", failedCategory, "en"),
-    /Applications that requested the GPU: TrueNAS container instances query failed\./,
+    /Applications that requested the GPU: Incus instance query failed\./,
   );
 });
 
@@ -540,7 +540,7 @@ test("the sign-in page carries the usage line and the collapsed account guidance
   assert.ok(formAt !== -1 && hint && details, "form, hint and guidance must all exist");
   assert.ok(els.indexOf(hint) > formAt, "the hint must follow the form");
   assert.ok(els.indexOf(details) > els.indexOf(hint), "the guidance must follow the hint");
-  assert.match(hint.textContent, /联系部署本应用的人/);
+  assert.match(hint.textContent, /联系部署者/);
   assert.equal(details.getAttribute("open"), null, "the guidance starts collapsed");
   const summary = elements(details).find((n) => n.tagName === "SUMMARY");
   assert.ok(summary, "the guidance has a native summary entry");
@@ -551,7 +551,7 @@ test("the sign-in page carries the usage line and the collapsed account guidance
   const items = elements(list);
   assert.equal(items.length, 3);
   const itemText = items.map((n) => n.textContent).join("\n");
-  assert.match(itemText, /设置页面/);
+  assert.match(itemText, /设置页/);
   assert.match(itemText, /账号会保留/);
   assert.match(itemText, /TrueNAS.*命令行/);
 

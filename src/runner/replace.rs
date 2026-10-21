@@ -76,11 +76,7 @@ fn record(pass: Pass) -> ReplaceRecord {
 }
 
 fn read_reason(error: &std::io::Error) -> &'static str {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-        std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-        _ => REASON_IO_ERROR,
-    }
+    crate::log::io_reason_key(error)
 }
 
 fn module_readings(modules: &[facts::ModuleLine]) -> Value {

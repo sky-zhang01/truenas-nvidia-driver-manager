@@ -75,8 +75,6 @@ export function credentialsProblemNode(state: unknown, lang: Lang): HTMLElement 
       "credentials.unreadable",
       { reason: { key: `credentials.reason.${reason}`, params: {} } },
       lang,
-
-      { variant: reason === "directory_unreadable" ? "directory_unreadable" : undefined },
     );
   }
   if (typeof state === "object" && state !== null && "unsaved" in state) {

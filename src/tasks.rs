@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::codes::*;
 use crate::facts;
-use crate::host::{At, Cmd, Create, Exit, Host, Output};
+use crate::host::{At, Cmd, Exit, Host, Output};
 use crate::store::{self, JsonRead, Paths};
 use crate::task_state::{self, Phase, Status, TaskState};
 
@@ -30,31 +30,12 @@ pub enum StartResult {
     Unknown,
 }
 
-/// runner staging: copy `/proc/self/exe` to `manager/bin/...`.
+/// Stage the current executable for the host task unit.
 pub fn stage_runner(h: &dyn Host, p: &Paths) -> std::io::Result<()> {
-    let bin = p.bin();
-    h.create_dir(&bin, 0o755)?;
-    let mut src = h.open(Path::new("/proc/self/exe"))?;
-    let tmp = bin.join(format!(
-        ".truenas-nvidia-driver-manager.tmp-{}",
-        store::random_hex(8)
-    ));
-    let result = (|| -> std::io::Result<()> {
-        let mut dst = h.create(&tmp, Create::New, 0o755)?;
-        store::copy_hashed(&mut src, &mut *dst, |_| std::ops::ControlFlow::Continue(()))?;
-        dst.sync_all()?;
-        drop(dst);
-        h.rename(&tmp, &p.runner_bin())?;
-        h.fsync_dir(&bin)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = h.remove_file(&tmp);
-    }
-    result
+    h.create_dir(&p.bin(), 0o755)?;
+    store::copy_file_verified(h, Path::new("/proc/self/exe"), &p.runner_bin(), 0o755).map(|_| ())
 }
 
-/// task unit start: start the task unit.
 pub fn start(h: &dyn Host, host_data_dir: &Path, id: &str) -> StartResult {
     let runner = host_data_dir
         .join("manager")
@@ -552,7 +533,7 @@ fn unreadable(key: &'static str) -> Reconciled {
 }
 
 /// The complete pre-inventory of one reconciliation attempt: the unit list
-/// **and** the job queue, both read to the end. `error` is set for a failed
+/// and the job queue, both read to the end. `error` is set for a failed
 /// query, a pending job of this program, or a row that names our units in a
 /// shape this program cannot explain.
 struct Inventory {
@@ -684,8 +665,7 @@ pub fn reconcile(h: &dyn Host, p: &Paths) -> Reconciled {
         None
     };
     let locked = owned.is_some();
-    // After the execution lock is held, the inventory is read a **second**, complete time:
-    // only a host that is still idle may be changed.
+    // Recheck the complete inventory under the execution lock before changing an idle host.
     let post = if locked { inventory(h) } else { pre };
     let unit_query_error = post.error.clone();
     let running = post.running.clone();
@@ -1037,11 +1017,7 @@ fn settle_tasks(
 
     tasks.sort_by(|a, b| a.id.cmp(&b.id));
 
-    // Cleanup when nothing is running and both the unit list and the state directory could be
-    // read. The removals are decided by a **fresh, complete** reading taken here, immediately
-    // before the first one: a unit, a pending job, a failed query or a changed record that
-    // appeared inside this critical section stops the cleanup instead of losing inputs to a
-    // stale snapshot.
+    // Re-read units, jobs and records immediately before cleanup to protect inputs from a stale snapshot.
     let check = inventory(h);
     let fresh_states = list_state_ids(h, p);
     let fresh_dirs = list_task_dirs(h, p);
@@ -1264,12 +1240,8 @@ pub fn restore_host(h: &dyn Host, rootfs: Option<&crate::task_state::Rootfs>) ->
             out.push(step_failed_io(CleanupStep::UnmountWritableMount, error));
         }
         Ok(table) => {
-            // The complete mount inventory at and **under** the fixed path, by
-            // path components, before anything is unlinked or unmounted: a
-            // foreign mount below the fixed path (for example one covering the
-            // extensions directory) would otherwise redirect the temporary-file
-            // removal onto another filesystem, and the after-umount check would
-            // come too late.
+            // Check mounts at and below this path before removal; a foreign child mount could
+            // redirect the unlink onto another filesystem.
             let rw = std::path::Path::new(RW_MOUNT);
             let mounts = table
                 .iter()
@@ -1784,11 +1756,7 @@ pub fn cleanup(
             let mut first_error: Option<std::io::Error> = None;
             for name in names {
                 let text = name.to_string_lossy();
-                // only a name the **same** classification rule recognizes as a temporary of
-                // this id may be deleted. An unknown shape (for example
-                // `.ID.json.tmp-not-a-recognized-suffix`) is protected material: the shared
-                // cleanup of the drain, the reconcile and the runner must leave its bytes
-                // alone.
+                // Preserve unknown names; only the shared temporary-file classifier authorizes deletion.
                 if is_recognized_state_temp(&text, id) {
                     match h.remove_file(&state_dir.join(&name)) {
                         Ok(()) => {}
@@ -1917,7 +1885,7 @@ fn is_recognized_state_temp(name: &str, id: &str) -> bool {
     base_ok && is_sixteen_hex(hex)
 }
 
-/// The names in the state directory that **no** classification rule explains. As
+/// The names in the state directory that no classification rule explains. As
 /// long as one exists the collection is incomplete, the answer is undetermined and no cleanup
 /// may run: the raw bytes are the only evidence of what the host was doing. An unreadable
 /// directory is handled separately (there is nothing to classify then).
@@ -1982,7 +1950,7 @@ fn classify_state_entry(name: &str) -> StateEntry {
 }
 
 /// The proven recovery information of one id and whether its driver-changing
-/// responsibility is resolved. It is computed from the **real material** in the
+/// responsibility is resolved. It is computed from the real material in the
 /// state directory, never from file names alone.
 #[derive(Debug, Default)]
 pub struct RecoveryUnion {
@@ -2039,7 +2007,7 @@ fn recovery_rootfs(bytes: &[u8]) -> Option<crate::task_state::Rootfs> {
 }
 
 /// Resolve every candidate id from the material that really exists. Record
-/// reads and the driver proof come **after** the complete union is known, so an
+/// reads and the driver proof come after the complete union is known, so an
 /// id that only a build container names is never silently dropped.
 pub fn resolve_responsibilities(
     h: &dyn Host,
@@ -2183,7 +2151,7 @@ fn uncertain_unload_module(state: &TaskState) -> Option<String> {
 
 /// A task that closed its own flow with a verified effective pass. Its history must not be
 /// compared with the current version again: a later normal task is allowed to
-/// move the host on. This exempts **only** already-proven history, never an unfinished
+/// move the host on. This exempts only already-proven history, never an unfinished
 /// responsibility.
 fn normally_closed(state: &TaskState) -> bool {
     if state.state_note.is_some() {
@@ -2195,13 +2163,8 @@ fn normally_closed(state: &TaskState) -> bool {
     match state.replace.last() {
         // No replacement pass at all: nothing was ever touched.
         None => true,
-        // The effective pass must carry both its own passing check **and** the positive
-        // readback of the image it claims to have written. A check that passed while the
-        // readback is unknown or mismatched is not a closed replacement: the physical proof
-        // below still has to hold. The persisted evidence is also bound to what the pass was
-        // for: an update check names the planned version, and a restore check names the
-        // version of the very original it restored — a restore that checked some other
-        // version is not a closed history.
+        // A settled pass needs a passing check and positive image readback, bound to the
+        // planned update version or the saved original's restore version.
         Some(last) => {
             let Some(check) = state.checks.iter().rfind(|c| c.pass == last.pass) else {
                 return false;

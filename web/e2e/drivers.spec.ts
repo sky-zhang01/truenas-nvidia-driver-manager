@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "./local-test.js";
 import { setScenario, signIn } from "./helpers.js";
 
 async function openSession(page: Page, request: APIRequestContext): Promise<void> {
@@ -78,7 +78,7 @@ test("deleting asks for confirmation first", async ({ page, request }) => {
   await row.getByRole("button", { name: /^Delete$|^删除$/ }).click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator(".dialog-title")).toHaveText(/Delete local drivers|删除本地驱动/);
+  await expect(dialog.locator(".dialog-title")).toHaveText(/^Delete local driver$|^删除本地驱动$/);
   const cancel = dialog.getByRole("button", { name: /^Cancel$|^取消$/ });
   await cancel.click();
   await expect(dialog).toBeHidden();
@@ -96,7 +96,7 @@ test("a kernel-mismatch row shows kernel-mismatch notice under it", async ({ pag
   const mismatch = page.locator("table.drivers tbody tr.row-mismatch").first();
   await expect(mismatch).toHaveCount(1);
   await expect(mismatch.getByRole("button", { name: /Check this version and continue|用这个版本检查并继续/ })).toBeDisabled();
-  await expect(page.locator("table.drivers tbody")).toContainText(/Unavailable: built for kernel|不可用:此驱动为内核/);
+  await expect(page.locator("table.drivers tbody")).toContainText(/Unavailable: built for kernel|不可用：此驱动为内核/);
 });
 
 test("a late 401 of the drivers read does not end the session", async ({ page, request }) => {

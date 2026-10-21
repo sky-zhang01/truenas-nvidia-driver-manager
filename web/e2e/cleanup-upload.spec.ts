@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "./local-test.js";
 import { setScenario, signIn } from "./helpers.js";
 
 async function openUpdate(page: Page, request: APIRequestContext): Promise<void> {
@@ -20,15 +20,14 @@ function runFile(version: string): { name: string; mimeType: string; buffer: Buf
 }
 
 async function openUploadDialog(page: Page) {
-  await page.getByRole("button", { name: /Upload \.run|上传 \.run/ }).click();
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
   const dialog = page.locator("dialog[open]");
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   return dialog;
 }
 
-const UPLOAD = /^Upload$|^上传$/;
-const RESTART = /Start the upload over|重新开始上传/;
-const CLOSE = /^Close$|^关闭$/;
+const RESTART = /Clear and start again|清空重来/;
 const CHECK = /^Check and continue$|^检查并继续$/;
 
 test("a multi-file batch reads upload-group exactly once, after the batch", async ({ page, request }) => {
@@ -40,10 +39,9 @@ test("a multi-file batch reads upload-group exactly once, after the batch", asyn
     if (req.method() === "GET" && req.url().endsWith("/api/uploads/current")) reads.push(req.url());
     if (req.method() === "PUT" && req.url().includes("/api/uploads/")) puts.push(req.url());
   });
-  await dialog
-    .locator("#upload-files")
-    .setInputFiles([runFile("580.178.04"), runFile("580.178.05"), runFile("580.178.06")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
+  await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04"), runFile("580.178.05"), runFile("580.178.06")]);
+
 
   await expect(dialog.locator(".upload-summary")).toContainText(
     "NVIDIA-Linux-x86_64-580.178.06.run",
@@ -53,7 +51,7 @@ test("a multi-file batch reads upload-group exactly once, after the batch", asyn
   expect(reads.length).toBe(1);
 });
 
-test("every control stays disabled until the final read settles", async ({ page, request }) => {
+test("file controls stay disabled until the final read settles while cancellation stays available", async ({ page, request }) => {
   await openUpdate(page, request);
   const dialog = await openUploadDialog(page);
   // The dialog's own read already happened; the next one is the batch's final read, which is held open.
@@ -63,18 +61,18 @@ test("every control stays disabled until the final read settles", async ({ page,
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+
   await expect(dialog.locator("#upload-files")).toBeDisabled();
-  await expect(dialog.getByRole("button", { name: UPLOAD })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: RESTART })).toBeDisabled();
-  await expect(dialog.getByRole("button", { name: CLOSE })).toBeDisabled();
+  await expect(dialog.locator(".upload-footer").getByRole("button", { name: /Cancel upload|取消上传/ })).toBeEnabled();
 
   await expect(dialog.locator("#upload-files")).toBeEnabled({ timeout: 10_000 });
   expect(reads).toBe(1);
 });
 
-test("a failed final read drops the stale summary and keeps Check disabled", async ({ page, request }) => {
+test("a failed final read keeps accepted files visible and disables Check until a retry", async ({ page, request }) => {
   await openUpdate(page, request);
   const dialog = await openUploadDialog(page);
   // The dialog's first read succeeds; the batch's final read fails.
@@ -85,56 +83,47 @@ test("a failed final read drops the stale summary and keeps Check disabled", asy
       body: JSON.stringify({ error: "internal", params: {} }),
     });
   });
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+
   await expect(dialog.locator(".dialog-error")).toContainText(/internal error|内部错误/i, {
     timeout: 10_000,
   });
-  await expect(dialog.getByRole("button", { name: CHECK })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: CHECK })).toHaveAttribute("aria-disabled", "true");
 
-  await expect(dialog.locator(".upload-summary")).not.toContainText(
-    "NVIDIA-Linux-x86_64-580.178.04.run",
-  );
-  await expect(dialog.locator(".upload-summary .summary-line")).toHaveCount(0);
+  await expect(dialog.locator(".upload-summary")).toContainText("NVIDIA-Linux-x86_64-580.178.04.run");
+  await expect(dialog.locator(".upload-summary .upload-receipt")).toHaveCount(1);
+  await expect(dialog.locator("#upload-files")).toBeDisabled();
 });
 
-test("a late initial read cannot re-adopt the group after the final read failed", async ({
-  page,
-  request,
-}) => {
+test("a held initial read disables selection and a failed batch read preserves accepted files", async ({ page, request }) => {
   await openUpdate(page, request);
   let reads = 0;
+  let releaseInitial = (): void => {};
+  const initial = new Promise<void>((resolve) => { releaseInitial = resolve; });
   await page.route("**/api/uploads/current", async (route) => {
     reads += 1;
-    if (reads === 1) {
-      // The dialog's own read: hold it until after the batch.
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "internal", params: {} }),
-    });
+    if (reads === 1) { await initial; await route.continue(); return; }
+    await route.fulfill({ status: 503, json: { error: "internal", params: {} } });
   });
-  const dialog = await openUploadDialog(page);
+  await page.getByRole("button", { name: /Upload files manually…|手动上传文件…/ }).click();
+  const dialog = page.locator("dialog.upload-dialog[open]");
+  await expect(dialog.locator("#upload-files")).toBeDisabled();
+  releaseInitial();
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
-  await expect(dialog.locator(".dialog-error")).toContainText(/internal error|内部错误/i, {
-    timeout: 10_000,
-  });
-  // Let the held first read land: it must not re-enable the stale group.
-  await page.waitForTimeout(3000);
-  await expect(dialog.locator(".upload-summary .summary-line")).toHaveCount(0);
-  await expect(dialog.getByRole("button", { name: CHECK })).toBeDisabled();
+  await expect(dialog.locator(".dialog-error")).toContainText(/internal error|内部错误/i);
+  await expect(dialog.locator(".upload-receipt")).toHaveCount(1);
+  await expect(dialog.locator("#upload-files")).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: CHECK })).toHaveAttribute("aria-disabled", "true");
 });
 
 test("restart reads upload-group once and drops the receipts of the replaced group", async ({ page, request }) => {
   await openUpdate(page, request);
   const dialog = await openUploadDialog(page);
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+
   await expect(dialog.locator(".upload-summary")).toContainText("NVIDIA-Linux-x86_64-580.178.04.run", {
     timeout: 10_000,
   });
@@ -153,8 +142,9 @@ test("restart reads upload-group once and drops the receipts of the replaced gro
 test("a failed restart keeps the receipts of the still-current group", async ({ page, request }) => {
   await openUpdate(page, request);
   const dialog = await openUploadDialog(page);
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+
   await expect(dialog.locator(".upload-summary")).toContainText("NVIDIA-Linux-x86_64-580.178.04.run", {
     timeout: 10_000,
   });
@@ -186,8 +176,9 @@ test("a file-upload answer that names another group is not adopted", async ({ pa
     body.group.group_id = "00000000000000000000000000000000";
     await route.fulfill({ response: original, body: JSON.stringify(body) });
   });
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
+
   await expect(dialog.locator(".dialog-error")).toContainText(/internal error|内部错误/i, {
     timeout: 10_000,
   });
@@ -197,52 +188,34 @@ test("a file-upload answer that names another group is not adopted", async ({ pa
   );
 });
 
-test("a normal upload that opens a new group never shows the old group's receipt", async ({
-  page,
-  request,
-}) => {
+test("a failed read preserves its group until retry or explicit clearing", async ({ page, request }) => {
   await openUpdate(page, request);
   const dialog = await openUploadDialog(page);
-
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.04")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
-  await expect(dialog.locator(".upload-summary")).toContainText("NVIDIA-Linux-x86_64-580.178.04.run", {
-    timeout: 10_000,
-  });
-
-  // 2. A second batch stays on group A, but its final read fails: the display    is dropped while the
-  // same-group receipt is legitimately kept.
-  let reads = 0;
+  await expect(dialog.locator(".upload-receipt")).toContainText("580.178.04");
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
+  let failRead = true;
+  let opens = 0;
+  page.on("request", (req) => { if (req.method() === "POST" && req.url().endsWith("/api/uploads")) opens++; });
   await page.route("**/api/uploads/current", async (route) => {
-    reads += 1;
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "internal", params: {} }),
-    });
+    if (failRead) await route.fulfill({ status: 503, json: { error: "internal", params: {} } });
+    else await route.continue();
   });
   await dialog.locator("#upload-files").setInputFiles([runFile("580.178.05")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
-  await expect(dialog.locator(".dialog-error")).toContainText(/internal error|内部错误/i, {
-    timeout: 10_000,
-  });
-  await expect(dialog.locator(".upload-summary .summary-line")).toHaveCount(0);
-
-  // 3. With no displayed group the next normal upload opens a NEW group (open-upload);    its
-  // file-upload and the final read both fail. Nothing of group A may reappear.
-  await page.route("**/api/uploads/*/files*", async (route) => {
-    await route.fulfill({
-      status: 500,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "internal", params: {} }),
-    });
-  });
-  await dialog.locator("#upload-files").setInputFiles([runFile("580.178.06")]);
-  await dialog.getByRole("button", { name: UPLOAD }).click();
-  await expect(dialog.locator(".dialog-error")).toBeVisible({ timeout: 10_000 });
-  await expect(dialog.locator(".upload-summary .summary-line")).toHaveCount(0);
-  await expect(dialog.locator(".upload-summary")).not.toContainText("was received");
-  await expect(dialog.getByRole("button", { name: CHECK })).toBeDisabled();
-
-  expect(reads).toBe(2);
+  await expect(dialog.locator(".dialog-error")).toContainText(/internal error|内部错误/i);
+  await expect(dialog.locator(".upload-receipt")).toContainText("580.178.05");
+  await expect(dialog.locator("#upload-files")).toBeDisabled();
+  expect(opens).toBe(0);
+  failRead = false;
+  await dialog.locator(".upload-read-retry").click();
+  await expect(dialog.locator("#upload-files")).toBeEnabled();
+  await expect(dialog.locator(".upload-receipt")).toContainText("580.178.05");
+  expect(opens).toBe(0);
+  failRead = true;
+  await dialog.getByRole("button", { name: RESTART }).click();
+  await expect(dialog.locator(".dialog-error")).toContainText(/internal error|内部错误/i);
+  await expect(dialog.locator(".upload-receipt")).toHaveCount(0);
+  await expect(dialog.locator("#upload-files")).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: CHECK })).toHaveAttribute("aria-disabled", "true");
+  expect(opens).toBe(1);
 });

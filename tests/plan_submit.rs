@@ -839,13 +839,13 @@ async fn the_busy_list_covers_the_five_required_object_kinds() {
         .collect();
     assert_eq!(
         names,
-        // Every category is ordered by name; Docker users come first, then the Incus instances.
+        // All unknown entries share the name order across categories.
         vec![
+            "cuda-box:incus",
             "dri-only:docker",
             "gpu-runner:docker",
             "ix-emby-1:docker",
-            "visible-only:docker",
-            "cuda-box:incus"
+            "visible-only:docker"
         ],
         "{body}"
     );
@@ -1106,4 +1106,54 @@ async fn confirmation_discloses_the_qualified_community_patch() {
             "key":"confirm.community_patch", "params":{}
         })
     );
+}
+
+#[tokio::test]
+async fn cancelling_a_plan_request_leaves_the_next_check_queued_and_safe() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    let (app, cookie) = setup().await;
+    app.host.load_module("nvidia", 1, &[]);
+    let gate = Arc::new(common::fake_host::Gate::default());
+    let once = Arc::new(AtomicBool::new(false));
+    let wait_gate = gate.clone();
+    app.host.on_wait(move || {
+        if !once.swap(true, Ordering::SeqCst) {
+            wait_gate.wait_observed();
+        }
+    });
+    let first_app = app.clone();
+    let first_cookie = cookie.clone();
+    let first =
+        tokio::spawn(async move { official_plan(&first_app, &first_cookie, "580.178.04").await });
+    for _ in 0..1000 {
+        if gate.blocked() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert!(gate.blocked());
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    let second_app = app.clone();
+    let second_cookie = cookie.clone();
+    let mut second =
+        tokio::spawn(async move { official_plan(&second_app, &second_cookie, "580.178.04").await });
+    assert!(app.ctx.process_lock.try_lock().is_err());
+    assert!(tokio::time::timeout(Duration::from_millis(20), &mut second)
+        .await
+        .is_err());
+    app.host.load_module("nvidia", 0, &[]);
+    gate.release();
+    let (status, body) = second.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"], "ready");
+    assert_eq!(
+        app.ctx.plan.lock().unwrap().0.as_ref().unwrap().id,
+        body["plan_id"].as_str().unwrap()
+    );
+    assert_eq!(app.host.count("systemd-run"), 0);
 }

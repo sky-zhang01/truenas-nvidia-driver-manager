@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "./local-test.js";
 import { setScenario, signIn } from "./helpers.js";
 
 async function openConfirm(page: Page, request: APIRequestContext): Promise<void> {
@@ -39,7 +39,7 @@ test("a rejected submit leaves one visible close entry, focused, and submits onc
       body: JSON.stringify({ error: "plan.changed", params: { changed: ["link"] } }),
     });
   });
-  await confirm.getByRole("button", { name: /Save original and start|保存原版并开始/ }).click();
+  await confirm.getByRole("button", { name: /Save original driver and start|保存原版驱动并开始/ }).click();
 
   await expect(confirm.locator(".dialog-error")).toBeVisible({ timeout: 10_000 });
   await expect(confirm.locator("button:not([hidden])")).toHaveCount(1);

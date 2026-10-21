@@ -276,11 +276,7 @@ pub fn usable_original(ctx: &RunCtx) -> Result<OriginalRow, NoOriginal> {
                 }),
                 Err(e) => Err(NoOriginal {
                     reason: RESTORE_UNREADABLE,
-                    read_reason: Some(match e.kind() {
-                        std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-                        std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-                        _ => REASON_IO_ERROR,
-                    }),
+                    read_reason: Some(crate::log::io_reason_key(&e)),
                 }),
             }
         }

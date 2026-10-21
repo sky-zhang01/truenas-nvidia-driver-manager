@@ -820,11 +820,8 @@ pub fn write_credentials(
     result
 }
 
-/// The contract is that a failed save leaves the old credentials in place. The publish rolls
-/// the old file back on a directory-sync failure and reads it back to confirm; only a
-/// confirmed rollback is reported as `Unsaved`. If the old file could not be restored, the
-/// recovery material is kept and the outcome is reported as applied only when the target
-/// really holds the new credentials.
+/// A failed publish returns Directory even when the new credentials remain visible.
+/// Unconfirmed rollback retains recovery material; the log records the readback outcome.
 fn write_credentials_at(
     h: &dyn Host,
     dir: &std::path::Path,
@@ -843,10 +840,7 @@ fn write_credentials_at(
     match store::publish_file(h, dir, path, tmp, "web-credentials.json", before) {
         Ok(()) => Ok(()),
         Err(r) => {
-            // a publish whose directory sync
-            // failed is a failure even when the new bytes ended up visible, so this never
-            // turns into `Ok`. The log says which rollback outcome was read back: only
-            // `verified` means the old bytes are back.
+            // Visible new bytes do not turn a failed publish into a successful save.
             let restore = if r.restored {
                 "verified"
             } else if r.recovery.is_some() {

@@ -18,7 +18,7 @@
     },
     {
       "path": "src/catalog.rs",
-      "sha256": "8ea2e39d718c48b99409cc058097dc936ed84cab15ba98a79c355ef783ecaad0",
+      "sha256": "f61a43227ebccd795654cbd3edf901fe9e93c631ec460d080f231ab4a3b2fb4a",
       "rules": [
         "chinese"
       ],
@@ -34,7 +34,7 @@
     },
     {
       "path": "src/web.rs",
-      "sha256": "0693a1edaa6fc3426b879c4cc981b9e8b1e7272fd1398d3409972ac0e36e7e7d",
+      "sha256": "79a3c0a86739050045e5b6236d9583f51d1ad00650e23b61e02405f6811e42ac",
       "rules": [
         "chinese"
       ],
@@ -42,7 +42,7 @@
     },
     {
       "path": "tests/api_contract.rs",
-      "sha256": "18e5ce7c8bf1f089039b2372127d93bf9537b398fa88344f6531309e22dd7963",
+      "sha256": "42343922dc1d3cfc3b0869a49b05abea8819af778b457d0101ec04085d01aa76",
       "rules": [
         "chinese"
       ],
@@ -66,7 +66,7 @@
     },
     {
       "path": "tests/upload.rs",
-      "sha256": "3dd6f87ac35aaf0e7e7fc35d21bd61ea78e727d199af6cf60f8f790568de42f4",
+      "sha256": "479e8daab4b94c91ec4476d682f437af30c6528b83d9890f8049c5c8433664b0",
       "rules": [
         "email"
       ],
@@ -82,7 +82,7 @@
     },
     {
       "path": "web/e2e/auth.spec.ts",
-      "sha256": "27768dcd5b6f5ced8bf1034ef183d1590662a408f827a39fc8510161eb3ddeba",
+      "sha256": "32ff15a473da248876f72775d1bf11a9860172d3aadc40d09eca6a7dc21c3f99",
       "rules": [
         "chinese"
       ],
@@ -90,7 +90,7 @@
     },
     {
       "path": "web/e2e/cleanup-failure-dialog.spec.ts",
-      "sha256": "a88f17ce570f24d230ab4e0822a34ece6ecdd7629054e10d74e7691d65199ba9",
+      "sha256": "4aa83df95c4683f407ec7930e05771023c0d9c08937b20fe9bcf769a693bd0b8",
       "rules": [
         "chinese"
       ],
@@ -98,7 +98,7 @@
     },
     {
       "path": "web/e2e/cleanup-upload.spec.ts",
-      "sha256": "46193a8b5002b54f4ba6c08dbdfd643761cab2485cc3b10cf71932a603d0b0a7",
+      "sha256": "bf0acd573437d79d5df7989672972fcfac6dae4ed3e6c976807e49ac272ae77c",
       "rules": [
         "chinese"
       ],
@@ -106,7 +106,7 @@
     },
     {
       "path": "web/e2e/drivers.spec.ts",
-      "sha256": "e519be382cc5a08b3a244471ac2ff2bf93cdf58b49346c2f7341967c94cf61e5",
+      "sha256": "3bab9abd691eb2fb3edddcff7637ef26c0241c68c5be333bcf8f6ee02de95ebe",
       "rules": [
         "chinese"
       ],
@@ -114,7 +114,7 @@
     },
     {
       "path": "web/e2e/keyboard.spec.ts",
-      "sha256": "8ff30126fe037d5555dd1df8d9959d4a6bfe2d39cf922bd2d180c65f562624bf",
+      "sha256": "0a79f3ffd4d19339d73561fcd4e5f227f44232ac99e768dbd3ffc2c3b9c4e5dd",
       "rules": [
         "chinese"
       ],
@@ -122,7 +122,7 @@
     },
     {
       "path": "web/e2e/language.spec.ts",
-      "sha256": "6ab6c54042202288713d8a34bdda22523dea101c98970fe0466a05545f67edae",
+      "sha256": "5d9b1881b9b31b6e9e8e18f71aafff10b2b2c48e70bde3165c34495f0530d8c8",
       "rules": [
         "chinese"
       ],
@@ -130,7 +130,7 @@
     },
     {
       "path": "web/e2e/roles.spec.ts",
-      "sha256": "1cccd05ac6203e8fb2e6f3982fb9bfb637bb751ae94d2820655333e22a245122",
+      "sha256": "602b1a3e54be5212c903062e7526a6b3e7546146dc4d5511d253d8644d495119",
       "rules": [
         "chinese"
       ],
@@ -138,7 +138,7 @@
     },
     {
       "path": "web/e2e/ssh.spec.ts",
-      "sha256": "6e0e2f02e68fc2340f636fb26980bf5c0d1778dcb510167196772386c938234c",
+      "sha256": "2ffa84651a24dcadb7aed6b5396ca136d37c6de87cd7590b19b2378ddb40264f",
       "rules": [
         "chinese"
       ],
@@ -146,7 +146,7 @@
     },
     {
       "path": "web/e2e/themes.spec.ts",
-      "sha256": "3cc11cd350835f3fac437e71d7014754ff1c7d6399cf12814a383f8684c3bb59",
+      "sha256": "6b84b38960fb10d8531e760c1d56f1d19ff69e8aa0312ff8cbc182583ccc8933",
       "rules": [
         "chinese"
       ],
@@ -154,7 +154,7 @@
     },
     {
       "path": "web/e2e/update.spec.ts",
-      "sha256": "95111fc1f14366a50094927fd4308c01c230f27de1b31262d37fa37d010a33d9",
+      "sha256": "6095b9fa8878a8734ad6c19358de782e59cb75822444425a2f7a9548b9888cba",
       "rules": [
         "chinese"
       ],
@@ -162,7 +162,7 @@
     },
     {
       "path": "web/src/messages.ts",
-      "sha256": "2d61b7ed52d9fb5f8a50ee75f81c32d27f676400070b0f0becd35beacca31db2",
+      "sha256": "24ea23a70e7d9bcc2bb0e9230a12597268816fbf181717c1bc5e33bded2d1c40",
       "rules": [
         "chinese"
       ],
@@ -170,7 +170,7 @@
     },
     {
       "path": "web/test/frontend-repair.test.ts",
-      "sha256": "9a9748d5ce7cf14edefb4ea608845321fc7c8fa5e5dded98cf6532a51c138362",
+      "sha256": "c74d99b83bc5c61d261a7430d214845e3413aa02d0c072d47a77efd345dfb8a3",
       "rules": [
         "chinese"
       ],
@@ -178,7 +178,7 @@
     },
     {
       "path": "web/test/messages.test.ts",
-      "sha256": "f5964ce31f7fb24380dc73e5eba7ac169a9da615ea66f8be048603d54e6f1bd5",
+      "sha256": "0f32de3c083845209cd7b9a64cbafb7468c3ff9c0e306a7bfcd40ae3a6cf5728",
       "rules": [
         "chinese"
       ],
@@ -186,7 +186,7 @@
     },
     {
       "path": "web/test/render.test.ts",
-      "sha256": "a068224533258748e1025e876c50bbade5c1c314bacb1d729964e3e3466fed6d",
+      "sha256": "3178445a3e31e77f7af25a5d57ed7816e739e5030bf677d3faadf8aa3ecaa803",
       "rules": [
         "chinese"
       ],
@@ -194,7 +194,7 @@
     },
     {
       "path": "web/test/rules.test.ts",
-      "sha256": "f577c586455ae3b8f5a95e896c40e3a2dc3a46b3cc73726cbcdcffe816ac76bd",
+      "sha256": "d5ae23663ff9f6c61a81402734ba96343cf21a89776a4fb50d4b808ee6b9f18e",
       "rules": [
         "chinese"
       ],
@@ -202,7 +202,7 @@
     },
     {
       "path": "web/test/ssh-render.test.ts",
-      "sha256": "5aa3d6ac384121c95f6e86fded245faacdcc0c7cd622facf6ffd6347fe9b1de5",
+      "sha256": "5e331431fec49d0df65ac782827e9aa1b91ae7483e4e4a7b6da5a217269cc2df",
       "rules": [
         "email",
         "chinese"
@@ -211,7 +211,7 @@
     },
     {
       "path": "web/test/task-steps.test.ts",
-      "sha256": "6705784534834747a2c6fdf02601547b747ff1909497200383864023ab684ec1",
+      "sha256": "1fc598423be6ecf62336c4c346b896030cbadb7f9220844e301f1dc059b5f29b",
       "rules": [
         "chinese"
       ],
@@ -219,7 +219,7 @@
     },
     {
       "path": "web/test/text-log-contract.test.ts",
-      "sha256": "085d4f39f32821bb209d7914719c112b7cb4be1372c5a4606bafb36592730301",
+      "sha256": "e961b9da4fd0d4f34fba061c5d98411a05a92f74d183f49db8a1eee3dba0009b",
       "rules": [
         "chinese"
       ],
@@ -283,7 +283,7 @@
     },
     {
       "path": "docs/agent.en.md",
-      "line_sha256": "a7c1eb2845127b4aac7f6fc3cd0c5ebc63d6242c7db0981315bb48762a5fa29d",
+      "line_sha256": "2b77489b0a86694a80d637a9b8f6a88d65bc2c9864f31268ee88e9d20e247308",
       "rules": [
         "internal-dns"
       ],
@@ -299,7 +299,7 @@
     },
     {
       "path": "docs/agent.zh-CN.md",
-      "line_sha256": "49ad5601bec20a64e3c669e391f3b376dad0b954114b0e7783df00ee317fbbe6",
+      "line_sha256": "050ecdb470c87012291b9a98d1304474c9cd6cdb35a9dc6a4273c902f2223313",
       "rules": [
         "internal-dns"
       ],
@@ -339,7 +339,7 @@
     },
     {
       "path": "web/src/messages.ts",
-      "line_sha256": "671e5bf977261e00dd025c87d74a734564c5f93cc943f9b9cb2e030ff47ebe95",
+      "line_sha256": "6aacdd995b8fc784f3cce7b7e40f77bf7dd9a229c05c93f47d62d55b22d7ceca",
       "rules": [
         "internal-dns"
       ],
@@ -395,7 +395,7 @@
     },
     {
       "path": "README.md",
-      "line_sha256": "43bf92799c30ca9658032aca81efdd6e6d178c7d46ac34f50b94a4324a13e122",
+      "line_sha256": "16c1d417acee1e51c0c312355f5e827f20794224fbf8564dfd15276fc9ffda2e",
       "rules": [
         "chinese"
       ],
@@ -443,7 +443,7 @@
     },
     {
       "path": "web/e2e/ui-polish.spec.ts",
-      "sha256": "aee7157a9d04a89a350c319f100a605155e34ea057f2e995f19a9c5c5b9c633c",
+      "sha256": "e94bcef90ad241477cae918dbdd9d3f19de63de034cc669c6b0418432c728bb8",
       "rules": [
         "chinese"
       ],
@@ -451,7 +451,7 @@
     },
     {
       "path": "web/test/setup.test.ts",
-      "sha256": "b356ec8b4a837b12ffd5d136d8781b5625c4d4da1aaa4b710b1d4cf59963f34b",
+      "sha256": "4a9dc8311260fbccfef02c8c9136133fd3e173c2a7770234c96ce6f31d7d866f",
       "rules": [
         "chinese"
       ],
@@ -459,7 +459,7 @@
     },
     {
       "path": "web/test/login-help.test.ts",
-      "sha256": "d0b4ac7db9380ec10a45dde3d8e6f35ead76f6ca277734e7d94a4a9802a19c40",
+      "sha256": "3985f1f077df5c13826259d26194731ca19c37a4048ba056c1d49bfc808239e0",
       "rules": [
         "chinese"
       ],
@@ -475,7 +475,7 @@
     },
     {
       "path": "docs/images/drivers-en.png",
-      "sha256": "2466c809d29f9609315489a9d826611a9b010da911ef77705e9ab1dd563bec19",
+      "sha256": "3e3c858d4f7f9a885b5250cd689556d7f77fc235d84fadd5b025f56d13d9ac62",
       "rules": [
         "binary"
       ],
@@ -483,7 +483,7 @@
     },
     {
       "path": "docs/images/drivers-zh.png",
-      "sha256": "cce13120c30e0f5c6c91698d1037464e9fa0665a07cbbde0c7439e71c91ac14f",
+      "sha256": "8ba92566152b38a65a92caff721da882f89166c3d4b35bd1c37bf38875374f11",
       "rules": [
         "binary"
       ],
@@ -491,7 +491,7 @@
     },
     {
       "path": "docs/images/home-landing-en.png",
-      "sha256": "57ae9f8e78b7570a624d275c0cc63460c636f301aea389b8b338ce48807f1070",
+      "sha256": "9f27904f904c00e968833322e236a9671c85b1e10bcbc9fa6663a20ee782ebfc",
       "rules": [
         "binary"
       ],
@@ -499,7 +499,7 @@
     },
     {
       "path": "docs/images/home-landing-zh.png",
-      "sha256": "2f474326c8d16735d5329d74c0a98b654778ecaa5fa0abcf24cbce821b30f6c9",
+      "sha256": "f8dd40514e8b43c12d25330c37f01fd6d00a51e67808f3b373c9487750fb1084",
       "rules": [
         "binary"
       ],
@@ -507,7 +507,7 @@
     },
     {
       "path": "docs/images/plan-en.png",
-      "sha256": "b7cbcc794e62c727bf2fa7a0529f9bec1c98e608e462fd016b3639c2a6ce30a0",
+      "sha256": "dfd62eee76defed1f2a9a606140276a07aeace8fdd86327122cec808212eb96e",
       "rules": [
         "binary"
       ],
@@ -515,7 +515,7 @@
     },
     {
       "path": "docs/images/plan-zh.png",
-      "sha256": "f3c1cccd725e1ff9b1eaf62626e4ec8e37c6e05c5efff09f885c34ed11927c1d",
+      "sha256": "b47d018d2d53d8cc886051219836ff9017d6a9ad8c300b74b0751a1c440d2fee",
       "rules": [
         "binary"
       ],
@@ -523,7 +523,7 @@
     },
     {
       "path": "docs/images/running-en.png",
-      "sha256": "c794874ab419926f9371ec7b275f9b01d6ced22cdef313dcfa7aa0b9c750a3be",
+      "sha256": "75720665a3abc063a1bd469ef74e32b9971c4f915b91491300e877eff8d68dfb",
       "rules": [
         "binary"
       ],
@@ -531,7 +531,7 @@
     },
     {
       "path": "docs/images/running-zh.png",
-      "sha256": "f2ec90ff2cf99edccddc4b7282fe4c32dbe2bd1d80407960c7bd85dd7410ef55",
+      "sha256": "0b1bd8061286f3c4abe3f2cb6f559591acd3777b84fc7fbf6bae526f3156ee5a",
       "rules": [
         "binary"
       ],
@@ -539,7 +539,7 @@
     },
     {
       "path": "docs/images/success-en.png",
-      "sha256": "762d5bbaa0a8d3cd577a417f285edc80757b23998edbfbcf70366e0e9a2d4662",
+      "sha256": "e142d555f1298ca0bf638dbf67a1e65e814e8799c95f03607f818f68326b4213",
       "rules": [
         "binary"
       ],
@@ -547,7 +547,7 @@
     },
     {
       "path": "docs/images/success-zh.png",
-      "sha256": "08a5d5250569743a02c3f43e92c2bae04d7f541a659f5a621bd16fdf86222ab7",
+      "sha256": "c4a8bda700661f087990fe84628784197e6c879f5bce37fb68bd099f9c42be67",
       "rules": [
         "binary"
       ],
@@ -555,7 +555,7 @@
     },
     {
       "path": "docs/images/update-en.png",
-      "sha256": "4e71d7fba8e2b8d0a1f9a871207e41b114dbcf60a179300d08b19d7b4b62501c",
+      "sha256": "23e060ef40d08171f99c5d3ecc15a317aec0d2dfd99d3eb62d9527a0dfb3827f",
       "rules": [
         "binary"
       ],
@@ -563,7 +563,7 @@
     },
     {
       "path": "docs/images/update-zh.png",
-      "sha256": "06e979335e1dd328bada9b2735198677cf5afe06407002a5ee53f193f3f0e1b8",
+      "sha256": "d6203829669d26ebd6e008d2343d0ada3de1ced2fd3be2051f7322226818d8ea",
       "rules": [
         "binary"
       ],
@@ -571,7 +571,7 @@
     },
     {
       "path": "docs/images/setup-en.png",
-      "sha256": "9d6abd44cf3102327aa32a574c48c3e4bf76f6ac501e9ca7a22fd83808a24c2c",
+      "sha256": "c4654b31e8f1b04f7c201c661f74eb968d7ecce1618f0788384e82a5e47f1c5b",
       "rules": [
         "binary"
       ],
@@ -579,7 +579,7 @@
     },
     {
       "path": "docs/images/setup-zh.png",
-      "sha256": "a1151d77bed2a6ec0ba542b4a4517e4f76d47138133ad35b6b879b82d45473d0",
+      "sha256": "5b4f63385f5d9604ea36477b9d0995b197a5411135f5c491aead65ca2ebad2fc",
       "rules": [
         "binary"
       ],
@@ -587,11 +587,187 @@
     },
     {
       "path": "web/e2e/readme-shots.spec.ts",
-      "sha256": "9bdf96cb2345e580dc3e0b90ff5149e2a7cb3e38de15c7cfecd2f6044a272a43",
+      "sha256": "27f86a0b654de69de1900f56e5f55aee2882935bd8ab6dbf590c1c21976fdf4a",
       "rules": [
         "chinese"
       ],
       "reason": "Assertions on bilingual screenshot capture using the local fake host and synthetic data."
+    },
+    {
+      "path": "web/e2e/upload-redesign.spec.ts",
+      "sha256": "fe3dc039de54411a5e43e790e0a37921486f541357d52a50f42a864dd34b5be2",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual manual-upload interface assertions against local synthetic package fixtures."
+    },
+    {
+      "path": "web/test/upload-slots.test.ts",
+      "sha256": "16c56d427a0644c8fcd93c623fcca06ae6a1eb82164edd99691fdbba71a4205d",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual checklist rejection assertions against withheld package fields."
+    },
+    {
+      "path": "web/test/file-size.test.ts",
+      "sha256": "131b28b33becce5cc6e579fd9f1618409bfd17102875b19e4f95a6924f5ea2a7",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual file-size and progress-template assertions with synthetic byte counts."
+    },
+    {
+      "path": "web/e2e/update-feedback.spec.ts",
+      "sha256": "bd25bbacfc96598d7cfc92bfc4f6a48b3e12e5b9b78526b3212320c36996ca44",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual GPU state and upload checklist regression assertions."
+    },
+    {
+      "path": "web/test/gpu-popup-title.test.ts",
+      "sha256": "4dc4da6f82fda1b21f373edade7c31454bc52e2ee151f9cccb922b4e25e1e240",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual GPU state and upload checklist regression assertions."
+    },
+    {
+      "path": "web/e2e/feedback-scenes/drivers-and-confirmation.mjs",
+      "sha256": "337bba4e39efeeb4b27648b52f335b34103ebce85316a5030febdcd07497591b",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
+    },
+    {
+      "path": "web/e2e/feedback-scenes/gpu-narrow.mjs",
+      "sha256": "794958069ef6744e083420f18ad6468135281655c57e3fa3a50be2e48962df5d",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
+    },
+    {
+      "path": "web/e2e/feedback-scenes/lib.mjs",
+      "sha256": "c5b1ae5813a8c157a670471cf3f3a2f5406969f2a4e326b58914f51f40bf9e95",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
+    },
+    {
+      "path": "web/e2e/feedback-scenes/upload-plans.mjs",
+      "sha256": "6b76bbf3255215f5b674cc2726d76d96b83e41211e734ea7d1e1bbc28ac6a892",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
+    },
+    {
+      "path": "web/e2e/feedback-scenes/upload-transfer.mjs",
+      "sha256": "de841747508b9e7e3a3314b0e05ca6c297866e29ab6335cf87cefb1eceddf875",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
+    },
+    {
+      "path": "web/e2e/plan-interactions.spec.ts",
+      "sha256": "950a324e59b05e552125d3b7ce02db812e1f1457bf025b26d4f7f5b14f69ef2d",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
+    },
+    {
+      "path": "web/test/copy-integrity.test.ts",
+      "sha256": "7ca9feae2781c5b344d7c64c6d8521ce7defafe50d12b16fb378278128b6a197",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
+    },
+    {
+      "path": "web/e2e/driver-plan-controls.spec.ts",
+      "sha256": "0e64911f32a389060e4586a05b754707ea61e21f853a8e560e1108f7c7be23dd",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual accessibility and driver-control regression assertions."
+    },
+    {
+      "path": "web/e2e/live-announcements.spec.ts",
+      "sha256": "d2f60d3ae5fbc2963279ecc831fe64368b41eadafd926e8fd52ed2d999120496",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Bilingual accessibility and driver-control regression assertions."
+    },
+    {
+      "path": "web/test/fixtures/message-contract.json",
+      "line_sha256": "5b44bd0ca17970ff7d9895793f505becb9bc38cc940d751d6185229e2fc9cbbf",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/test/fixtures/message-contract.json",
+      "line_sha256": "b363b4cd0771509aa4437b4e4221f603eedb938ada74f63b6fe251fb336259c9",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/test/fixtures/message-contract.json",
+      "line_sha256": "35fb5e6277e6d85e984616f82a122576195d32e9901fe552a526803c8a2aa805",
+      "rules": [
+        "internal-dns"
+      ],
+      "reason": "Application localization key ending in a source-kind identifier; this is not a DNS hostname."
+    },
+    {
+      "path": "web/e2e/gpu-support-hints.spec.ts",
+      "sha256": "2eb6e23c963592a3c66d5a444f5b77f9ae15a3acda9ba1a41be2d085d1313a24",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests using synthetic local fixtures."
+    },
+    {
+      "path": "web/e2e/feedback-scenes/confirmation-retry.mjs",
+      "sha256": "0e5623fdf7a3533e25dba3421b6f990dd24597fe4eca1f59d3c7709563837420",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests using synthetic local fixtures."
+    },
+    {
+      "path": "web/e2e/feedback-scenes/update-entry.mjs",
+      "sha256": "25e0f75dc95862c4eb9d53569fd6c40115f134efbfa0f5664d3a37245fe93a59",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions and localized documentation contract tests using synthetic local fixtures."
+    },
+    {
+      "path": "web/e2e/feedback-wording.spec.ts",
+      "sha256": "bc624f1a8a854fb0e2f6e6f36b54ff7d53d700d396179a6a19afd9f87a2e5462",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions using synthetic local fixtures."
+    },
+    {
+      "path": "web/test/gpu-users.test.ts",
+      "sha256": "11356482926e96a7640995a44f1a76ea9a6df948e830e2c9de98f6f4c74e3f02",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions using synthetic local fixtures."
     }
   ],
   "public_hosts": [

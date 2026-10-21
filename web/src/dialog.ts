@@ -1,4 +1,34 @@
 // Closing restores focus to the opener, or the page title if the opener no longer exists.
+import { el } from "./dom.js";
+
+interface DialogOptions extends DialogOrigin {
+  title: string;
+  role?: string;
+  className?: string;
+  onCancel?: "remove" | "ignore" | ((event: Event) => void);
+}
+
+export function makeDialog(options: DialogOptions): {
+  dialog: HTMLDialogElement;
+  title: HTMLHeadingElement;
+  show: () => void;
+} {
+  const dialog = el("dialog", { class: options.className ?? "nvm-dialog", role: options.role });
+  const title = el("h3", { class: "dialog-title", text: options.title });
+  dialog.append(title);
+  if (options.onCancel && options.onCancel !== "remove") {
+    dialog.addEventListener("cancel", (event) => {
+      if (options.onCancel === "ignore") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      } else if (typeof options.onCancel === "function") options.onCancel(event);
+    });
+  }
+  return {
+    dialog, title,
+    show: () => { document.body.append(dialog); openDialog(dialog, title, options); },
+  };
+}
 
 export interface DialogOrigin {
 

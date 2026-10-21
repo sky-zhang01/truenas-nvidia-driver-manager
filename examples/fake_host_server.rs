@@ -108,10 +108,11 @@ fn build_routers(
     let make = |startup: Startup| -> Arc<Ctx> {
         Arc::new(Ctx {
             host: Arc::new(host.clone()),
-            paths: Paths::new(HOST_DATA_DIR.to_string()),
+            paths: Paths::new("/var/lib/nvm"),
             settings: settings.clone(),
             startup,
             process_lock: tokio::sync::Mutex::new(()),
+            gpu_users_cache: Default::default(),
             plan: std::sync::Mutex::new(PlanSlot::new()),
             upload: Arc::new(UploadState::new()),
             auth: auth.clone(),
@@ -155,6 +156,7 @@ fn prime_common(host: &FakeHost) {
 }
 
 fn prepare(host: &FakeHost, scenario: &str) {
+    host.set_dpkg_fixture_content(matches!(scenario, "upload_files" | "upload_rejected"));
     host.remove("/var/lib/nvm/manager/secrets/web-credentials.json");
     // apply_reset wipes /run; every scene except no_link gets the link back.
     if scenario != "no_link" {
@@ -167,6 +169,29 @@ fn prepare(host: &FakeHost, scenario: &str) {
         "gcc (Debian 12.2.0-14+deb12u1) 12.2.0",
     );
     match scenario {
+        "gpu_wait" => {
+            prepare_local_replacement(host, KERNEL, TRUENAS_VERSION);
+            host.load_module("nvidia", 1, &[]);
+            let active = "a".repeat(64);
+            let idle = "b".repeat(64);
+            host.set_docker_ps(&[&active, &idle]);
+            host.set_docker_inspect(&json!([
+                {"Id":active,"Name":"/gpu-worker","Config":{"Env":["NVIDIA_VISIBLE_DEVICES=all"]}},
+                {"Id":idle,"Name":"/media-idle","Config":{"Env":["NVIDIA_VISIBLE_DEVICES=all"]}}
+            ]).to_string());
+            host.preset(
+                "docker",
+                &["top", &active, "-eo", "pid"],
+                common::FakeOutput::stdout("PID\n101\n"),
+            );
+            host.preset(
+                "docker",
+                &["top", &idle, "-eo", "pid"],
+                common::FakeOutput::stdout("PID\n202\n"),
+            );
+            host.put_link("/proc/101/fd/3", "/dev/nvidia0");
+            host.put_link("/proc/202/fd/0", "/dev/null");
+        }
         "truenas27" | "truenas27_replacement" => {
             let kernel = "6.18.52-production+truenas";
             common::fake_host::prime_kernel_scene(
@@ -179,6 +204,18 @@ fn prepare(host: &FakeHost, scenario: &str) {
             if scenario == "truenas27_replacement" {
                 prepare_local_replacement(host, kernel, "27.0.0-RC.1");
             }
+        }
+        "upload_files" | "upload_rejected" => {
+            // These scenarios must start idle even after the GPU-wait walkthrough.
+            prime_canonical(host, "580.173.02");
+            host.model_sysext_merge();
+            for module in ["nvidia_drm", "nvidia_modeset", "nvidia_uvm"] {
+                host.unload_module(module);
+            }
+            host.load_module("nvidia", 0, &[]);
+            host.set_driver_version("580.173.02");
+            host.set_docker_ps(&[]);
+            host.set_docker_inspect("[]");
         }
         "fresh" | "no_link" | "upload_stage" | "drivers_rows" | "setup_problem" => {}
         "readme_update" => host.add_gpu("0000:01:00.0", 0x2684, Some("nvidia")),

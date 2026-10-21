@@ -618,6 +618,23 @@ pub fn nvidia_smi_version_now(h: &dyn Host) -> Reading<String> {
     }
 }
 
+/// Read `/proc/modules`.
+pub fn read_modules(h: &dyn Host) -> Reading<Vec<ModuleLine>> {
+    let start = h.now();
+    let result = match h.read(std::path::Path::new(PROC_MODULES_PATH)) {
+        Ok(bytes) => match parse_proc_modules(&String::from_utf8_lossy(&bytes)) {
+            Ok(m) => Reading::Value(m),
+            Err(_) => Reading::Unknown(REASON_FORMAT_UNRECOGNIZED),
+        },
+        Err(e) => Reading::Unknown(crate::log::io_reason_key(&e)),
+    };
+    // A late reading must not remove a branch from the runtime-condition table.
+    if h.now().saturating_duration_since(start) >= READING_TIMEOUT {
+        return Reading::Unknown(REASON_TIMED_OUT);
+    }
+    result
+}
+
 /// The current, complete `/proc/modules` reading. The product's processes run
 /// with the host PID namespace (the same assumption the web-side occupancy
 /// reader already makes), so this is the host's module list.
@@ -1004,9 +1021,8 @@ pub fn parse_sysfs_hex(s: &str, digits: usize) -> Option<u32> {
     u32::from_str_radix(rest, 16).ok()
 }
 
-fn pci_address_ok(name: &str) -> bool {
-    // Linux names PCI functions `%04x:%02x:%02x.%d`, so the regex is lowercase-only:
-    // `^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$`.
+pub fn pci_address_ok(name: &str) -> bool {
+    // Match the lowercase PCI names exposed by Linux sysfs.
     let lower_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
     let Some(colon1) = name.find(':') else {
         return false;
@@ -1033,11 +1049,10 @@ fn pci_address_ok(name: &str) -> bool {
 }
 
 fn io_reason(e: &std::io::Error) -> &'static str {
-    match e.kind() {
-        std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-        std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-        std::io::ErrorKind::TimedOut => REASON_TIMED_OUT,
-        _ => REASON_IO_ERROR,
+    if e.kind() == std::io::ErrorKind::TimedOut {
+        REASON_TIMED_OUT
+    } else {
+        crate::log::io_reason_key(e)
     }
 }
 
@@ -1633,6 +1648,21 @@ lrwxrwxrwx root/root 0 2026-09-28 10:15 squashfs-root/usr/lib/x86_64-linux-gnu/l
         assert_eq!(parse_sysfs_hex("0xzzzz\n", 4), None);
         assert_eq!(parse_sysfs_hex("0x12345\n", 4), None);
         assert_eq!(parse_sysfs_hex("0x10DE\n", 4), None);
+    }
+
+    #[test]
+    fn reading_io_reason_preserves_timeout_mapping() {
+        for (kind, expected) in [
+            (std::io::ErrorKind::NotFound, REASON_FILE_MISSING),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                REASON_PERMISSION_DENIED,
+            ),
+            (std::io::ErrorKind::TimedOut, REASON_TIMED_OUT),
+            (std::io::ErrorKind::Other, REASON_IO_ERROR),
+        ] {
+            assert_eq!(io_reason(&std::io::Error::from(kind)), expected);
+        }
     }
 
     #[test]

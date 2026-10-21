@@ -24,11 +24,49 @@ pub struct Ctx {
     /// The process-wide lock.
     pub process_lock: tokio::sync::Mutex<()>,
     pub plan: std::sync::Mutex<PlanSlot>,
+    /// Independent single-flight query and short-lived GPU snapshot.
+    pub gpu_users_cache: std::sync::Mutex<Option<(std::time::Instant, GpuState)>>,
     pub upload: Arc<UploadState>,
     pub auth: std::sync::Arc<crate::auth::AuthState>,
 }
 
 impl Ctx {
+    pub fn gpu_users_snapshot(&self) -> GpuState {
+        let mut cache = self.gpu_users_cache.lock().unwrap();
+        if let Some((at, snapshot)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_millis(1500) {
+                return snapshot.clone();
+            }
+        }
+        let users = crate::gpu_users::list(self.host.as_ref(), HOST_QUERY_TIMEOUT);
+        let (state, read_reason) = match facts::read_modules(self.host.as_ref()) {
+            Reading::Value(modules) => (
+                if facts::occupancy(&modules) {
+                    "busy"
+                } else {
+                    "idle"
+                },
+                None,
+            ),
+            Reading::Unknown(reason) => (
+                "unreadable",
+                Some(crate::task_state::general_reason_json(
+                    reason,
+                    READING_TIMEOUT.as_secs(),
+                )),
+            ),
+        };
+        let snapshot = GpuState {
+            checked_at: self.host.wall_ms(),
+            state,
+            users: users.users.iter().map(Into::into).collect(),
+            errors: users.errors.iter().map(Into::into).collect(),
+            read_reason,
+        };
+        *cache = Some((std::time::Instant::now(), snapshot.clone()));
+        snapshot
+    }
+
     pub fn build_timeout_minutes(&self) -> u32 {
         self.settings
             .build_timeout_minutes
@@ -147,33 +185,7 @@ impl<'de> serde::Deserialize<'de> for SourceRequest {
     }
 }
 
-/// The plan creation `gpus[]` parameter rule of a PCI address, not repeated.
-pub fn pci_address_ok(s: &str) -> bool {
-    let mut it = s.split(':');
-    let (Some(domain), Some(bus), Some(dev_func)) = (it.next(), it.next(), it.next()) else {
-        return false;
-    };
-    if it.next().is_some() {
-        return false;
-    }
-    let Some((dev, func)) = dev_func.split_once('.') else {
-        return false;
-    };
-    (4..=8).contains(&domain.len())
-        && domain
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        && bus.len() == 2
-        && bus
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        && dev.len() == 2
-        && dev
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        && func.len() == 1
-        && func.bytes().all(|b| (b'0'..=b'7').contains(&b))
-}
+pub use crate::facts::pci_address_ok;
 
 fn gpus_request_ok(gpus: &[String]) -> bool {
     let mut seen = std::collections::BTreeSet::new();
@@ -204,6 +216,7 @@ pub enum SourceInvalid {
     },
     GpusChanged,
     UploadGone,
+    UploadBusy,
     UploadIncomplete {
         missing: Vec<String>,
     },
@@ -258,9 +271,29 @@ pub struct Failure {
     pub row_kind: Option<String>,
 }
 
-/// The pre-check failure item of a leftover an earlier task could not put back: the
-/// writable mount is still there, or the read-only property does not read back
-/// as the value the kept record names. The reason carries the exact reading.
+impl Failure {
+    fn new(item: &'static str) -> Self {
+        Self {
+            item,
+            object: None,
+            reason: None,
+            target: None,
+            target_kernel: None,
+            current_kernel: None,
+            row_kind: None,
+        }
+    }
+
+    fn unreadable(object: &'static str, reason: serde_json::Value) -> Self {
+        Self {
+            object: Some(object),
+            reason: Some(reason),
+            ..Self::new("unreadable")
+        }
+    }
+}
+
+/// Reject unrecovered host changes before another task can adopt them as its baseline.
 fn host_residue_failure(residue: &crate::task_state::ReasonValue) -> Failure {
     Failure {
         item: "host_not_restored",
@@ -275,6 +308,7 @@ fn host_residue_failure(residue: &crate::task_state::ReasonValue) -> Failure {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct GpuState {
+    pub checked_at: u64,
     pub state: &'static str,
     pub users: Vec<crate::gpu_users::GpuUserJson>,
     pub errors: Vec<crate::gpu_users::GpuUserErrorJson>,
@@ -365,6 +399,7 @@ impl PlanSlot {
 fn gpu_busy(h: &dyn Host) -> GpuState {
     let users = crate::gpu_users::list(h, HOST_QUERY_TIMEOUT);
     GpuState {
+        checked_at: h.wall_ms(),
         state: "busy",
         users: users.users.iter().map(Into::into).collect(),
         errors: users.errors.iter().map(Into::into).collect(),
@@ -375,6 +410,7 @@ fn gpu_busy(h: &dyn Host) -> GpuState {
 fn gpu_unreadable(h: &dyn Host, reason: &'static str) -> GpuState {
     let users = crate::gpu_users::list(h, HOST_QUERY_TIMEOUT);
     GpuState {
+        checked_at: h.wall_ms(),
         state: "unreadable",
         users: users.users.iter().map(Into::into).collect(),
         errors: users.errors.iter().map(Into::into).collect(),
@@ -383,28 +419,6 @@ fn gpu_unreadable(h: &dyn Host, reason: &'static str) -> GpuState {
             READING_TIMEOUT.as_secs(),
         )),
     }
-}
-
-/// Read `/proc/modules`.
-pub fn read_modules(h: &dyn Host) -> Reading<Vec<facts::ModuleLine>> {
-    let start = h.now();
-    let result = match h.read(std::path::Path::new(PROC_MODULES_PATH)) {
-        Ok(bytes) => match facts::parse_proc_modules(&String::from_utf8_lossy(&bytes)) {
-            Ok(m) => Reading::Value(m),
-            Err(_) => Reading::Unknown(REASON_FORMAT_UNRECOGNIZED),
-        },
-        Err(e) => Reading::Unknown(match e.kind() {
-            std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-            std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-            _ => REASON_IO_ERROR,
-        }),
-    };
-    // A reading that completes only after `READING_TIMEOUT` is unreadable: the
-    // runtime-condition table then removes no branch.
-    if h.now().saturating_duration_since(start) >= READING_TIMEOUT {
-        return Reading::Unknown(REASON_TIMED_OUT);
-    }
-    result
 }
 
 /// The GPU check shared by the official and upload sources.
@@ -442,7 +456,7 @@ fn check_branch(
             reasons,
         }),
         catalog::BranchVerdict::Undecidable => Err(SourceInvalid::BranchUndecidable {
-            unreadable: catalog::HeadersUnreadable::for_branch(major, interfaces, module_type)
+            unreadable: catalog::HeadersUnreadable::for_branch(version, interfaces, module_type)
                 .items
                 .into_iter()
                 .map(|i| Unreadable {
@@ -456,7 +470,328 @@ fn check_branch(
     }
 }
 
-/// plan creation: run the pre-update checks and produce the dialog.
+fn read_source_gpus(h: &dyn Host) -> Result<Vec<facts::HostGpu>, SourceInvalid> {
+    let gpus = match facts::read_gpus(h) {
+        Ok(g) => g,
+        Err(e) => {
+            crate::log::error_json(
+                Event::GpusUnreadable,
+                &[
+                    ("path", json!(e.path.as_str())),
+                    (
+                        "reason",
+                        crate::task_state::general_reason_json(e.reason, READING_TIMEOUT.as_secs()),
+                    ),
+                ],
+            );
+            return Err(SourceInvalid::GpuUndecidable {
+                unreadable: vec![Unreadable {
+                    object: "gpus",
+                    reason: crate::task_state::general_reason(e.reason, READING_TIMEOUT.as_secs()),
+                    raw: Some(e.path),
+                }],
+            });
+        }
+    };
+    Ok(gpus)
+}
+
+fn plan_gpus(selected: &[facts::HostGpu]) -> Vec<PlanGpu> {
+    selected
+        .iter()
+        .map(|g| PlanGpu {
+            address: g.address.clone(),
+            device: format!("{:04x}", g.device),
+        })
+        .collect()
+}
+
+fn prepare_official_source(
+    h: &dyn Host,
+    version: &str,
+    gpus: &[String],
+    snapshot: &mut Snapshot,
+    modules_for_occupancy: &mut Option<Reading<Vec<facts::ModuleLine>>>,
+    official_kernel: &mut Option<String>,
+) -> Result<Option<Precheck>, SourceInvalid> {
+    if !gpus_request_ok(gpus) {
+        return Err(SourceInvalid::RequestInvalid);
+    }
+    let Some(parsed) = facts::parse_version_exact(version) else {
+        return Err(SourceInvalid::VersionFormat);
+    };
+    if parsed.major() < MIN_MAJOR_BRANCH {
+        return Err(SourceInvalid::VersionBelow470);
+    }
+    if version == COMMUNITY_PATCH_VERSION {
+        match facts::kernel(h) {
+            Reading::Value(kernel) => *official_kernel = Some(kernel),
+            Reading::Unknown(reason) => {
+                return Ok(Some(Precheck::Uncomputable {
+                    items: vec![Unreadable {
+                        object: "current_kernel",
+                        reason: crate::task_state::general_reason(
+                            reason,
+                            READING_TIMEOUT.as_secs(),
+                        ),
+                        raw: None,
+                    }],
+                }));
+            }
+        }
+    }
+    let kernel = official_kernel.as_deref().unwrap_or_default();
+    let interfaces = catalog::read_interfaces(h);
+    check_branch(&parsed, kernel, &interfaces, None)?;
+    let loaded = facts::read_modules(h);
+    let reasons = catalog::official_module_reasons(&parsed, kernel, &loaded);
+    if !reasons.is_empty() {
+        return Err(SourceInvalid::BranchUnbuildable {
+            branch: parsed.major(),
+            reasons,
+        });
+    }
+    *modules_for_occupancy = Some(loaded);
+    let host_gpus = read_source_gpus(h)?;
+    let selected = check_gpus(gpus, &host_gpus)?;
+    let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
+    let module_type = catalog::module_type(crate::gpu_table::GPUS, &devices, &parsed);
+    check_branch(&parsed, kernel, &interfaces, module_type)?;
+    if !catalog::drives_all(
+        crate::gpu_table::GPUS,
+        crate::gpu_table::VERSIONS,
+        &devices,
+        &parsed,
+    ) {
+        let conflict = catalog::conflict(crate::gpu_table::GPUS, &devices);
+        let payload = catalog::gpu_unsupported_json(
+            crate::gpu_table::GPUS,
+            crate::gpu_table::VERSIONS,
+            &selected,
+            &parsed,
+        );
+        return Err(SourceInvalid::GpuUnsupported {
+            gpus: payload["gpus"].clone(),
+            conflict,
+        });
+    }
+    snapshot.source = PlanSource::Official;
+    snapshot.version = version.to_string();
+    snapshot.gpus = plan_gpus(&selected);
+    snapshot.kernel_module_type = module_type;
+    Ok(None)
+}
+
+fn prepare_upload_source(
+    ctx: &Ctx,
+    group_id: &str,
+    version: &Option<String>,
+    gpus: &[String],
+    snapshot: &mut Snapshot,
+) -> Result<(), SourceInvalid> {
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
+    if !gpus_request_ok(gpus) {
+        return Err(SourceInvalid::RequestInvalid);
+    }
+    if !crate::store::group_id_ok(group_id) {
+        return Err(SourceInvalid::RequestInvalid);
+    }
+    if ctx.upload.current().as_deref() != Some(group_id) {
+        return Err(SourceInvalid::UploadGone);
+    }
+    // A body already in flight must finish before its bytes can be confirmed.
+    if ctx.upload.receiving() {
+        return Err(SourceInvalid::UploadBusy);
+    }
+    let summary = upload::summary(h, p, group_id);
+    let source = match upload::resolve(&summary, version.as_deref()) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(match e {
+                upload::SourceInvalid::VersionRequired => SourceInvalid::UploadVersionRequired,
+                upload::SourceInvalid::VersionNotCandidate { version } => {
+                    SourceInvalid::UploadVersionNotCandidate { version }
+                }
+                upload::SourceInvalid::VersionFormat => SourceInvalid::VersionFormat,
+                upload::SourceInvalid::Incomplete { missing } => {
+                    SourceInvalid::UploadIncomplete { missing }
+                }
+                upload::SourceInvalid::Problem => SourceInvalid::UploadProblem,
+                upload::SourceInvalid::ToolkitTooOld {
+                    driver_version,
+                    toolkit_version,
+                } => SourceInvalid::ToolkitTooOld {
+                    driver_version,
+                    toolkit_version,
+                },
+                upload::SourceInvalid::GroupGone => SourceInvalid::UploadGone,
+            })
+        }
+    };
+    let chosen = version.clone().unwrap_or_default();
+    // Uploads defer driver compatibility to the isolated build; only GPU conflicts block here.
+    let host_gpus = read_source_gpus(h)?;
+    let selected = check_gpus(gpus, &host_gpus)?;
+    let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
+    if catalog::conflict(crate::gpu_table::GPUS, &devices) {
+        return Err(SourceInvalid::GpuUnsupported {
+            gpus: json!([]),
+            conflict: true,
+        });
+    }
+    // Hash staged bytes because group metadata cannot prove that the inputs are unchanged.
+    let run_sha256 = match upload::hash_run(h, p, group_id) {
+        Ok(sha) => sha,
+        Err(_) => return Err(SourceInvalid::UploadProblem),
+    };
+    let deb_sha256 = match upload::hash_debs(h, p, group_id) {
+        Ok(map) => map,
+        Err(_) => return Err(SourceInvalid::UploadProblem),
+    };
+    snapshot.source = PlanSource::Upload {
+        fingerprint: run_sha256.chars().take(FINGERPRINT_HEX).collect(),
+        run_sha256,
+        deb_sha256,
+    };
+    let _ = source;
+    snapshot.version = chosen;
+    snapshot.gpus = plan_gpus(&selected);
+    if let Some(parsed) = facts::parse_version(&snapshot.version) {
+        snapshot.kernel_module_type =
+            catalog::module_type(crate::gpu_table::GPUS, &devices, &parsed);
+    }
+    snapshot.upload_group = Some(group_id.to_string());
+    Ok(())
+}
+
+fn prepare_local_source(
+    h: &dyn Host,
+    p: &Paths,
+    row_id: &str,
+    snapshot: &mut Snapshot,
+) -> Result<drivers::Row, SourceInvalid> {
+    if !crate::store::row_id_ok(row_id) {
+        return Err(SourceInvalid::RequestInvalid);
+    }
+    let rows = drivers::list(h, p);
+    let Some(row) = rows.into_iter().find(|r| r.id == row_id) else {
+        return Err(SourceInvalid::LocalRowMissing);
+    };
+    if let Some(record) = row.record_ok() {
+        snapshot.source = PlanSource::Local {
+            row_id: row_id.to_string(),
+            row_kind: record.kind,
+            fingerprint: record.fingerprint.clone(),
+            sha256: record.sha256.clone(),
+        };
+        snapshot.version = record.version.clone();
+    }
+    Ok(row)
+}
+
+fn check_local_source(
+    h: &dyn Host,
+    p: &Paths,
+    local_row: Option<&drivers::Row>,
+    local_unreadable: bool,
+    failures: &mut Vec<Failure>,
+) {
+    if local_unreadable {
+        failures.push(Failure::unreadable(
+            "local_checksum",
+            crate::task_state::general_reason_json(
+                REASON_RECORD_UNREADABLE,
+                READING_TIMEOUT.as_secs(),
+            ),
+        ));
+        failures.push(Failure::unreadable(
+            "local_target_kernel",
+            crate::task_state::general_reason_json(
+                REASON_RECORD_UNREADABLE,
+                READING_TIMEOUT.as_secs(),
+            ),
+        ));
+    }
+
+    if let Some(row) = local_row {
+        if !local_unreadable {
+            let record = row.record_ok().unwrap();
+            let path = p.row_dir(&row.id).join("nvidia.raw");
+            // Bound the whole-file checksum using the host clock.
+            match crate::store::hash_file_within(h, &path, h.now() + READING_TIMEOUT) {
+                Ok(copied) => {
+                    if copied.sha256 != record.sha256 {
+                        failures.push(Failure::new("local_checksum_mismatch"));
+                    }
+                }
+                Err(e) => failures.push(Failure::unreadable(
+                    "local_checksum",
+                    crate::task_state::general_reason_json(
+                        if e.kind() == std::io::ErrorKind::TimedOut {
+                            REASON_TIMED_OUT
+                        } else {
+                            crate::log::io_reason_key(&e)
+                        },
+                        READING_TIMEOUT.as_secs(),
+                    ),
+                )),
+            }
+            let kernel_now = facts::kernel(h);
+            match kernel_now {
+                Reading::Value(current) => {
+                    if record.target_kernel != current {
+                        failures.push(Failure {
+                            item: "local_kernel_mismatch",
+                            object: None,
+                            reason: None,
+                            target: None,
+                            target_kernel: Some(record.target_kernel.clone()),
+                            current_kernel: Some(current),
+                            row_kind: Some(match record.kind {
+                                RowKind::Official => "official".into(),
+                                RowKind::Upload => "upload".into(),
+                                RowKind::Original => "original".into(),
+                            }),
+                        });
+                    }
+                }
+                Reading::Unknown(reason) => failures.push(Failure::unreadable(
+                    "current_kernel",
+                    crate::task_state::general_reason_json(reason, READING_TIMEOUT.as_secs()),
+                )),
+            }
+        }
+    }
+}
+
+fn check_occupancy(
+    h: &dyn Host,
+    modules_for_occupancy: Option<Reading<Vec<facts::ModuleLine>>>,
+) -> Option<GpuState> {
+    // Reuse idle/unreadable module readings; busy or absent readings enter the bounded wait.
+    match modules_for_occupancy {
+        Some(Reading::Unknown(reason)) => Some(gpu_unreadable(h, reason)),
+        Some(Reading::Value(list)) if !facts::occupancy(&list) => None,
+        _ => match facts::wait_until_gpu_idle(
+            h,
+            None,
+            |host| match facts::read_modules(host) {
+                Reading::Value(list) => Ok(list),
+                Reading::Unknown(reason) => Err(reason),
+            },
+            || true,
+        ) {
+            facts::OccupancyDecision::Idle(_) | facts::OccupancyDecision::Released { .. } => None,
+            facts::OccupancyDecision::StillInUse { .. }
+            | facts::OccupancyDecision::Deadline { .. }
+            | facts::OccupancyDecision::NotPersisted => Some(gpu_busy(h)),
+            facts::OccupancyDecision::Unreadable(reason) => Some(gpu_unreadable(h, reason)),
+        },
+    }
+}
+
+/// Check source and host readiness before assembling a confirmation.
 pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), SourceInvalid> {
     if ctx.setup_problems() {
         return Err(SourceInvalid::SetupBlocked);
@@ -486,253 +821,28 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
 
     match req {
         SourceRequest::Official { version, gpus } => {
-            if !gpus_request_ok(gpus) {
-                return Err(SourceInvalid::RequestInvalid);
+            if let Some(result) = prepare_official_source(
+                h,
+                version,
+                gpus,
+                &mut snapshot,
+                &mut modules_for_occupancy,
+                &mut official_kernel,
+            )? {
+                return Ok((result, snapshot));
             }
-            let Some(parsed) = facts::parse_version_exact(version) else {
-                return Err(SourceInvalid::VersionFormat);
-            };
-            if parsed.major() < MIN_MAJOR_BRANCH {
-                return Err(SourceInvalid::VersionBelow470);
-            }
-            if version == COMMUNITY_PATCH_VERSION {
-                match facts::kernel(h) {
-                    Reading::Value(kernel) => official_kernel = Some(kernel),
-                    Reading::Unknown(reason) => {
-                        return Ok((
-                            Precheck::Uncomputable {
-                                items: vec![Unreadable {
-                                    object: "current_kernel",
-                                    reason: crate::task_state::general_reason(
-                                        reason,
-                                        READING_TIMEOUT.as_secs(),
-                                    ),
-                                    raw: None,
-                                }],
-                            },
-                            snapshot,
-                        ));
-                    }
-                }
-            }
-            let kernel = official_kernel.as_deref().unwrap_or_default();
-            let interfaces = catalog::read_interfaces(h);
-            check_branch(&parsed, kernel, &interfaces, None)?;
-            let loaded = read_modules(h);
-            let reasons = catalog::official_module_reasons(&parsed, kernel, &loaded);
-            if !reasons.is_empty() {
-                return Err(SourceInvalid::BranchUnbuildable {
-                    branch: parsed.major(),
-                    reasons,
-                });
-            }
-            modules_for_occupancy = Some(loaded);
-            // GPU check.
-            let host_gpus = match facts::read_gpus(h) {
-                Ok(g) => g,
-                Err(e) => {
-                    // the log's reason is the reading's `{key, params}` object, never the
-                    // bare code.
-                    crate::log::error_json(
-                        Event::GpusUnreadable,
-                        &[
-                            ("path", json!(e.path.as_str())),
-                            (
-                                "reason",
-                                crate::task_state::general_reason_json(
-                                    e.reason,
-                                    READING_TIMEOUT.as_secs(),
-                                ),
-                            ),
-                        ],
-                    );
-                    return Err(SourceInvalid::GpuUndecidable {
-                        unreadable: vec![Unreadable {
-                            object: "gpus",
-                            reason: crate::task_state::general_reason(
-                                e.reason,
-                                READING_TIMEOUT.as_secs(),
-                            ),
-                            raw: Some(e.path),
-                        }],
-                    });
-                }
-            };
-            let selected = check_gpus(gpus, &host_gpus)?;
-            let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
-            let module_type = catalog::module_type(crate::gpu_table::GPUS, &devices, &parsed);
-            check_branch(&parsed, kernel, &interfaces, module_type)?;
-            if !catalog::drives_all(
-                crate::gpu_table::GPUS,
-                crate::gpu_table::VERSIONS,
-                &devices,
-                &parsed,
-            ) {
-                let conflict = catalog::conflict(crate::gpu_table::GPUS, &devices);
-                let payload = catalog::gpu_unsupported_json(
-                    crate::gpu_table::GPUS,
-                    crate::gpu_table::VERSIONS,
-                    &selected,
-                    &parsed,
-                );
-                return Err(SourceInvalid::GpuUnsupported {
-                    gpus: payload["gpus"].clone(),
-                    conflict,
-                });
-            }
-            snapshot.source = PlanSource::Official;
-            snapshot.version = version.clone();
-            snapshot.gpus = selected
-                .iter()
-                .map(|g| PlanGpu {
-                    address: g.address.clone(),
-                    device: format!("{:04x}", g.device),
-                })
-                .collect();
-            snapshot.kernel_module_type = module_type;
         }
         SourceRequest::Upload {
             group_id,
             version,
             gpus,
         } => {
-            if !gpus_request_ok(gpus) {
-                return Err(SourceInvalid::RequestInvalid);
-            }
-            if !crate::store::group_id_ok(group_id) {
-                // Parameter validation: a malformed id is a format error, checked
-                // before the group is looked up.
-                return Err(SourceInvalid::RequestInvalid);
-            }
-            if ctx.upload.current().as_deref() != Some(group_id.as_str()) {
-                return Err(SourceInvalid::UploadGone);
-            }
-            let summary = upload::summary(h, p, group_id);
-            let source = match upload::resolve(&summary, version.as_deref()) {
-                Ok(s) => s,
-                Err(e) => {
-                    return Err(match e {
-                        upload::SourceInvalid::VersionRequired => {
-                            SourceInvalid::UploadVersionRequired
-                        }
-                        upload::SourceInvalid::VersionNotCandidate { version } => {
-                            SourceInvalid::UploadVersionNotCandidate { version }
-                        }
-                        upload::SourceInvalid::VersionFormat => SourceInvalid::VersionFormat,
-                        upload::SourceInvalid::Incomplete { missing } => {
-                            SourceInvalid::UploadIncomplete { missing }
-                        }
-                        upload::SourceInvalid::Problem => SourceInvalid::UploadProblem,
-                        upload::SourceInvalid::ToolkitTooOld {
-                            driver_version,
-                            toolkit_version,
-                        } => SourceInvalid::ToolkitTooOld {
-                            driver_version,
-                            toolkit_version,
-                        },
-                        upload::SourceInvalid::GroupGone => SourceInvalid::UploadGone,
-                    })
-                }
-            };
-            let chosen = version.clone().unwrap_or_default();
-            // GPU check: upload only rejects a conflict.
-            let host_gpus = match facts::read_gpus(h) {
-                Ok(g) => g,
-                Err(e) => {
-                    // the log's reason is the reading's `{key, params}` object, never the
-                    // bare code.
-                    crate::log::error_json(
-                        Event::GpusUnreadable,
-                        &[
-                            ("path", json!(e.path.as_str())),
-                            (
-                                "reason",
-                                crate::task_state::general_reason_json(
-                                    e.reason,
-                                    READING_TIMEOUT.as_secs(),
-                                ),
-                            ),
-                        ],
-                    );
-                    return Err(SourceInvalid::GpuUndecidable {
-                        unreadable: vec![Unreadable {
-                            object: "gpus",
-                            reason: crate::task_state::general_reason(
-                                e.reason,
-                                READING_TIMEOUT.as_secs(),
-                            ),
-                            raw: Some(e.path),
-                        }],
-                    });
-                }
-            };
-            let selected = check_gpus(gpus, &host_gpus)?;
-            let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
-            if catalog::conflict(crate::gpu_table::GPUS, &devices) {
-                return Err(SourceInvalid::GpuUnsupported {
-                    gpus: json!([]),
-                    conflict: true,
-                });
-            }
-            // The plan records the sha256 of the five actual staged files, not the values
-            // stored in `group.json`.
-            let run_sha256 = match upload::hash_run(h, p, group_id) {
-                Ok(sha) => sha,
-                Err(_) => return Err(SourceInvalid::UploadProblem),
-            };
-            let deb_sha256 = match upload::hash_debs(h, p, group_id) {
-                Ok(map) => map,
-                Err(_) => return Err(SourceInvalid::UploadProblem),
-            };
-            snapshot.source = PlanSource::Upload {
-                fingerprint: run_sha256.chars().take(FINGERPRINT_HEX).collect(),
-                run_sha256,
-                deb_sha256,
-            };
-            let _ = source;
-            snapshot.version = chosen;
-            snapshot.gpus = selected
-                .iter()
-                .map(|g| PlanGpu {
-                    address: g.address.clone(),
-                    device: format!("{:04x}", g.device),
-                })
-                .collect();
-            if let Some(parsed) = facts::parse_version(&snapshot.version) {
-                snapshot.kernel_module_type =
-                    catalog::module_type(crate::gpu_table::GPUS, &devices, &parsed);
-            }
-            snapshot.upload_group = Some(group_id.clone());
+            prepare_upload_source(ctx, group_id, version, gpus, &mut snapshot)?;
         }
         SourceRequest::Local { row_id } => {
-            if !crate::store::row_id_ok(row_id) {
-                // Same parameter table: a malformed row id never reaches the directory
-                // lookup.
-                return Err(SourceInvalid::RequestInvalid);
-            }
-            let rows = drivers::list(h, p);
-            let Some(row) = rows.into_iter().find(|r| &r.id == row_id) else {
-                return Err(SourceInvalid::LocalRowMissing);
-            };
-            match row.record_ok() {
-                None => {
-                    // The row directory exists but its record is unreadable: both local
-                    // checks report `record_unreadable` and the request still returns 200
-                    // blocked.
-                    local_unreadable = true;
-                    local_row = Some(row);
-                }
-                Some(record) => {
-                    snapshot.source = PlanSource::Local {
-                        row_id: row_id.clone(),
-                        row_kind: record.kind,
-                        fingerprint: record.fingerprint.clone(),
-                        sha256: record.sha256.clone(),
-                    };
-                    snapshot.version = record.version.clone();
-                    local_row = Some(row);
-                }
-            }
+            let row = prepare_local_source(h, p, row_id, &mut snapshot)?;
+            local_unreadable = row.record_ok().is_none();
+            local_row = Some(row);
         }
     }
 
@@ -740,43 +850,20 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
     let reconciled = crate::tasks::reconcile_managed(h, p);
     match reconciled.active.blocker() {
         None => {}
-        Some(crate::tasks::Blocker::Running { .. }) => failures.push(Failure {
-            item: "task_running",
-            object: None,
-            reason: None,
-            target: None,
-            target_kernel: None,
-            current_kernel: None,
-            row_kind: None,
-        }),
-        Some(crate::tasks::Blocker::Unreadable { reason }) => failures.push(Failure {
-            item: "unreadable",
-            object: Some("running_task"),
-            reason: Some(json!({"key": reason.key, "params": reason.params})),
-            target: None,
-            target_kernel: None,
-            current_kernel: None,
-            row_kind: None,
-        }),
+        Some(crate::tasks::Blocker::Running { .. }) => failures.push(Failure::new("task_running")),
+        Some(crate::tasks::Blocker::Unreadable { reason }) => failures.push(Failure::unreadable(
+            "running_task",
+            json!({"key": reason.key, "params": reason.params}),
+        )),
     }
-    // A host that still shows this tool's own leftovers must not start a task:
-    // the new task would read the leftover value as its baseline and make it
-    // permanent. The reason names exactly what did not read back.
+    // Leftover host changes must not become the next task's baseline.
     if let Some(residue) = &reconciled.host_residue {
         failures.push(host_residue_failure(residue));
     }
 
     let link = facts::link(h);
     match &link {
-        facts::LinkReading::Missing => failures.push(Failure {
-            item: "link_missing",
-            object: None,
-            reason: None,
-            target: None,
-            target_kernel: None,
-            current_kernel: None,
-            row_kind: None,
-        }),
+        facts::LinkReading::Missing => failures.push(Failure::new("link_missing")),
         facts::LinkReading::Elsewhere(target) => failures.push(Failure {
             item: "link_elsewhere",
             object: None,
@@ -786,142 +873,16 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
             current_kernel: None,
             row_kind: None,
         }),
-        facts::LinkReading::Unknown(reason) => failures.push(Failure {
-            item: "unreadable",
-            object: Some("extension_link"),
-            reason: Some(crate::task_state::general_reason_json(
-                reason,
-                READING_TIMEOUT.as_secs(),
-            )),
-            target: None,
-            target_kernel: None,
-            current_kernel: None,
-            row_kind: None,
-        }),
+        facts::LinkReading::Unknown(reason) => failures.push(Failure::unreadable(
+            "extension_link",
+            crate::task_state::general_reason_json(reason, READING_TIMEOUT.as_secs()),
+        )),
         facts::LinkReading::Ok => {}
     }
 
-    if local_unreadable {
-        failures.push(Failure {
-            item: "unreadable",
-            object: Some("local_checksum"),
-            reason: Some(crate::task_state::general_reason_json(
-                REASON_RECORD_UNREADABLE,
-                READING_TIMEOUT.as_secs(),
-            )),
-            target: None,
-            target_kernel: None,
-            current_kernel: None,
-            row_kind: None,
-        });
-        failures.push(Failure {
-            item: "unreadable",
-            object: Some("local_target_kernel"),
-            reason: Some(crate::task_state::general_reason_json(
-                REASON_RECORD_UNREADABLE,
-                READING_TIMEOUT.as_secs(),
-            )),
-            target: None,
-            target_kernel: None,
-            current_kernel: None,
-            row_kind: None,
-        });
-    }
+    check_local_source(h, p, local_row.as_ref(), local_unreadable, &mut failures);
 
-    if let Some(row) = &local_row {
-        if !local_unreadable {
-            let record = row.record_ok().unwrap();
-            let path = p.row_dir(&row.id).join("nvidia.raw");
-            // The whole-file sha256 has the `READING_TIMEOUT` deadline, judged on the host
-            // clock.
-            match crate::store::hash_file_within(h, &path, h.now() + READING_TIMEOUT) {
-                Ok(copied) => {
-                    if copied.sha256 != record.sha256 {
-                        failures.push(Failure {
-                            item: "local_checksum_mismatch",
-                            object: None,
-                            reason: None,
-                            target: None,
-                            target_kernel: None,
-                            current_kernel: None,
-                            row_kind: None,
-                        });
-                    }
-                }
-                Err(e) => failures.push(Failure {
-                    item: "unreadable",
-                    object: Some("local_checksum"),
-                    reason: Some(crate::task_state::general_reason_json(
-                        match e.kind() {
-                            std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-                            std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-                            std::io::ErrorKind::TimedOut => REASON_TIMED_OUT,
-                            _ => REASON_IO_ERROR,
-                        },
-                        READING_TIMEOUT.as_secs(),
-                    )),
-                    target: None,
-                    target_kernel: None,
-                    current_kernel: None,
-                    row_kind: None,
-                }),
-            }
-            let kernel_now = facts::kernel(h);
-            match kernel_now {
-                Reading::Value(current) => {
-                    if record.target_kernel != current {
-                        failures.push(Failure {
-                            item: "local_kernel_mismatch",
-                            object: None,
-                            reason: None,
-                            target: None,
-                            target_kernel: Some(record.target_kernel.clone()),
-                            current_kernel: Some(current),
-                            row_kind: Some(match record.kind {
-                                RowKind::Official => "official".into(),
-                                RowKind::Upload => "upload".into(),
-                                RowKind::Original => "original".into(),
-                            }),
-                        });
-                    }
-                }
-                Reading::Unknown(reason) => failures.push(Failure {
-                    item: "unreadable",
-                    object: Some("current_kernel"),
-                    reason: Some(crate::task_state::general_reason_json(
-                        reason,
-                        READING_TIMEOUT.as_secs(),
-                    )),
-                    target: None,
-                    target_kernel: None,
-                    current_kernel: None,
-                    row_kind: None,
-                }),
-            }
-        }
-    }
-
-    // Occupancy. A cached idle or unreadable reading is the decision. A busy or missing
-    // cache is read again and, when the GPU is in use, waited out on this host's clock.
-    let gpu_state = match modules_for_occupancy {
-        Some(Reading::Unknown(reason)) => Some(gpu_unreadable(h, reason)),
-        Some(Reading::Value(list)) if !facts::occupancy(&list) => None,
-        _ => match facts::wait_until_gpu_idle(
-            h,
-            None,
-            |host| match read_modules(host) {
-                Reading::Value(list) => Ok(list),
-                Reading::Unknown(reason) => Err(reason),
-            },
-            || true,
-        ) {
-            facts::OccupancyDecision::Idle(_) | facts::OccupancyDecision::Released { .. } => None,
-            facts::OccupancyDecision::StillInUse { .. }
-            | facts::OccupancyDecision::Deadline { .. }
-            | facts::OccupancyDecision::NotPersisted => Some(gpu_busy(h)),
-            facts::OccupancyDecision::Unreadable(reason) => Some(gpu_unreadable(h, reason)),
-        },
-    };
+    let gpu_state = check_occupancy(h, modules_for_occupancy);
 
     if !failures.is_empty() || gpu_state.is_some() {
         return Ok((
@@ -966,7 +927,6 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
     snapshot.truenas_version = truenas.clone();
     snapshot.link = link;
 
-    // Whether an original is saved and whether saving is possible.
     let original = drivers::find_original(h, p, &kernel, &truenas);
     let (original_saved, original_json) = match &original {
         drivers::OriginalLookup::Found(row) => {
@@ -1001,6 +961,18 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
         OriginalChoice::Save
     };
 
+    let dialog = confirmation_dialog(&snapshot, kernel, truenas, original_json);
+    Ok((Precheck::Ready(dialog), snapshot))
+}
+
+fn confirmation_dialog(
+    snapshot: &Snapshot,
+    kernel: String,
+    truenas: String,
+    original_json: serde_json::Value,
+) -> Dialog {
+    let original_saved = snapshot.original_saved;
+    let save_available = snapshot.save_available;
     let source_json = match &snapshot.source {
         PlanSource::Official => json!({"kind": "official"}),
         PlanSource::Upload {
@@ -1099,7 +1071,7 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
         how: crate::task_state::ReasonValue::new(how_key, json!({})),
         warnings,
     };
-    let dialog = Dialog {
+    Dialog {
         source: source_json,
         version: snapshot.version.clone(),
         kernel,
@@ -1107,17 +1079,44 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
         original: original_json,
         save_available,
         confirmation,
-    };
-    Ok((Precheck::Ready(dialog), snapshot))
+    }
 }
 
-/// plan creation: remember the snapshot.
+/// Replace the one-shot plan and lock its staged upload group.
 pub fn remember(ctx: &Ctx, snapshot: Snapshot) -> String {
     let mut slot = ctx.plan.lock().unwrap_or_else(|e| e.into_inner());
+    ctx.upload.lock_group(snapshot.upload_group.as_deref());
     slot.remember(snapshot)
 }
 
-/// task submission button.
+/// Cancel only the requested snapshot. An older dialog cannot unlock a newer plan.
+/// The caller holds the process lock, just as for creation and submission.
+pub fn cancel(ctx: &Ctx, plan_id: &str) {
+    let mut slot = ctx.plan.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.take(plan_id).is_some() {
+        ctx.upload.lock_group(None);
+    }
+}
+
+/// Cancel the current upload's abandoned confirmation while the caller holds process_lock.
+/// Plans for other sources and running tasks are unaffected.
+pub fn cancel_current_upload(ctx: &Ctx) {
+    let mut slot = ctx.plan.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(group) = ctx.upload.current() else {
+        return;
+    };
+    if slot
+        .0
+        .as_ref()
+        .and_then(|snapshot| snapshot.upload_group.as_deref())
+        == Some(group.as_str())
+    {
+        slot.0 = None;
+        ctx.upload.lock_group(None);
+    }
+}
+
+/// Confirmation action selected by the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Button {
@@ -1126,7 +1125,7 @@ pub enum Button {
     Start,
 }
 
-/// task submission rejections.
+/// Submission rejections and their response data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitReject {
     Used,
@@ -1149,30 +1148,7 @@ pub enum SubmitReject {
     },
 }
 
-/// task submission: submit a remembered plan. The caller holds the process lock.
-pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, SubmitReject> {
-    // the submission is serialized by the host-global control lock: the
-    //    disk-changing part of reconciliation and every other launcher take it
-    //    too, and a host that cannot hold it must not start a task.
-    let h = ctx.host.as_ref();
-    let p = &ctx.paths;
-    let _control = crate::admission::control_lock(h, crate::admission::LOCK_WAIT).map_err(|b| {
-        SubmitReject::Failed {
-            reason: crate::task_state::ReasonValue::new(b.key, b.params.clone()),
-            raw: b.raw.clone(),
-        }
-    })?;
-
-    let snapshot = {
-        let mut slot = ctx.plan.lock().unwrap_or_else(|e| e.into_inner());
-        slot.take(plan_id)
-    };
-    let Some(snapshot) = snapshot else {
-        return Err(SubmitReject::Used);
-    };
-    if ctx.setup_problems() {
-        return Err(SubmitReject::SetupBlocked);
-    }
+fn check_submit_button(snapshot: &Snapshot, button: Button) -> Result<(), SubmitReject> {
     let button_ok = if snapshot.original_saved {
         button == Button::Start
     } else if snapshot.save_available {
@@ -1183,21 +1159,68 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
     if !button_ok {
         return Err(SubmitReject::ButtonInvalid);
     }
+    Ok(())
+}
+
+fn check_source_fingerprint(ctx: &Ctx, snapshot: &Snapshot, changed: &mut Vec<&'static str>) {
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
+    match &snapshot.source {
+        PlanSource::Official => {}
+        PlanSource::Upload {
+            run_sha256,
+            deb_sha256,
+            ..
+        } => {
+            let group = snapshot.upload_group.clone().unwrap_or_default();
+            if ctx.upload.current().as_deref() != Some(group.as_str()) {
+                changed.push("source");
+            } else {
+                // Rehash the inputs because group metadata cannot prove they are unchanged.
+                let run_now = upload::hash_run(h, p, &group).ok();
+                let debs_now = upload::hash_debs(h, p, &group).ok();
+                let matches = run_now.as_deref() == Some(run_sha256.as_str())
+                    && debs_now.as_ref() == Some(deb_sha256);
+                if !matches {
+                    changed.push("source");
+                }
+            }
+        }
+        PlanSource::Local { row_id, sha256, .. } => {
+            let rows = drivers::list(h, p);
+            match rows.into_iter().find(|r| &r.id == row_id) {
+                Some(row) => {
+                    match (
+                        row.record_ok(),
+                        crate::store::hash_file(h, &p.row_dir(row_id).join("nvidia.raw")),
+                    ) {
+                        (Some(record), Ok(copied)) if copied.sha256 == *sha256 => {
+                            if record.version != snapshot.version {
+                                changed.push("version");
+                            }
+                        }
+                        _ => changed.push("source"),
+                    }
+                }
+                None => changed.push("source"),
+            }
+        }
+    }
+}
+
+fn recheck_submission(ctx: &Ctx, snapshot: &Snapshot) -> Result<(), SubmitReject> {
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
     let reconciled = crate::tasks::reconcile(h, p);
     match reconciled.active.blocker() {
         None => {}
         Some(crate::tasks::Blocker::Running { .. }) => return Err(SubmitReject::TaskRunning),
         Some(crate::tasks::Blocker::Unreadable { reason }) => {
             return Err(SubmitReject::PrecheckFailed {
-                failures: vec![Failure {
-                    item: "unreadable",
-                    object: Some("running_task"),
-                    reason: Some(json!({"key": reason.key, "params": reason.params})),
-                    target: None,
-                    target_kernel: None,
-                    current_kernel: None,
-                    row_kind: None,
-                }],
+                failures: vec![Failure::unreadable(
+                    "running_task",
+                    json!({"key": reason.key, "params": reason.params}),
+                )],
             })
         }
     }
@@ -1237,15 +1260,7 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
     }
     let mut failures = Vec::new();
     match &link {
-        facts::LinkReading::Missing => failures.push(Failure {
-            item: "link_missing",
-            object: None,
-            reason: None,
-            target: None,
-            target_kernel: None,
-            current_kernel: None,
-            row_kind: None,
-        }),
+        facts::LinkReading::Missing => failures.push(Failure::new("link_missing")),
         facts::LinkReading::Elsewhere(target) => failures.push(Failure {
             item: "link_elsewhere",
             object: None,
@@ -1266,49 +1281,7 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
     }
 
     let mut changed: Vec<&'static str> = Vec::new();
-    match &snapshot.source {
-        PlanSource::Official => {}
-        PlanSource::Upload {
-            run_sha256,
-            deb_sha256,
-            ..
-        } => {
-            let group = snapshot.upload_group.clone().unwrap_or_default();
-            if ctx.upload.current().as_deref() != Some(group.as_str()) {
-                changed.push("source");
-            } else {
-                // Recompute the sha256 of the five files themselves; the `group.json` values
-                // are not the source of truth.
-                let run_now = upload::hash_run(h, p, &group).ok();
-                let debs_now = upload::hash_debs(h, p, &group).ok();
-                let matches = run_now.as_deref() == Some(run_sha256.as_str())
-                    && debs_now.as_ref() == Some(deb_sha256);
-                if !matches {
-                    changed.push("source");
-                }
-            }
-        }
-        PlanSource::Local { row_id, sha256, .. } => {
-            let rows = drivers::list(h, p);
-            match rows.into_iter().find(|r| &r.id == row_id) {
-                Some(row) => {
-                    match (
-                        row.record_ok(),
-                        crate::store::hash_file(h, &p.row_dir(row_id).join("nvidia.raw")),
-                    ) {
-                        (Some(record), Ok(copied)) if copied.sha256 == *sha256 => {
-                            // The row's recorded version is part of the plan.
-                            if record.version != snapshot.version {
-                                changed.push("version");
-                            }
-                        }
-                        _ => changed.push("source"),
-                    }
-                }
-                None => changed.push("source"),
-            }
-        }
-    }
+    check_source_fingerprint(ctx, snapshot, &mut changed);
     if kernel.value() != Some(&snapshot.kernel) {
         changed.push("kernel");
     }
@@ -1329,27 +1302,13 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
         return Err(SubmitReject::Changed { changed });
     }
 
-    if let Err(e) = crate::tasks::stage_runner(h, p) {
-        // the submit reason key, with the staging error as the raw of the same reason object.
-        crate::log::error_json(
-            Event::RunnerCopyFailed,
-            &[(
-                "reason",
-                crate::log::reason_object(
-                    SUBMIT_RUNNER_COPY_FAILED,
-                    json!({}),
-                    Some(&e.to_string()),
-                ),
-            )],
-        );
-        return Err(SubmitReject::Failed {
-            reason: crate::task_state::ReasonValue::new(SUBMIT_RUNNER_COPY_FAILED, json!({})),
-            // The response carries the system error verbatim.
-            raw: Some(e.to_string()),
-        });
-    }
+    Ok(())
+}
 
-    // first version of the state file, then the task directory.
+fn prepare_task(ctx: &Ctx, snapshot: &Snapshot, button: Button) -> Result<String, SubmitReject> {
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
+    // Persist state before moving inputs so reconciliation can recover an interrupted move.
     let task_id = crate::store::new_task_id(h.wall_ms());
     let original_choice = match button {
         Button::Save => OriginalChoice::Save,
@@ -1362,10 +1321,7 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
         kernel: snapshot.kernel.clone(),
         truenas_version: snapshot.truenas_version.clone(),
         original: original_choice,
-        // The `image_id` of the task record is the build environment image: the build
-        // container runs in the pinned official Debian image, not in the program's own image.
-        // The runner re-checks the local image ID before the build and replaces this value
-        // with the verified one.
+        // This is the build environment image; the runner replaces it with the verified local ID.
         image_id: crate::build_kit::BUILD_ENV_IMAGE_ID.to_string(),
         build_timeout_minutes: ctx.build_timeout_minutes(),
         gpus: snapshot.gpus.clone(),
@@ -1388,7 +1344,6 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
             let group = snapshot.upload_group.clone().unwrap_or_default();
             let result = upload::move_into_task(h, p, &group, &task_id);
             if result.is_ok() {
-                // The staged group is the task input now.
                 ctx.upload.clear_if(&group);
             }
             result
@@ -1406,6 +1361,127 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
         });
     }
 
+    Ok(task_id)
+}
+
+fn rollback_never_ran(
+    ctx: &Ctx,
+    snapshot: &Snapshot,
+    task_id: &str,
+    reason: &'static str,
+    raw: String,
+    code: Option<i32>,
+) -> SubmitReject {
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
+    // Only positive NeverRan proof permits rollback; failed move-back must retain task inputs.
+    let mut rollback_error: Option<String> = None;
+    if let PlanSource::Upload { .. } = &snapshot.source {
+        let group = snapshot.upload_group.clone().unwrap_or_default();
+        // Persist the destination so reconciliation can retry a failed move-back.
+        if let Err(e) = upload::mark_pending_rollback(h, p, &group, task_id) {
+            rollback_error = Some(e.to_string());
+        }
+        match upload::move_back(h, p, &group, task_id) {
+            Ok(()) => {
+                let _ = h.remove_file(&p.state(task_id));
+                ctx.upload.restore(&group);
+                let _ = h.remove_dir_all(&p.task_dir(task_id));
+            }
+            Err(e) => {
+                // Keep state, rollback destination and the only input copy for reconciliation.
+                rollback_error = Some(match rollback_error {
+                    Some(previous) => format!("{previous}\n{e}"),
+                    None => e.to_string(),
+                });
+            }
+        }
+    } else {
+        let _ = h.remove_file(&p.state(task_id));
+        let _ = h.remove_dir_all(&p.task_dir(task_id));
+    }
+    crate::log::error_json(
+        Event::TaskSubmitFailed,
+        &[
+            ("task_id", json!(task_id)),
+            (
+                "reason",
+                crate::log::reason_object(
+                    reason,
+                    if reason == SUBMIT_UNIT_NOT_CREATED {
+                        json!({"code": code})
+                    } else {
+                        json!({})
+                    },
+                    Some(&raw),
+                ),
+            ),
+            ("rollback", json!(rollback_error.as_deref().unwrap_or("ok"))),
+        ],
+    );
+    SubmitReject::Failed {
+        reason: crate::task_state::ReasonValue::new(
+            reason,
+            if reason == SUBMIT_UNIT_NOT_CREATED {
+                json!({"code": code})
+            } else {
+                json!({})
+            },
+        ),
+        raw: Some(match rollback_error {
+            Some(error) => format!("{raw}\n{error}"),
+            None => raw,
+        }),
+    }
+}
+
+/// Consume and submit a plan while the caller holds process_lock.
+pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, SubmitReject> {
+    // Keep the host-global lock through rechecks, launch and any rollback.
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
+    let _control = crate::admission::control_lock(h, crate::admission::LOCK_WAIT).map_err(|b| {
+        SubmitReject::Failed {
+            reason: crate::task_state::ReasonValue::new(b.key, b.params.clone()),
+            raw: b.raw.clone(),
+        }
+    })?;
+
+    let snapshot = {
+        let mut slot = ctx.plan.lock().unwrap_or_else(|e| e.into_inner());
+        slot.take(plan_id)
+    };
+    let Some(snapshot) = snapshot else {
+        return Err(SubmitReject::Used);
+    };
+    // Rejections also consume the plan; process_lock protects uploads during rechecks and moves.
+    ctx.upload.lock_group(None);
+    if ctx.setup_problems() {
+        return Err(SubmitReject::SetupBlocked);
+    }
+    check_submit_button(&snapshot, button)?;
+    recheck_submission(ctx, &snapshot)?;
+
+    if let Err(e) = crate::tasks::stage_runner(h, p) {
+        crate::log::error_json(
+            Event::RunnerCopyFailed,
+            &[(
+                "reason",
+                crate::log::reason_object(
+                    SUBMIT_RUNNER_COPY_FAILED,
+                    json!({}),
+                    Some(&e.to_string()),
+                ),
+            )],
+        );
+        return Err(SubmitReject::Failed {
+            reason: crate::task_state::ReasonValue::new(SUBMIT_RUNNER_COPY_FAILED, json!({})),
+            raw: Some(e.to_string()),
+        });
+    }
+
+    let task_id = prepare_task(ctx, &snapshot, button)?;
+
     let Some(host_data_dir) = ctx.startup.host_data_dir.clone() else {
         return Err(SubmitReject::SetupBlocked);
     };
@@ -1420,72 +1496,9 @@ pub fn submit(ctx: &Ctx, plan_id: &str, button: Button) -> Result<String, Submit
     match crate::tasks::start(h, &host_data_dir, &task_id) {
         crate::tasks::StartResult::Started => Ok(task_id),
         crate::tasks::StartResult::Unknown => Ok(task_id),
-        crate::tasks::StartResult::NeverRan { reason, raw, code } => {
-            // The unit never ran: undo everything, but only what can be undone. If the staged
-            // group cannot be moved back, the inputs must survive in the task directory
-            // instead of being deleted.
-            let mut rollback_error: Option<String> = None;
-            if let PlanSource::Upload { .. } = &snapshot.source {
-                let group = snapshot.upload_group.clone().unwrap_or_default();
-                // Record the destination while it is still known: if the move-back fails,
-                // reconcile finds the only copy of the upload in the kept task directory and
-                // finishes the rollback.
-                if let Err(e) = upload::mark_pending_rollback(h, p, &group, &task_id) {
-                    rollback_error = Some(e.to_string());
-                }
-                match upload::move_back(h, p, &group, &task_id) {
-                    Ok(()) => {
-                        let _ = h.remove_file(&p.state(&task_id));
-                        ctx.upload.restore(&group);
-                        let _ = h.remove_dir_all(&p.task_dir(&task_id));
-                    }
-                    Err(e) => {
-                        // Keep the state file and `tasks/<task-id>/in/` (the only copy of the
-                        // five files) plus the recorded destination, and report the failure.
-                        rollback_error = Some(match rollback_error {
-                            Some(previous) => format!("{previous}\n{e}"),
-                            None => e.to_string(),
-                        });
-                    }
-                }
-            } else {
-                let _ = h.remove_file(&p.state(&task_id));
-                let _ = h.remove_dir_all(&p.task_dir(&task_id));
-            }
-            crate::log::error_json(
-                Event::TaskSubmitFailed,
-                &[
-                    ("task_id", json!(task_id.as_str())),
-                    (
-                        "reason",
-                        crate::log::reason_object(
-                            reason,
-                            if reason == SUBMIT_UNIT_NOT_CREATED {
-                                json!({"code": code})
-                            } else {
-                                json!({})
-                            },
-                            Some(&raw),
-                        ),
-                    ),
-                    ("rollback", json!(rollback_error.as_deref().unwrap_or("ok"))),
-                ],
-            );
-            Err(SubmitReject::Failed {
-                reason: crate::task_state::ReasonValue::new(
-                    reason,
-                    if reason == SUBMIT_UNIT_NOT_CREATED {
-                        json!({"code": code})
-                    } else {
-                        json!({})
-                    },
-                ),
-                raw: Some(match rollback_error {
-                    Some(error) => format!("{raw}\n{error}"),
-                    None => raw,
-                }),
-            })
-        }
+        crate::tasks::StartResult::NeverRan { reason, raw, code } => Err(rollback_never_ran(
+            ctx, &snapshot, &task_id, reason, raw, code,
+        )),
     }
 }
 

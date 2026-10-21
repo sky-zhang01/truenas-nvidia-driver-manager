@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./local-test.js";
 import { setScenario, signIn } from "./helpers.js";
 
 test("the page shell has no inline script and no inline style", async ({ request }) => {

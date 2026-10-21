@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "./local-test.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -136,7 +136,7 @@ async function expectDeleteCopy(page: Page, last: boolean): Promise<void> {
   const dialog = page.locator("dialog.nvm-dialog");
   await expect(dialog).toBeVisible();
   const text = ((await dialog.innerText()) ?? "").replace(/\s+/g, " ");
-  expect(text).toMatch(/这个浏览器保持登录|This browser stays signed in/);
+  expect(text).toMatch(/本浏览器保持登录|this browser stays signed in/);
   expect(text).toMatch(/其他浏览器会退出登录|Other browsers sign out/);
   await expect(dialog.locator("code")).not.toHaveText("");
   const warning = /登录页不再提供 SSH 登录|no longer offers SSH sign-in/;
@@ -144,7 +144,7 @@ async function expectDeleteCopy(page: Page, last: boolean): Promise<void> {
     expect(text).toMatch(/最后一把已登记的 SSH 公钥|last registered SSH public key/);
     expect(text).toMatch(warning);
     expect(text.search(warning)).toBeLessThan(
-      text.search(/这个浏览器保持登录|This browser stays signed in/),
+      text.search(/本浏览器保持登录|this browser stays signed in/),
     );
   } else {
     expect(text).not.toMatch(/最后一把|last registered SSH public key/);
@@ -454,7 +454,7 @@ test("ssh private key pastes never leave the browser", async ({ page, request })
     await page.fill("#ssh-signature", privateKey);
     await page.click(".ssh-login-form button[type=submit]");
     await expect(page.locator(".ssh-login-form .form-error")).toContainText(
-      /私钥|Private key/,
+      /私钥|private key/i,
     );
 
     await expect(page.locator("#ssh-signature")).toHaveValue("");
@@ -478,12 +478,12 @@ test("ssh private key pastes never leave the browser", async ({ page, request })
     await page.fill("#ssh-add-key", key.pub);
     await page.fill("#ssh-add-comment", privateKey);
     await page.click(".ssh-keys-add button[type=submit]");
-    await expect(page.locator(".ssh-keys-add .form-error")).toContainText(/私钥|Private key/);
+    await expect(page.locator(".ssh-keys-add .form-error")).toContainText(/私钥|private key/i);
     await expect(page.locator("#ssh-add-comment")).toHaveValue("");
 
     await page.fill("#ssh-add-key", privateKey);
     await page.click(".ssh-keys-add button[type=submit]");
-    await expect(page.locator(".ssh-keys-add .form-error")).toContainText(/私钥|Private key/);
+    await expect(page.locator(".ssh-keys-add .form-error")).toContainText(/私钥|private key/i);
     await expect(page.locator("#ssh-add-key")).toHaveValue("");
     await page.waitForTimeout(300);
     expect(addSubmitted).toBe(false);

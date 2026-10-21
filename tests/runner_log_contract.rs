@@ -183,6 +183,10 @@ fn finish_logs_gpu_users_with_their_types() {
         .as_array()
         .expect("applications is a list");
     assert_eq!(applications.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&ctx.state.gpu_users).unwrap()["users"][0]["usage"],
+        "unknown"
+    );
     assert_eq!(applications[0]["kind"], "docker");
     assert!(applications[0]["name"]
         .as_str()

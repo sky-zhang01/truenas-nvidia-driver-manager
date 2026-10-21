@@ -475,5 +475,5 @@ test("the ssh error keys render notices in both languages", async () => {
     { write_reason: { key: "credentials.unsaved_reason.file", params: {} } },
     "zh",
   );
-  assert.match((unsaved as unknown as FakeElement).textContent ?? "", /文件未变更/);
+  assert.match((unsaved as unknown as FakeElement).textContent ?? "", /文件未改动/);
 });

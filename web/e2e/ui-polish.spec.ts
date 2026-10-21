@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "./local-test.js";
 import { setScenario, signIn } from "./helpers.js";
 
 const THEMES = ["focused-light", "focused-dark", "plate-light", "plate-dark"] as const;

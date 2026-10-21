@@ -77,7 +77,7 @@ test("a wrong or renewed code clears and focuses only the code, retaining both p
     assert.equal(field("setup-code").getAttribute("aria-invalid"), "true");
     assert.equal(field("setup-password").value, "my strong password");
     assert.equal(field("setup-repeat").value, "my strong password");
-    assert.match(field("setup-code-error").textContent, renewed ? /expired/ : /does not match/);
+    assert.match(field("setup-code-error").textContent, renewed ? /expired/ : /is incorrect/);
     assert.match(field("setup-code-error").textContent, /old code no longer works/);
     assert.equal(submit.disabled, false);
   }

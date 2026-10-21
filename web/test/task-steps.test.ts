@@ -146,23 +146,23 @@ test("interrupt details link to local drivers without claiming the file is there
   installDom();
   const { renderHome } = await import("../src/views/home.js");
   const cases: Array<{ phase: string | null; kind: "official" | "upload" | "local"; notice: RegExp }> = [
-    { phase: "download", kind: "official", notice: /没有被替换|was not replaced/ },
-    { phase: "write", kind: "official", notice: /无法判断文件是否已经换过|cannot tell whether the file was replaced/ },
-    { phase: "write", kind: "local", notice: /无法判断文件是否已经换过|cannot tell whether the file was replaced/ },
-    { phase: null, kind: "upload", notice: /停在哪一步没有记下|was not recorded/ },
+    { phase: "download", kind: "official", notice: /未更换|was not replaced/ },
+    { phase: "write", kind: "official", notice: /无法判断驱动文件是否已更换|Whether the driver file was replaced cannot be determined/ },
+    { phase: "write", kind: "local", notice: /无法判断驱动文件是否已更换|Whether the driver file was replaced cannot be determined/ },
+    { phase: null, kind: "upload", notice: /停在哪一步未记录|was not recorded/ },
     {
       phase: "write",
       kind: "official",
-      notice: /驱动模块可能已卸载且没有装回|Driver modules may be unloaded without having been loaded again/,
+      notice: /驱动模块可能已卸载且未重新加载|Driver modules may be unloaded without having been reloaded/,
     },
     {
       phase: "restore_reload",
       kind: "local",
-      notice: /驱动模块可能已卸载且没有装回|Driver modules may be unloaded without having been loaded again/,
+      notice: /驱动模块可能已卸载且未重新加载|Driver modules may be unloaded without having been reloaded/,
     },
-    { phase: "align_modules", kind: "official", notice: /文件已经写入|file has already been written/ },
-    { phase: "restore_align_modules", kind: "local", notice: /文件已经写入|file has already been written/ },
-    { phase: "unload", kind: "official", notice: /请先看当前状态|Check the current state first/ },
+    { phase: "align_modules", kind: "official", notice: /驱动文件已写入|The driver file was written/ },
+    { phase: "restore_align_modules", kind: "local", notice: /驱动文件已写入|The driver file was written/ },
+    { phase: "unload", kind: "official", notice: /请重新选择版本更新|Choose a version and update again/ },
   ];
   for (const lang of ["zh", "en"] as const) {
     for (const item of cases) {

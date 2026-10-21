@@ -1,5 +1,5 @@
 // Opt in with NVM_README_SHOTS=1. Uses only the local fake host and real UI.
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./local-test.js";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -85,7 +85,17 @@ for (const lang of ["en", "zh"] as const) {
     await setScenario(request, "readme_update");
     await page.goto("/");
     await signIn(page);
+    const versionsRead = page.waitForResponse(response => response.url().endsWith("/api/versions") && response.request().method() === "GET");
     await page.goto("/#/update");
+    const versions = await (await versionsRead).json();
+    expect(versions.gpus).toHaveLength(1);
+    const gpu = versions.gpus[0];
+    expect(Number.isInteger(gpu.usable_from_branch)).toBe(true);
+    expect(gpu.usable_from_branch).toBeGreaterThan(0);
+    await expect(page.locator(".gpu-notes .notice")).toHaveCount(1);
+    await expect(page.locator(".gpu-notes .notice > p")).toHaveText(lang === "zh"
+      ? `${gpu.name} 从 ${gpu.usable_from_branch} 驱动起支持。`
+      : `${gpu.name} is supported from driver ${gpu.usable_from_branch}.`);
     await expect(page.locator("#version-select option[value='580.178.04']")).toHaveCount(1);
     await page.selectOption("#version-select", "580.178.04");
     const check = page.getByRole("button", { name: /^(Check and continue|检查并继续)$/ });
@@ -94,7 +104,7 @@ for (const lang of ["en", "zh"] as const) {
     await check.click();
     const dialog = page.locator("dialog[open]");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("button", { name: /^(Save original and start|保存原版并开始)$/ })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: /^(Save original driver and start|保存原版驱动并开始)$/ })).toBeVisible();
     await capture(page, "plan", lang);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);

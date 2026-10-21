@@ -147,6 +147,8 @@ pub fn fetch_failure_reason(out: &crate::host::Output) -> crate::host::Reason {
 
 // ---- Branch table -------------------------------------------
 
+const PCI_RESIZE_ADAPTED_580: &str = "580.126.09";
+
 pub type BranchSet = &'static [u32];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,7 +190,7 @@ pub static BRANCHES: &[BranchRule] = &[
         branches: &[545, 550, 555, 560, 565, 570, 575],
         when: Condition::PciResizeResourceArgs(3),
         reason: BRANCH_PCI_RESIZE_RESOURCE_ARGS,
-        source: "kernel-open/nvidia/nv-pci.c calls pci_resize_resource() with 3 arguments (545.29.06-575.64.05); this condition does not apply to proprietary modules or an unspecified installer type; include/linux/pci.h has 3 in v6.12.96 and 4 in v6.12.97/6.12.105 and truenas release/25.10.7 (2026-10-04)",
+        source: "kernel-open/nvidia/nv-pci.c calls pci_resize_resource() with 3 arguments (545.29.06-575.64.05); this condition does not apply to proprietary modules or an unspecified installer type; include/linux/pci.h has 3 in v6.12.96 and 4 in v6.12.97/6.12.105 and truenas release/25.10.7; 580.119.02 lacks the detection; 580.126.09 adds it (2026-10-21)",
     },
     BranchRule {
         branches: &[510, 515, 520, 525, 530, 535],
@@ -213,7 +215,7 @@ pub static MODULE_RULES: &[ModuleRule] = &[
     },
 ];
 
-/// The three kernel header readings of kernel header reading.
+/// Kernel interfaces used by the driver compatibility rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelInterfaces {
     pub follow_pfn: Reading<bool>,
@@ -237,7 +239,7 @@ impl KernelInterfaces {
     }
 }
 
-/// The three header paths read by kernel header reading.
+/// Header files used by the compatibility probes.
 pub fn header_paths() -> [&'static str; 3] {
     [
         "/usr/src/linux-headers-truenas-production-amd64/include/linux/mm.h",
@@ -318,11 +320,7 @@ fn read_header_bool(
     let p = h.view(std::path::Path::new(path));
     let value = match h.read(&p) {
         Ok(bytes) => Reading::Value(bytes.windows(needle.len()).any(|w| w == needle)),
-        Err(e) => Reading::Unknown(match e.kind() {
-            std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-            std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-            _ => REASON_IO_ERROR,
-        }),
+        Err(e) => Reading::Unknown(crate::log::io_reason_key(&e)),
     };
     if header_deadline_expired(h, start) {
         return Reading::Unknown(REASON_TIMED_OUT);
@@ -337,11 +335,7 @@ fn read_pci_interface(h: &dyn Host, path: &str, start: std::time::Instant) -> Re
     let p = h.view(std::path::Path::new(path));
     let value = match h.read(&p) {
         Ok(bytes) => parse_pci_resize_args(&String::from_utf8_lossy(&bytes)),
-        Err(e) => Reading::Unknown(match e.kind() {
-            std::io::ErrorKind::NotFound => REASON_FILE_MISSING,
-            std::io::ErrorKind::PermissionDenied => REASON_PERMISSION_DENIED,
-            _ => REASON_IO_ERROR,
-        }),
+        Err(e) => Reading::Unknown(crate::log::io_reason_key(&e)),
     };
     if header_deadline_expired(h, start) {
         return Reading::Unknown(REASON_TIMED_OUT);
@@ -375,8 +369,15 @@ fn condition_verdict(c: Condition, k: &KernelInterfaces) -> Option<bool> {
     }
 }
 
-fn rule_applies(rule: &BranchRule, major: u32, module_type: Option<KernelModuleType>) -> bool {
-    rule.branches.contains(&major)
+fn rule_applies(
+    rule: &BranchRule,
+    version: &Version,
+    module_type: Option<KernelModuleType>,
+) -> bool {
+    let old_580 = matches!(rule.when, Condition::PciResizeResourceArgs(_))
+        && version.major() == 580
+        && version < &facts::parse_version_exact(PCI_RESIZE_ADAPTED_580).unwrap();
+    (rule.branches.contains(&version.major()) || old_580)
         && (!matches!(rule.when, Condition::PciResizeResourceArgs(_))
             || module_type == Some(KernelModuleType::Open))
 }
@@ -384,14 +385,14 @@ fn rule_applies(rule: &BranchRule, major: u32, module_type: Option<KernelModuleT
 /// Decide the conditions applicable to the planned module type. An unspecified type leaves
 /// the open-only PCI condition to the isolated build.
 pub fn verdict(
-    major: u32,
+    version: &Version,
     k: &KernelInterfaces,
     module_type: Option<KernelModuleType>,
 ) -> BranchVerdict {
     let mut reasons = Vec::new();
     let mut undecidable = false;
     for rule in BRANCHES {
-        if !rule_applies(rule, major, module_type) {
+        if !rule_applies(rule, version, module_type) {
             continue;
         }
         match condition_verdict(rule.when, k) {
@@ -419,7 +420,7 @@ pub fn official_verdict(
     if community_patch_470(true, version.text(), kernel) {
         BranchVerdict::Buildable
     } else {
-        verdict(version.major(), k, module_type)
+        verdict(version, k, module_type)
     }
 }
 
@@ -492,7 +493,7 @@ impl HeadersUnreadable {
 
     /// plan creation reports only unknown readings used by this branch and module type.
     pub fn for_branch(
-        major: u32,
+        version: &Version,
         k: &KernelInterfaces,
         module_type: Option<KernelModuleType>,
     ) -> HeadersUnreadable {
@@ -500,7 +501,7 @@ impl HeadersUnreadable {
         let mut result = Self::from_interfaces(k);
         result.items.retain(|item| {
             BRANCHES.iter().any(|rule| {
-                rule_applies(rule, major, module_type)
+                rule_applies(rule, version, module_type)
                     && match rule.when {
                         Condition::Always => false,
                         Condition::FollowPfnAbsent => item.path == paths[0],
@@ -538,6 +539,24 @@ pub fn items(
         })
         .cloned()
         .collect())
+}
+
+/// Catalog versions that cannot build explicit open modules on this kernel.
+pub fn open_unbuildable<'a>(
+    items: &'a [Version],
+    kernel: &str,
+    interfaces: &KernelInterfaces,
+) -> Vec<&'a str> {
+    items
+        .iter()
+        .filter(|version| {
+            matches!(
+                official_verdict(version, kernel, interfaces, Some(KernelModuleType::Open)),
+                BranchVerdict::Unbuildable(_)
+            )
+        })
+        .map(|version| version.text())
+        .collect()
 }
 
 // ---- GPU table ---------------------------------------
@@ -725,6 +744,7 @@ pub struct GpuListed {
     pub modules: Modules,
     pub last_branch: Option<u32>,
     pub first: Option<Version>,
+    pub usable_from: Option<Version>,
     pub too_new: Vec<Version>,
     pub too_old: Vec<Version>,
 }
@@ -735,6 +755,7 @@ pub fn gpu_list(
     gpus: &[facts::HostGpu],
     table: &'static [GpuEntry],
     versions: &[&str],
+    open_unbuildable: Option<&[&str]>,
 ) -> Vec<GpuListed> {
     let mut counted: Vec<&facts::HostGpu> = facts::counted(gpus);
     counted.sort_by(|a, b| a.address.cmp(&b.address));
@@ -754,12 +775,23 @@ pub fn gpu_list(
                 .filter(|v| matches!(fit(table, versions, gpu.device, v), GpuFit::Newer { .. }))
                 .cloned()
                 .collect();
+            let usable_from = open_unbuildable.and_then(|excluded| {
+                items
+                    .iter()
+                    .filter(|v| {
+                        fit(table, versions, gpu.device, v) == GpuFit::Supported
+                            && (modules == Modules::ClosedOnly || !excluded.contains(&v.text()))
+                    })
+                    .min()
+                    .cloned()
+            });
             GpuListed {
                 gpu: gpu.clone(),
                 entry: entry(table, gpu.device),
                 modules,
                 last_branch,
                 first,
+                usable_from,
                 too_new,
                 too_old,
             }
@@ -786,6 +818,12 @@ pub fn gpu_readings_json(list: &[GpuListed]) -> serde_json::Value {
         }
         if let Some(f) = &g.first {
             obj.insert("first_branch".into(), serde_json::json!(f.major()));
+        }
+        if let Some(version) = &g.usable_from {
+            obj.insert(
+                "usable_from_branch".into(),
+                serde_json::json!(version.major()),
+            );
         }
         obj.insert(
             "too_new".into(),
@@ -1188,39 +1226,116 @@ mod tests {
     }
 
     #[test]
+    fn official_580_pci_adaptation_boundary() {
+        for text in ["580.119.02", "580.126.09", "580.178.04"] {
+            let version = facts::parse_version_exact(text).unwrap();
+            for pci in [
+                Reading::Value(Some(3)),
+                Reading::Value(Some(4)),
+                Reading::Value(None),
+                Reading::Unknown(REASON_FILE_MISSING),
+            ] {
+                let k = KernelInterfaces {
+                    follow_pfn: Reading::Unknown(REASON_FILE_MISSING),
+                    output_poll_changed: Reading::Unknown(REASON_FILE_MISSING),
+                    pci_resize_resource_args: pci.clone(),
+                };
+                for module_type in [
+                    None,
+                    Some(KernelModuleType::Proprietary),
+                    Some(KernelModuleType::Open),
+                ] {
+                    let expected =
+                        if text == "580.119.02" && module_type == Some(KernelModuleType::Open) {
+                            match pci {
+                                Reading::Value(Some(4)) => BranchVerdict::Unbuildable(vec![
+                                    BRANCH_PCI_RESIZE_RESOURCE_ARGS,
+                                ]),
+                                Reading::Unknown(_) => BranchVerdict::Undecidable,
+                                _ => BranchVerdict::Buildable,
+                            }
+                        } else {
+                            BranchVerdict::Buildable
+                        };
+                    assert_eq!(
+                        official_verdict(&version, "6.12.105", &k, module_type),
+                        expected,
+                        "{text}/{pci:?}/{module_type:?}"
+                    );
+                    let unreadable = HeadersUnreadable::for_branch(&version, &k, module_type);
+                    let needs_pci = text == "580.119.02"
+                        && module_type == Some(KernelModuleType::Open)
+                        && matches!(pci, Reading::Unknown(_));
+                    assert_eq!(unreadable.items.len(), usize::from(needs_pci));
+                    if needs_pci {
+                        assert_eq!(unreadable.items[0].path, header_paths()[2]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn kernel_interface_readings_on_kernel_612_105() {
         let k = KernelInterfaces {
             follow_pfn: Reading::Value(false),
             output_poll_changed: Reading::Value(false),
             pci_resize_resource_args: Reading::Value(Some(4)),
         };
-        for branch in [615, 610, 595, 590, 580] {
+        for text in [
+            "615.71.09",
+            "610.57.04",
+            "595.104.02",
+            "590.48.01",
+            "580.178.04",
+        ] {
             assert_eq!(
-                verdict(branch, &k, Some(KernelModuleType::Open)),
+                official_verdict(
+                    &facts::parse_version_exact(text).unwrap(),
+                    "6.12.105",
+                    &k,
+                    Some(KernelModuleType::Open)
+                ),
                 BranchVerdict::Buildable,
-                "{branch}"
+                "{text}"
             );
         }
         assert_eq!(
-            verdict(575, &k, Some(KernelModuleType::Open)),
+            verdict(
+                &facts::parse_version_exact("575.0").unwrap(),
+                &k,
+                Some(KernelModuleType::Open)
+            ),
             BranchVerdict::Unbuildable(vec![BRANCH_PCI_RESIZE_RESOURCE_ARGS])
         );
         assert_eq!(
-            verdict(560, &k, Some(KernelModuleType::Open)),
+            verdict(
+                &facts::parse_version_exact("560.0").unwrap(),
+                &k,
+                Some(KernelModuleType::Open)
+            ),
             BranchVerdict::Unbuildable(vec![
                 BRANCH_OUTPUT_POLL_CHANGED_REMOVED,
                 BRANCH_PCI_RESIZE_RESOURCE_ARGS
             ])
         );
         assert_eq!(
-            verdict(470, &k, Some(KernelModuleType::Open)),
+            verdict(
+                &facts::parse_version_exact("470.0").unwrap(),
+                &k,
+                Some(KernelModuleType::Open)
+            ),
             BranchVerdict::Unbuildable(vec![
                 BRANCH_FOLLOW_PFN_REMOVED,
                 BRANCH_OUTPUT_POLL_CHANGED_REMOVED
             ])
         );
         assert_eq!(
-            verdict(535, &k, Some(KernelModuleType::Open)),
+            verdict(
+                &facts::parse_version_exact("535.0").unwrap(),
+                &k,
+                Some(KernelModuleType::Open)
+            ),
             BranchVerdict::Unbuildable(vec![BRANCH_INSTALLER_LOADS_MODULE])
         );
     }
@@ -1234,7 +1349,11 @@ mod tests {
         };
         for branch in [470, 495, 545, 550, 615] {
             assert_eq!(
-                verdict(branch, &k, Some(KernelModuleType::Open)),
+                verdict(
+                    &facts::parse_version_exact(&format!("{}.0", branch)).unwrap(),
+                    &k,
+                    Some(KernelModuleType::Open)
+                ),
                 BranchVerdict::Buildable,
                 "{branch}"
             );
@@ -1256,7 +1375,14 @@ mod tests {
             };
             for major in [545, 550, 555, 560, 565, 570, 575] {
                 for module_type in [None, Some(KernelModuleType::Proprietary)] {
-                    assert_eq!(verdict(major, &k, module_type), BranchVerdict::Buildable);
+                    assert_eq!(
+                        verdict(
+                            &facts::parse_version_exact(&format!("{}.0", major)).unwrap(),
+                            &k,
+                            module_type
+                        ),
+                        BranchVerdict::Buildable
+                    );
                 }
                 let expected = match pci {
                     Reading::Value(Some(4)) => {
@@ -1265,7 +1391,14 @@ mod tests {
                     Reading::Unknown(_) => BranchVerdict::Undecidable,
                     _ => BranchVerdict::Buildable,
                 };
-                assert_eq!(verdict(major, &k, Some(KernelModuleType::Open)), expected);
+                assert_eq!(
+                    verdict(
+                        &facts::parse_version_exact(&format!("{}.0", major)).unwrap(),
+                        &k,
+                        Some(KernelModuleType::Open)
+                    ),
+                    expected
+                );
             }
         }
     }
@@ -1273,18 +1406,29 @@ mod tests {
     #[test]
     fn branch_unreadable_lists_only_the_applicable_interfaces() {
         let k = KernelInterfaces::all_unknown(REASON_FILE_MISSING);
-        let open = HeadersUnreadable::for_branch(570, &k, Some(KernelModuleType::Open));
+        let open = HeadersUnreadable::for_branch(
+            &facts::parse_version_exact("570.0").unwrap(),
+            &k,
+            Some(KernelModuleType::Open),
+        );
         assert_eq!(open.items.len(), 1);
         assert_eq!(open.items[0].path, header_paths()[2]);
-        assert!(HeadersUnreadable::for_branch(570, &k, None)
-            .items
-            .is_empty());
-        assert!(
-            HeadersUnreadable::for_branch(570, &k, Some(KernelModuleType::Proprietary))
-                .items
-                .is_empty()
-        );
-        let generic = HeadersUnreadable::for_branch(545, &k, None);
+        assert!(HeadersUnreadable::for_branch(
+            &facts::parse_version_exact("570.0").unwrap(),
+            &k,
+            None
+        )
+        .items
+        .is_empty());
+        assert!(HeadersUnreadable::for_branch(
+            &facts::parse_version_exact("570.0").unwrap(),
+            &k,
+            Some(KernelModuleType::Proprietary)
+        )
+        .items
+        .is_empty());
+        let generic =
+            HeadersUnreadable::for_branch(&facts::parse_version_exact("545.0").unwrap(), &k, None);
         assert_eq!(
             generic.items.iter().map(|i| i.path).collect::<Vec<_>>(),
             header_paths()[..2]
@@ -1300,11 +1444,19 @@ mod tests {
             pci_resize_resource_args: Reading::Value(Some(4)),
         };
         assert_eq!(
-            verdict(470, &k, Some(KernelModuleType::Open)),
+            verdict(
+                &facts::parse_version_exact("470.0").unwrap(),
+                &k,
+                Some(KernelModuleType::Open)
+            ),
             BranchVerdict::Undecidable
         );
         assert_eq!(
-            verdict(580, &k, Some(KernelModuleType::Open)),
+            verdict(
+                &facts::parse_version_exact("580.178.04").unwrap(),
+                &k,
+                Some(KernelModuleType::Open)
+            ),
             BranchVerdict::Buildable
         );
         let err = items(
@@ -1530,6 +1682,77 @@ mod tests {
     }
 
     #[test]
+    fn usable_gpu_versions_follow_module_kind_and_complete_readings() {
+        const TABLE: &[GpuEntry] = &[
+            GpuEntry {
+                device: 0x1b80,
+                name: "Closed GPU",
+                first: Some("565.77"),
+                last_branch: Some(580),
+                modules: Modules::ClosedOnly,
+            },
+            GpuEntry {
+                device: 0x2684,
+                name: "Either GPU",
+                first: Some("570.01"),
+                last_branch: None,
+                modules: Modules::Either,
+            },
+            GpuEntry {
+                device: 0x2b85,
+                name: "Open GPU",
+                first: Some("570.01"),
+                last_branch: None,
+                modules: Modules::OpenOnly,
+            },
+        ];
+        let items: Vec<_> = [
+            "590.48.01",
+            "580.178.04",
+            "580.119.02",
+            "570.211.01",
+            "565.77",
+        ]
+        .iter()
+        .map(|s| facts::parse_version_exact(s).unwrap())
+        .collect();
+        let gpus = [
+            gpu("0000:01:00.0", 0x1b80),
+            gpu("0000:02:00.0", 0x2684),
+            gpu("0000:03:00.0", 0x2b85),
+        ];
+        let interfaces = KernelInterfaces {
+            follow_pfn: Reading::Value(false),
+            output_poll_changed: Reading::Value(false),
+            pci_resize_resource_args: Reading::Value(Some(4)),
+        };
+        let excluded = open_unbuildable(&items, "6.12.105", &interfaces);
+        assert_eq!(excluded, ["580.119.02", "570.211.01", "565.77"]);
+        let list = gpu_list(&items, &gpus, TABLE, &[], Some(&excluded));
+        assert_eq!(
+            list.iter()
+                .map(|g| g.usable_from.as_ref().map(Version::text))
+                .collect::<Vec<_>>(),
+            [Some("565.77"), Some("580.178.04"), Some("580.178.04")]
+        );
+        let json = gpu_readings_json(&list);
+        assert_eq!(json[0]["usable_from_branch"], 565);
+        assert_eq!(json[1]["usable_from_branch"], 580);
+        assert_eq!(json[2]["usable_from_branch"], 580);
+        for candidates in [&items[..0], &items[..1]] {
+            let list = gpu_list(candidates, &gpus[..1], TABLE, &[], Some(&[]));
+            assert!(list[0].usable_from.is_none());
+        }
+        let unreadable = gpu_list(&items, &gpus, TABLE, &[], None);
+        assert!(unreadable.iter().all(|g| g.usable_from.is_none()));
+        assert!(gpu_readings_json(&unreadable)
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|g| g.get("usable_from_branch").is_none()));
+    }
+
+    #[test]
     fn gpu_list_column_ordering_and_notes() {
         let items = branch_latest(
             &TEST_VERSIONS
@@ -1538,7 +1761,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let gpus = vec![gpu("0000:02:00.0", 0x2B85), gpu("0000:01:00.0", 0x1B80)];
-        let list = gpu_list(&items, &gpus, TEST_GPUS, TEST_VERSIONS);
+        let list = gpu_list(&items, &gpus, TEST_GPUS, TEST_VERSIONS, Some(&[]));
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].gpu.address, "0000:01:00.0");
         assert_eq!(list[0].modules, Modules::ClosedOnly);

@@ -29,6 +29,9 @@ const API_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/versions"),
     ("POST", "/api/uploads"),
     ("GET", "/api/uploads/current"),
+    ("GET", "/api/uploads/toolkit-version"),
+    ("POST", "/api/uploads/current/cancel-plan"),
+    ("POST", "/api/plans/00000000000000000000000000000000/cancel"),
     (
         "PUT",
         "/api/uploads/00000000000000000000000000000000/files?name=x.run",

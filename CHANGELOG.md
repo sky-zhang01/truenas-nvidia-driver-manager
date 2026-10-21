@@ -2,6 +2,23 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
+## 0.3.1
+
+- When the GPU is in use, the page lists the apps that requested it within about a
+  second, marked as using the GPU, requested only, or unknown. The list refreshes while the
+  program waits up to about 30 seconds, and the update continues once the GPU is free. The
+  program reads only those containers' processes and open device files, and never stops an app.
+- The wait can be cancelled, and the final GPU-in-use notice can check again.
+- The GPU hint names the lowest driver branch the GPU can use on this host, for example
+  "supported from driver 580".
+- Official 580 releases before 580.126.09 are refused for GPUs that use open kernel modules:
+  they cannot be built on kernels from 6.12.97, including TrueNAS 25.10.7.
+- Manual upload is a checklist of the 5 files it needs. Each row has a direct download link and
+  shows when its file is ready or what to fix. Uploads show progress and can be cancelled; going
+  back from the confirmation keeps the files.
+- Interface text and guides are shorter, with one term for each concept.
+- Links to other websites open in a new tab.
+
 ## 0.3.0
 
 - Support TrueNAS 27 alongside TrueNAS 25.10. Driver builds run in one pinned official Debian 13

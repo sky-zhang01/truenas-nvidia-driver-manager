@@ -67,3 +67,116 @@ async fn a_blocked_link_read_does_not_delay_a_password_change() {
     let status = login_status_request.await.expect("login status task");
     assert_eq!(status, StatusCode::OK);
 }
+
+#[test]
+fn writes_waiting_for_the_process_lock_reject_a_logged_out_session() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_waiting_writes_reject_logged_out_session());
+}
+
+async fn assert_waiting_writes_reject_logged_out_session() {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::task::{Context, Wake, Waker};
+
+    #[derive(Default)]
+    struct RequestWake {
+        count: AtomicUsize,
+        notified: tokio::sync::Notify,
+    }
+
+    impl Wake for RequestWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            self.notified.notify_one();
+        }
+    }
+
+    let cases = [
+        (Method::POST, "/api/uploads", None),
+        (
+            Method::POST,
+            "/api/plans",
+            Some(json!({"source": {"kind": "official", "version": "580.178.04", "gpus": []}})),
+        ),
+        (
+            Method::POST,
+            "/api/tasks",
+            Some(json!({"plan_id": "0123456789abcdef0123456789abcdef", "button": "skip"})),
+        ),
+        (
+            Method::PUT,
+            "/api/drivers/20260928T101530Z-3f9a0c12-original/keep",
+            Some(json!({"keep": true})),
+        ),
+    ];
+    for (method, uri, body) in cases {
+        let host = default_host();
+        let app = app(host.clone(), settings(), healthy_startup(&host));
+        let cookie = setup_app(&app, "hunter12").await;
+        let guard = app.ctx.process_lock.lock().await;
+        let mut pending = Box::pin(request(&app, method, uri, body, Some(&cookie)));
+        // Fill the blocking pool before polling, so session_check's first worker must queue.
+        let gates = [
+            Arc::new(common::fake_host::Gate::default()),
+            Arc::new(common::fake_host::Gate::default()),
+        ];
+        let _release_gates = gates.clone().map(ReleaseGate);
+        let workers = gates
+            .clone()
+            .map(|gate| tokio::task::spawn_blocking(move || gate.wait_observed()));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !gates.iter().all(|gate| gate.blocked()) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("blocking pool did not reach its barriers");
+        let wake = Arc::new(RequestWake::default());
+        let waker = Waker::from(wake.clone());
+        assert!(pending
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending());
+        // Only the queued middleware JoinHandle can wake this manually polled request.
+        let observed = wake.count.load(Ordering::SeqCst);
+        for gate in &gates {
+            gate.release();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while wake.count.load(Ordering::SeqCst) == observed {
+                wake.notified.notified().await;
+            }
+        })
+        .await
+        .expect("session middleware worker did not complete");
+        for worker in workers {
+            worker.await.unwrap();
+        }
+        // Its JoinHandle is ready, so this poll passes the authenticated middleware and the
+        // in-memory body extractor, then waits on the handler worker behind process_lock.
+        assert!(pending
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending());
+        let (status, body, _) =
+            request(&app, Method::POST, "/api/logout", None, Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        drop(guard);
+        let (status, body, _) = pending.await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}: {body}");
+        assert_eq!(body["error"], "auth.required", "{uri}: {body}");
+        assert!(app.ctx.plan.lock().unwrap().0.is_none(), "{uri}");
+        assert_eq!(host.count("systemd-run"), 0, "{uri}");
+    }
+}

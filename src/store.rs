@@ -89,7 +89,7 @@ impl Paths {
     }
 }
 
-/// Create the data directory tree.
+/// Keep secrets private (0o700); other data directories use 0o755.
 pub fn prepare_dirs(h: &dyn Host, p: &Paths) -> io::Result<()> {
     h.create_dir(&p.manager().join("secrets"), 0o700)?;
     h.create_dir(&p.manager().join("state"), 0o755)?;
@@ -225,10 +225,8 @@ pub fn protect_recovery(
     None
 }
 
-/// Publish `bytes` under the protected recovery name through a hidden
-/// temporary name of the recovery target: write, fsync, verify, rename, fsync
-/// the directory, verify again. A failure leaves only the temporary name, which
-/// is removed.
+/// Write and verify protected recovery bytes without syncing the directory.
+/// The following publish owns the directory sync and its failure handling.
 fn write_recovery_copy(
     h: &dyn Host,
     dir: &Path,
@@ -249,9 +247,7 @@ fn write_recovery_copy(
             ));
         }
         h.rename(&tmp, protected)?;
-        // No directory sync here: the publish that follows performs and judges its own sync,
-        // and this copy must neither turn that step into a different failure nor move the
-        // publish's pause point.
+        // Leave directory sync to the publish so its failure and pause point stay unchanged.
         if h.read(protected)? != bytes {
             return Err(io::Error::other(
                 "the published recovery copy does not match the previous bytes",
@@ -861,8 +857,8 @@ pub fn publish_file(
     }
 }
 
-/// The four-step atomic write. Any failure leaves the previous target in place; the file is
-/// never left half-written.
+/// Publish complete bytes through a same-directory temporary file.
+/// A failed publish may leave new bytes visible; protected recovery material is retained.
 pub fn write_atomic(h: &dyn Host, p: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let dir = p
         .parent()

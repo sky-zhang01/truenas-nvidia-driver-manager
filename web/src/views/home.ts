@@ -36,7 +36,7 @@ function sourceParam(task: HomeTaskRecord): Params[string] {
   const source = task.source;
   if (!source) return "UNKNOWN";
   if (source.kind === "upload") {
-    return { key: "tasks.source.upload", params: { fingerprint: source.fingerprint ?? "" } };
+    return { key: "drivers.source.upload", params: { fingerprint: source.fingerprint ?? "" } };
   }
   if (source.kind === "local") {
     return {

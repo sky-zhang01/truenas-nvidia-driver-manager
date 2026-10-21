@@ -1,8 +1,8 @@
 import {
   postTask,
+  cancelPlan,
   ApiError,
   type GpuBlock,
-  type ObjectEntry,
   type PlanDialog,
   type PrecheckFailure,
   type UncomputableItem,
@@ -21,27 +21,52 @@ import {
 } from "../dom.js";
 import type { App } from "../main.js";
 import { queryObjectKey } from "../rules.js";
-import { closeDialog, openDialog } from "../dialog.js";
+import { closeDialog, makeDialog } from "../dialog.js";
 import type { Lang } from "../messages.js";
+import { gpuUsersNode, watchGpuUsers } from "../gpu-users.js";
 
-const UPDATE_CHECK_NOTICE_MS = 2000;
+const UPDATE_CHECK_NOTICE_MS = 1000;
 
-/// Show the update-condition status beside `anchor` when the plan request is still open
-/// after about 2 seconds. Call the returned function when the request ends.
-export function armUpdateCheckStatus(anchor: HTMLElement, lang: Lang): () => void {
+/** Show the condition check and live GPU list beside either update entry point. */
+export function armUpdateCheckStatus(anchor: HTMLElement, lang: Lang, app?: App, onCancel?: () => void, announce = true, statusHost?: HTMLElement): () => void {
   let status: HTMLElement | null = null;
+  let stopUsers: (() => void) | null = null;
+  let detailRow: HTMLElement | null = null;
+  let active = true;
   const timer = window.setTimeout(() => {
     const parent = anchor.parentElement;
-    if (!anchor.isConnected || !parent) return;
-    status = el("p", { class: "update-check-status", role: "status" });
-    status.textContent = expandText("update.checking", {}, lang);
-    parent.insertBefore(status, anchor.nextSibling);
+    if (!active || !anchor.isConnected || !parent) return;
+    status = el("div", { class: "update-check-status", role: announce ? "status" : undefined });
+    const users = el("div", { class: "gpu-users gpu-users-loading" }, [
+      el("p", { text: expandText("gpu.list.loading", {}, lang) }),
+    ]);
+    const skeleton = el("div", { class: "gpu-list-skeleton" });
+    skeleton.setAttribute("aria-hidden", "true");
+    users.append(skeleton);
+    status.append(users);
+    if (onCancel) status.append(el("button", { type: "button", text: expandText("gpu.cancel", {}, lang), onclick: onCancel }));
+    const row = anchor.closest?.("tr");
+    if (statusHost) {
+      statusHost.append(status);
+      status.scrollIntoView({ block: "nearest" });
+    } else if (row?.parentElement) {
+      const cell = el("td", { colSpan: row.children.length }, [status]);
+      detailRow = el("tr", { class: "gpu-users-row" }, [cell]);
+      row.parentElement.insertBefore(detailRow, row.nextSibling);
+    } else parent.insertBefore(status, anchor.nextSibling);
+    stopUsers = watchGpuUsers(users, lang, () => {
+      users.className = "gpu-users";
+    }, () => app?.sessionEnded());
   }, UPDATE_CHECK_NOTICE_MS);
-  return () => {
+  const stop = (): void => {
+    active = false;
     window.clearTimeout(timer);
-    status?.remove();
-    status = null;
+    stopUsers?.(); stopUsers = null;
+    status?.remove(); status = null;
+    detailRow?.remove(); detailRow = null;
   };
+  app?.addCleanup(stop);
+  return stop;
 }
 
 function joinReasons(reasons: ReasonLike[], lang: Lang): string {
@@ -104,45 +129,17 @@ export function precheckNode(app: App, failures: PrecheckFailure[], gpu: GpuBloc
   return wrap;
 }
 
-export function gpuBlockNode(app: App, gpu: GpuBlock): HTMLElement {
+export function gpuBlockNode(app: App, gpu: GpuBlock, recheck = false): HTMLElement {
   const lang = app.lang;
   const wrap = el("div", {});
-  const users: ObjectEntry[] = gpu.users ?? [];
-  const items = users.map((u) =>
-    expandText("list.object", { name: u.name, type: { key: queryObjectKey(u.type), params: {} } }, lang),
-  );
-  if (gpu.state === "unreadable") {
-    // Unreadable GPU usage preserves the actual reason and application list. Empty lists hide Action
-    // and List without claiming the GPU is in use.
-    const emptyUsers = items.length === 0;
-    wrap.append(
-      renderNotice(
-        "notice.gpu_in_use",
-        { read_reason: gpu.read_reason ?? "UNKNOWN" },
-        lang,
-        {
-          variant: "unreadable",
-          items: emptyUsers ? undefined : items,
-          emptyList: emptyUsers,
-        },
-      ),
-    );
-  } else {
-    const emptyUsers = items.length === 0;
-    wrap.append(
-      renderNotice("notice.gpu_in_use", {}, lang, {
-        items: emptyUsers ? undefined : items,
-        // An empty application list uses the dedicated empty-list note.
-        emptyList: emptyUsers,
-      }),
-    );
-    if (emptyUsers) {
-      wrap.append(renderNotice("notice.gpu_in_use.empty_note", {}, lang));
-    }
-  }
-  for (const e of gpu.errors ?? []) {
-    wrap.append(queryFailed(queryObjectKey(e.type), e.reason, e.raw ?? null, lang));
-  }
+  if (gpu.state === "busy") wrap.append(el("p", { class: "notice-body", text: expandText("gpu.popup.waited", {}, lang) }));
+  else wrap.append(renderNotice("notice.gpu_in_use", { read_reason: gpu.read_reason ?? "UNKNOWN" }, lang, {
+    variant: "unreadable", omitSegments: ["title", "action", "list", "note"], role: "none",
+  }));
+  wrap.append(gpuUsersNode(gpu, lang, {
+    snapshot: true, headline: recheck ? "gpu.popup.action" : "gpu.popup.action_task",
+    unreadableHeadline: "gpu.unreadable.assumed_in_use",
+  }));
   return wrap;
 }
 
@@ -164,25 +161,29 @@ export function openCheckDialog(
   items: UncomputableItem[],
   gpu: GpuBlock | null,
   trigger: HTMLElement,
+  recheck?: () => void,
 ): void {
   const lang = app.lang;
-  const dlg = el("dialog", { class: "nvm-dialog" });
-  const title = el("h3", {
-    class: "dialog-title",
-    text: expandText("dialog.precheck", {}, lang),
+  const { dialog: dlg, show } = makeDialog({
+    title: expandText(gpu?.state === "unreadable" ? "gpu.popup.title_unreadable" : gpu ? "gpu.popup.title" : "dialog.precheck", {}, lang),
+    role: gpu ? "alertdialog" : undefined, trigger,
   });
-  dlg.append(title);
-  if (failures.length > 0 || gpu) dlg.append(precheckNode(app, failures, gpu));
+  if (failures.length > 0) dlg.append(precheckNode(app, failures, null));
+  if (gpu) dlg.append(gpuBlockNode(app, gpu, Boolean(recheck)));
   if (items.length > 0) dlg.append(uncomputableNode(app, items));
 
-  const closeBtn = el("button", { type: "button", text: expandText("precheck.close", {}, lang) });
+  const closeBtn = el("button", { type: "button", text: expandText("dialog.close", {}, lang) });
   closeBtn.addEventListener("click", () => {
     closeDialog(dlg);
     dlg.remove();
   });
-  dlg.append(closeBtn);
-  document.body.append(dlg);
-  openDialog(dlg, title, { trigger });
+  const buttons = el("div", { class: "actions" }, [closeBtn]);
+  if (gpu && recheck) buttons.append(el("button", {
+    type: "button", class: "btn-primary", text: expandText("gpu.popup.recheck", {}, lang),
+    onclick: () => { closeDialog(dlg); dlg.remove(); recheck(); },
+  }));
+  dlg.append(buttons);
+  show();
 }
 
 function sourceText(app: App, d: PlanDialog): string {
@@ -216,11 +217,11 @@ export function openConfirmDialog(
   planId: string,
   d: PlanDialog,
   trigger: HTMLElement,
+  navigation?: { onBack: () => void; onStarted: () => void },
 ): void {
   const lang = app.lang;
-  const dlg = el("dialog", { class: "nvm-dialog" });
-  const title = el("h3", { class: "dialog-title", text: expandText("dialog.confirm", {}, lang) });
-  dlg.append(title);
+  const { dialog: dlg, show } = makeDialog({ title: expandText("dialog.confirm", {}, lang), trigger });
+  if (d.source.kind === "upload") dlg.append(el("p", { class: "upload-complete", text: `✓ ${expandText("plan.upload_passed", {}, lang)}` }));
 
   const table = el("div", { class: "confirm-items" });
   const row = (label: string, value: string): void => {
@@ -259,6 +260,13 @@ export function openConfirmDialog(
   const skipWarning = el("p", { class: "hint", id: "confirm-skip-warning" });
   originalNote.append(skipWarning);
   dlg.append(table);
+  if (d.source.kind === "upload") {
+    const details = el("details");
+    details.append(el("summary", { text: expandText("confirm.file_details", {}, lang) }), el("p", {
+      class: "summary-line", text: expandText("confirm.file_values", { fingerprint: d.source.fingerprint ?? "", checksum: d.source.sha256 ?? "" }, lang),
+    }));
+    dlg.append(details);
+  }
   dlg.append(el("p", { class: "hint", id: "confirm-how", text: expandText(confirmation.how.key, (confirmation.how.params ?? {}) as Params, lang) }));
   for (const warning of confirmation.warnings) {
     const text = expandText(warning.key, (warning.params ?? {}) as Params, lang);
@@ -273,17 +281,21 @@ export function openConfirmDialog(
 
   const buttons = el("div", { class: "dialog-buttons" });
   const back = el("button", { type: "button", text: expandText("confirm.back", {}, lang) });
-  const closeBtn = el("button", {
-    type: "button",
-    text: expandText("confirm.close", {}, lang),
-    hidden: true,
-  });
+  let dismissing = false;
   const dismiss = (): void => {
-    closeDialog(dlg);
-    dlg.remove();
+    if (submitting || dismissing) return;
+    dismissing = true;
+    back.disabled = true;
+    void cancelPlan(planId).then(() => {
+      closeDialog(dlg);
+      dlg.remove();
+      navigation?.onBack();
+    }).catch((err: unknown) => {
+      if (err instanceof ApiError && err.isSessionEnded) app.sessionEnded();
+      else errorBox.append(renderNotice("internal", { reason: { key: "internal.request_failed", params: {} } }, lang));
+    }).finally(() => { dismissing = false; back.disabled = false; });
   };
   back.addEventListener("click", dismiss);
-  closeBtn.addEventListener("click", dismiss);
 
   const submitBtn = el("button", {
     type: "button",
@@ -297,15 +309,17 @@ export function openConfirmDialog(
   const retire = (): void => {
     submitBtn.hidden = true;
     if (skipBtn) skipBtn.hidden = true;
-    back.hidden = true;
-    closeBtn.hidden = false;
-    closeBtn.focus();
+    back.textContent = expandText("dialog.close", {}, lang);
+    back.disabled = false;
+    back.focus();
   };
 
   let submitting = false;
+  dlg.addEventListener("cancel", (event) => { event.preventDefault(); event.stopImmediatePropagation(); dismiss(); });
   const submit = async (button: "save" | "skip" | "start"): Promise<void> => {
-    if (submitting) return;
+    if (submitting || dismissing) return;
     submitting = true;
+    back.disabled = true;
     submitBtn.disabled = true;
     if (skipBtn) skipBtn.disabled = true;
     clear(errorBox);
@@ -313,8 +327,10 @@ export function openConfirmDialog(
       const res = await postTask(planId, button);
       closeDialog(dlg);
       dlg.remove();
+      navigation?.onStarted();
       app.go(`#/tasks/${res.task_id}`);
     } catch (err) {
+      submitting = false;
       if (err instanceof ApiError) {
         renderPlanError(app, errorBox, err, false);
         retire();
@@ -341,11 +357,10 @@ export function openConfirmDialog(
     control.addEventListener("click", () => void submit(choice.button));
     buttons.append(control);
   }
-  buttons.append(back, closeBtn);
+  buttons.append(back);
   dlg.append(buttons);
 
-  document.body.append(dlg);
-  openDialog(dlg, title, { trigger });
+  show();
 }
 
 export function renderPlanError(app: App, box: HTMLElement, err: ApiError, afterOpen: boolean): void {
@@ -458,7 +473,7 @@ export function renderPlanError(app: App, box: HTMLElement, err: ApiError, after
       box.append(renderNotice("update.disabled_task_running_text", {}, lang));
       break;
     case "upload.busy":
-      box.append(renderNotice("upload.busy.text", {}, lang));
+      box.append(renderNotice("upload.busy", {}, lang));
       break;
     case "plan.source_invalid.toolkit_too_old":
       box.append(renderNotice("upload.group.toolkit_too_old", params, lang));

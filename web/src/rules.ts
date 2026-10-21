@@ -164,6 +164,7 @@ export function filterVersions(
     return { options: [], notes: [], noUsableVersion: false, noneSelected: true, conflict: false };
   }
   const clash = conflict(picked);
+  const usesOpen = picked.length > 0 && !picked.some((g) => g.modules === "closed_only");
   const excluded = new Set<string>();
   const notes: GpuNote[] = [];
   for (const g of picked) {
@@ -172,16 +173,21 @@ export function filterVersions(
     if (g.too_new.length > 0 && g.last_branch !== undefined) {
       notes.push({ gpu: g, kind: "last", branch: g.last_branch });
     }
-    if (g.too_old.length > 0 && g.first_branch !== undefined) {
-      notes.push({ gpu: g, kind: "from", branch: g.first_branch });
+    const usableFrom = g.usable_from_branch;
+    if (usableFrom !== undefined && items.some((v) => {
+      const major = majorOf(v);
+      return major !== null && major <= usableFrom
+        && (g.too_old.includes(v)
+          || (!clash && usesOpen && !g.too_new.includes(v) && openUnbuildable.includes(v)));
+    })) {
+      notes.push({ gpu: g, kind: "from", branch: usableFrom });
     }
   }
   if (clash) {
     return { options: [], notes, noUsableVersion: true, noneSelected: false, conflict: true };
   }
-  const usesOpen = picked.length > 0 && !picked.some((g) => g.modules === "closed_only");
   const options = items.filter((v) => !excluded.has(v)
-    && !(usesOpen && (majorOf(v) ?? 0) >= 555 && openUnbuildable.includes(v)));
+    && !(usesOpen && openUnbuildable.includes(v)));
   const noUsableVersion = picked.length > 0 && unreadable.length === 0 && options.length === 0;
   return { options, notes, noUsableVersion, noneSelected: false, conflict: false };
 }

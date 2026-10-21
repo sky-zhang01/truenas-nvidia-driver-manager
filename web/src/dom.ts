@@ -7,6 +7,14 @@ export type Level = "info" | "warning" | "error";
 export type SegmentKind = "title" | "body" | "action" | "list" | "note";
 export type Params = Record<string, unknown>;
 
+export function externalLink(href: string, label: string, lang: Lang): HTMLAnchorElement {
+  const link = el("a", { href, target: "_blank", rel: "noopener noreferrer" });
+  const arrow = el("span", { text: "↗" }); arrow.setAttribute("aria-hidden", "true");
+  link.append(document.createTextNode(label + " "), arrow,
+    el("span", { class: "visually-hidden", text: expandText("link.new_tab", {}, lang) }));
+  return link;
+}
+
 export type InlineNode =
   | { kind: "text"; text: string }
   | { kind: "code"; text: string }
@@ -298,6 +306,8 @@ export interface ElProps {
   type?: string;
   text?: string;
   href?: string;
+  target?: string;
+  rel?: string;
   name?: string;
   value?: string;
   for?: string;
@@ -337,6 +347,8 @@ export function el<K extends keyof HTMLElementTagNameMap>(
     if (props.role !== undefined) node.setAttribute("role", props.role);
     if (props.type !== undefined) node.setAttribute("type", props.type);
     if (props.href !== undefined) node.setAttribute("href", props.href);
+    if (props.target !== undefined) node.setAttribute("target", props.target);
+    if (props.rel !== undefined) node.setAttribute("rel", props.rel);
     if (props.name !== undefined) node.setAttribute("name", props.name);
     if (props.value !== undefined) (node as unknown as { value: string }).value = props.value;
     if (props.for !== undefined) node.setAttribute("for", props.for);
@@ -382,7 +394,7 @@ export function clear(node: Element): void {
 }
 
 // Runtime parameters enter the DOM as text nodes, never markup.
-export function appendInline(target: Element, nodes: InlineNode[]): void {
+export function appendInline(target: Element, nodes: InlineNode[], lang: Lang = document.documentElement?.lang?.startsWith("zh") ? "zh" : "en"): void {
   for (const n of nodes) {
     switch (n.kind) {
       case "text":
@@ -395,7 +407,7 @@ export function appendInline(target: Element, nodes: InlineNode[]): void {
         target.append(el("strong", { text: n.text }));
         break;
       case "link":
-        target.append(el("a", { href: n.href, text: n.text }));
+        target.append(n.href.startsWith("https://") ? externalLink(n.href, n.text, lang) : el("a", { href: n.href, text: n.text }));
         break;
     }
   }
@@ -472,6 +484,7 @@ export function renderNotice(
     role?: "alert" | "status" | "none";
     class?: string;
     listKey?: string;
+    omitSegments?: readonly SegmentKind[];
     // An empty application list suppresses Action, List and Note; callers supply the empty-list note.
     emptyList?: boolean;
     // The same catalog key may require an error level inside a rejected plan.
@@ -494,12 +507,13 @@ export function renderNotice(
   icon.setAttribute("aria-hidden", "true");
   box.append(icon);
   for (const seg of exp.segments) {
+    if (opts?.omitSegments?.includes(seg.kind)) continue;
     if (opts?.emptyList && (seg.kind === "action" || seg.kind === "list" || seg.kind === "note")) {
       continue;
     }
     if (seg.kind === "title") {
       const h = el("h3", { class: "notice-title" });
-      appendInline(h, seg.nodes);
+      appendInline(h, seg.nodes, lang);
       box.append(h);
     } else if (seg.kind === "list") {
       const ul = el("ul", { class: "notice-list" });
@@ -510,7 +524,7 @@ export function renderNotice(
       box.append(ul);
     } else {
       const p = el("p", { class: `notice-${seg.kind}` });
-      appendInline(p, seg.nodes);
+      appendInline(p, seg.nodes, lang);
       box.append(p);
     }
   }
@@ -551,9 +565,13 @@ export function formatDateMicros(us: number): string {
   return `${formatDate(d.getTime())}:${pad(d.getSeconds(), 2)}.${pad(micros, 6)}`;
 }
 
-// MB uses decimal bytes: 1,000,000 bytes, with one decimal place.
-export function formatMB(bytes: number): string {
-  return (bytes / 1000000).toFixed(1);
+// Decimal units travel with the value so small files and mixed-unit progress stay readable.
+export function formatSize(bytes: number): string {
+  const kilobytes = Math.round(bytes / 1000);
+  if (kilobytes < 1000) return `${bytes === 0 ? 0 : Math.max(1, kilobytes)} KB`;
+  const tenthsOfMegabyte = Math.round(bytes / 100_000);
+  if (tenthsOfMegabyte < 100) return `${(tenthsOfMegabyte / 10).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
 export function formatClock(ms: number): string {

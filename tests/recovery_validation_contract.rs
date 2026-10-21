@@ -54,6 +54,7 @@ fn app_with(host: Arc<dyn Host>, fake: FakeHost, static_files: StaticFiles) -> T
             image_id: Some(format!("sha256:{}", "a".repeat(64))),
         },
         process_lock: tokio::sync::Mutex::new(()),
+        gpu_users_cache: Default::default(),
         plan: std::sync::Mutex::new(PlanSlot::new()),
         upload: Arc::new(UploadState::new()),
         auth: Arc::new(AuthState::new()),
@@ -735,7 +736,6 @@ async fn an_empty_canonical_read_past_the_deadline_blocks_deletion() {
 fn shared_readings_completing_after_the_deadline_are_unknown() {
     use truenas_nvidia_driver_manager::codes::REASON_TIMED_OUT;
     use truenas_nvidia_driver_manager::facts::{self, LinkReading, LoadedVersion, Reading};
-    use truenas_nvidia_driver_manager::plan;
 
     let unknown = |r: Reading<String>| match r {
         Reading::Unknown(reason) => assert_eq!(reason, REASON_TIMED_OUT),
@@ -770,7 +770,7 @@ fn shared_readings_completing_after_the_deadline_are_unknown() {
     host.put_text("/proc/modules", "nvidia 1 0 - Live 0x0\n");
     let slow = SlowHost::with_advance(host, "/proc/modules", Duration::from_secs(16));
     assert!(matches!(
-        plan::read_modules(&slow),
+        facts::read_modules(&slow),
         Reading::Unknown(REASON_TIMED_OUT)
     ));
 }
