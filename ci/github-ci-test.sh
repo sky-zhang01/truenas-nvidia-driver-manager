@@ -75,6 +75,13 @@ requireRule(!/rust:1-bookworm@sha256:[a-f0-9]{64}/.test(container), 'do not dupl
 writeRun(container, 'container.sh');
 const upload = step(image, 'upload the image for the release job');
 for (const file of ['nvm-build-metadata.json', 'nvm-image.id']) requireRule(upload?.includes('            ' + file + '\n'), 'retain ' + file);
+const release = job('release');
+const merged = step(release, 'require a merged main pull request');
+requireRule(release.includes('      pull-requests: read\n'), 'release needs read-only pull request access');
+requireRule(merged?.includes('run: python3 .github/scripts/check_release_pr.py'), 'release requires an API-backed merged PR gate');
+requireRule(merged.includes('GH_TOKEN: ${{ github.token }}'), 'the PR gate uses the workflow token');
+requireRule(!/^        if:/m.test(merged), 'the merged PR gate must be unconditional');
+requireRule(release.indexOf(merged) < release.indexOf('      - name: log in to GHCR'), 'merged PR verification precedes registry credentials');
 const dependabot = fs.readFileSync('.github/dependabot.yml', 'utf8');
 const docker = dependabot.split('  - package-ecosystem: docker\n')[1]?.split(/^  - /m)[0];
 requireRule(/      - dependency-name: node\n        update-types: \["version-update:semver-major"\]/.test(docker || ''), 'coordinate Node major upgrades across Docker and workflows');
@@ -230,4 +237,5 @@ NODE
     check 'scanner failure rejects the job' test "${rc}" -eq 19
     check 'temporary snapshots are removed after success and failure' test -z "$(ls -A "${RUNNER_TEMP}")"
 fi
+check 'release tags require a merged main PR result' python3 .github/scripts/test_check_release_pr.py
 finish_tests 'public CI controls failed' "public CI controls: ${PASS} passed"

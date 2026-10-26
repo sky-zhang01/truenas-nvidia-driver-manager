@@ -82,7 +82,7 @@ fn healthy() -> FakeHost {
     host
 }
 
-/// The three kernel-header readings and the version index versions needs.
+/// The five kernel-interface readings and the version index that versions needs.
 fn catalog_ready(host: &FakeHost) {
     let base = "/usr/src/linux-headers-truenas-production-amd64/include";
     host.put_text(
@@ -91,7 +91,7 @@ fn catalog_ready(host: &FakeHost) {
     );
     host.put_text(
         &format!("{base}/drm/drm_mode_config.h"),
-        "struct drm_mode_config_funcs { void (*atomic_state_free)(void); };\n",
+        "struct drm_mode_config_funcs { void (*atomic_state_free)(void);\n    struct drm_framebuffer *(*fb_create)(struct drm_device *dev,\n        struct drm_file *file_priv, const struct drm_mode_fb_cmd2 *mode_cmd);\n};\n",
     );
     host.put_text(
         &format!("{base}/linux/pci.h"),

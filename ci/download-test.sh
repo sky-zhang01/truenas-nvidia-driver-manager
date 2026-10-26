@@ -144,7 +144,7 @@ reset_case good
 check 'OSV downloads verify before installing and scanning' scan
 check 'OSV downloads both release files' calls_are 2
 check 'OSV removes its temporary binary after scanning' scanner_removed
-check 'OSV scans both lockfiles' grep -Fxq 'scan source --lockfile=Cargo.lock --lockfile=web/package-lock.json' "${work}/scan.log"
+check 'OSV scans both lockfiles with the accepted-findings file' grep -Fxq 'scan source --config=osv-scanner.toml --lockfile=Cargo.lock --lockfile=web/package-lock.json' "${work}/scan.log"
 reset_case good
 export DOWNLOAD_SCAN_EXIT=17
 if scan; then fail 'OSV propagates scanner failures'; else

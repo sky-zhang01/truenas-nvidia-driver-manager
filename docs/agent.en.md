@@ -62,7 +62,7 @@ Read `.loaded_version`, `.kernel`, `.truenas_version`, `.original_saved`, `.acti
 
 ## 2. Create the requested plan
 
-For an official version, choose an exact `.items[].version` and the intended `.gpus[].address` values from versions. Do not silently change the requested version or GPU selection. The server verifies source support and current host facts.
+An official source can use any version in the NVIDIA website catalog; choose the intended `.gpus[].address` values from versions. Keep the requested version and GPU selection; the server verifies catalog membership, source support and current host facts.
 
 ```bash
 source '<private-session-directory>/env.sh'
@@ -103,7 +103,7 @@ For each key actually returned in `.how` and `.warnings`, read its full text bel
 | `confirm.how.official` | Downloads the installer from the NVIDIA website, then builds it on this host. |
 | `confirm.how.upload` | Uses the uploaded installer; nothing is downloaded. |
 | `confirm.how.local` | Uses an existing local driver; nothing is downloaded or built. |
-| `confirm.upload_trust` | The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. Use an installer downloaded from the NVIDIA website. |
+| `confirm.upload_trust` | The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. |
 | `confirm.community_patch` | This driver uses Debian community compatibility patches: user I/O memory mappings are unavailable, display hotplug behavior may differ, and it cannot load on systems with IBT enabled. Loading, display, and CUDA workloads on Kepler have not been verified. |
 | `confirm.original.unsavable` | The driver file at the permanent path does not reveal its driver version or target kernel, so it cannot be saved as the original driver. |
 | `original.skip_warning` | If you skip saving and this update fails, there is no original driver to restore. |
@@ -190,7 +190,12 @@ Use `.error.code`, nested reason `.key` and `.params`, and top-level rejection `
 | `plan.changed` | Host facts changed; read `.params.changed`, generate and reconfirm a fresh plan. |
 | `plan.precheck_failed` / `plan.uncomputable` | Resolve reported blocked/unreadable facts before replanning. |
 | `task.running` | Another task is active; follow it instead of submitting another. |
-| `plan.source_invalid.gpu_unsupported` / `plan.source_invalid.branch_unbuildable` | Selected source cannot serve this GPU/kernel combination. Explain parameters and obtain a newly confirmed alternative. |
+| `plan.source_invalid.gpu_unsupported` | `.params.version` is unsupported by the GPUs in `.params.gpus`, whose `.usable_from_branch` gives the lowest usable branch on this host; `.params.conflict` reports conflicting selections. Explain the parameters and obtain a newly confirmed alternative. |
+| `plan.source_invalid.branch_unbuildable` | `.params.version` cannot be built for this host; `.params.reasons` lists the reason keys, and `.params.from` is an alternative version of the same branch or `null`. Explain the parameters and obtain a newly confirmed alternative. |
+| `plan.source_invalid.version_not_official` | HTTP 422: NVIDIA does not list `.params.version`. Check the version number before creating a newly confirmed plan. |
+| `plan.source_invalid.version_unconfirmed` | HTTP 409: NVIDIA catalog membership could not be confirmed for `.params.version`; `.params.unreadable` lists the catalog read failure as `{object: "catalog", reason, raw?}`. Resolve the reading failure before creating a newly confirmed plan. |
+| `branch.extra_cflags_removed` | The kernel build scripts no longer support the EXTRA_CFLAGS used by this version. Select a buildable version and reconfirm the plan. |
+| `branch.fb_create_format_info` | This version's `nvidia-drm` source does not match the current kernel headers (for example, `fb_create` takes an extra `drm_format_info` argument). Select a buildable version and reconfirm the plan. |
 | `SAVE_ORIGINAL_FAILED` | Original-driver saving failed. Inspect its reason; do not automatically retry without saving. |
 | `DOWNLOAD_FAILED` / `BUILD_FAILED` / `BUILD_TIMEOUT` | Download/build failed or timed out. Inspect nested reasons and diagnostic output; resolve the cause before a newly confirmed retry. |
 | `GPU_IN_USE` / `MODULE_UNLOAD_REFUSED` | GPU use or a module prevented replacement. Report actual users and obtain permission before stopping apps. |
@@ -262,7 +267,8 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
       "address"
     ],
     "GpuReading": [
-      "address"
+      "address",
+      "usable_from_branch"
     ],
     "DriversResponse": [
       "rows"
@@ -401,6 +407,14 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
     "Query": [
       "after"
     ],
+    "SourceInvalidParams": [
+      "gpus",
+      "conflict",
+      "version",
+      "from",
+      "reasons",
+      "unreadable"
+    ],
     "PlanChangedParams": [
       "changed"
     ],
@@ -440,6 +454,10 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
     "task.running",
     "plan.source_invalid.gpu_unsupported",
     "plan.source_invalid.branch_unbuildable",
+    "plan.source_invalid.version_not_official",
+    "plan.source_invalid.version_unconfirmed",
+    "branch.extra_cflags_removed",
+    "branch.fb_create_format_info",
     "SAVE_ORIGINAL_FAILED",
     "DOWNLOAD_FAILED",
     "BUILD_FAILED",

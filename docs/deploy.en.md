@@ -165,6 +165,8 @@ build from an uploaded installer requires all of the following:
    sha256sum NVIDIA-Linux-x86_64-*.run *.deb
    ```
 
+   Debian community compatibility patches are applied only when building official 470.256.02: manually uploaded 470 installers do not receive them. The patched official 470.256.02 build needs to download the patch archive over the network; it cannot be placed in `manager/build-kit/` in advance like the build packages.
+
    On Update driver, choose Upload files manually… and select or drop the five files
    (extensions must be `.run` or `.deb`). Upload starts immediately, with `.deb` files before
    `.run`; content determines each file's checklist row. The window shows progress and errors,
@@ -183,10 +185,10 @@ build from an uploaded installer requires all of the following:
 For online preparation, the host downloads the driver from NVIDIA, pulls the pinned build image
 from Docker Hub when missing, and downloads missing packages from snapshot.debian.org. Toolkit
 packages come from NVIDIA's package repository. For the official `470.256.02` driver on `6.12`
-kernels, the host also downloads a community patch archive from `deb.debian.org`; allow this
-additional source through the outbound firewall. Only build-kit package fetches follow HTTPS
-redirects (at most five); driver, toolkit, and community-patch fetches require a direct successful
-response. Download or verification failure stops that stage and is reported in the task log.
+or `6.18` kernels, the host also downloads a community patch archive from snapshot.debian.org,
+the same source as the build packages. Build-kit package and community-patch fetches follow HTTPS
+redirects (at most five); driver and toolkit fetches require a direct successful response. Download
+or verification failure stops that stage and is reported in the task log.
 Fix connectivity or supply the verified offline inputs, then
 create and confirm a new plan. The disposable build container itself has no network and has no
 CPU, memory, or process-count limits.

@@ -73,6 +73,7 @@ expect_class docker/build-driver.sh rust e2e image build_kit
 expect_class docker/install-build-kit.sh rust e2e image build_kit
 expect_class Cargo.toml rust e2e image locks
 expect_class Cargo.lock rust e2e image locks
+expect_class osv-scanner.toml locks
 expect_class web/test/view.test.ts -
 expect_class web/src/main.ts e2e image
 expect_class web/e2e/auth.spec.ts e2e

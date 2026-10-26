@@ -20,6 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MANIFEST="${REPO_ROOT}/src/build_kit/packages.tsv"
 
+# Fail-closed input and archive checks also run on hosts without Docker.
+bash "${SCRIPT_DIR}/community-test.sh"
+
 # Fixture archive creation requires GNU tar, available as gtar on macOS.
 TAR_BIN=tar
 if ! "${TAR_BIN}" --version 2>/dev/null | grep -q 'GNU tar'; then

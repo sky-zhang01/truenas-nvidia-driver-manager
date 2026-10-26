@@ -18,7 +18,7 @@
     },
     {
       "path": "src/catalog.rs",
-      "sha256": "f61a43227ebccd795654cbd3edf901fe9e93c631ec460d080f231ab4a3b2fb4a",
+      "sha256": "9235402d8acfcb69c20c7836c3594a56a2f3529b077bf409fd705c4902dae094",
       "rules": [
         "chinese"
       ],
@@ -34,7 +34,7 @@
     },
     {
       "path": "src/web.rs",
-      "sha256": "79a3c0a86739050045e5b6236d9583f51d1ad00650e23b61e02405f6811e42ac",
+      "sha256": "70f8ffe85f2a3f88439c6e55d5789f20b6d0a5495f15310d2a274e7f8e78a665",
       "rules": [
         "chinese"
       ],
@@ -42,7 +42,7 @@
     },
     {
       "path": "tests/api_contract.rs",
-      "sha256": "42343922dc1d3cfc3b0869a49b05abea8819af778b457d0101ec04085d01aa76",
+      "sha256": "428509b4e4d864cd0560c83d76423fe28704265bb47b2007ea457f9a2c0b510e",
       "rules": [
         "chinese"
       ],
@@ -66,7 +66,7 @@
     },
     {
       "path": "tests/upload.rs",
-      "sha256": "479e8daab4b94c91ec4476d682f437af30c6528b83d9890f8049c5c8433664b0",
+      "sha256": "e41ee617877abb2280db031f216193495f90b81207accf97bd7f7015eaed66c9",
       "rules": [
         "email"
       ],
@@ -74,7 +74,7 @@
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "sha256": "04d02b68c1fea6345a862d40138b0af27f14f7d681452e69edec1b8a5562763f",
+      "sha256": "64e969ed5ea2c938f54ae0c45b2577977cb294df7ab33fdb27bd1ea2a2890755",
       "rules": [
         "chinese"
       ],
@@ -130,7 +130,7 @@
     },
     {
       "path": "web/e2e/roles.spec.ts",
-      "sha256": "602b1a3e54be5212c903062e7526a6b3e7546146dc4d5511d253d8644d495119",
+      "sha256": "ac42907530e9d818f0febcded8529214c9f30790789008e757d825c07b0fcf74",
       "rules": [
         "chinese"
       ],
@@ -154,7 +154,7 @@
     },
     {
       "path": "web/e2e/update.spec.ts",
-      "sha256": "6095b9fa8878a8734ad6c19358de782e59cb75822444425a2f7a9548b9888cba",
+      "sha256": "da9e8322f4be65ab759bd136fe47874a496b7ed82464137446c676960da5924c",
       "rules": [
         "chinese"
       ],
@@ -162,7 +162,7 @@
     },
     {
       "path": "web/src/messages.ts",
-      "sha256": "24ea23a70e7d9bcc2bb0e9230a12597268816fbf181717c1bc5e33bded2d1c40",
+      "sha256": "e254de33bd1fd0a2b56e16588a855c804e2387e62bd4afc29cc367e45856fab5",
       "rules": [
         "chinese"
       ],
@@ -170,7 +170,7 @@
     },
     {
       "path": "web/test/frontend-repair.test.ts",
-      "sha256": "c74d99b83bc5c61d261a7430d214845e3413aa02d0c072d47a77efd345dfb8a3",
+      "sha256": "21e3ebb6788b8a212c183a74300001fd65a1903f041143fc98eb4a642b9c3648",
       "rules": [
         "chinese"
       ],
@@ -178,7 +178,7 @@
     },
     {
       "path": "web/test/messages.test.ts",
-      "sha256": "0f32de3c083845209cd7b9a64cbafb7468c3ff9c0e306a7bfcd40ae3a6cf5728",
+      "sha256": "2496e4f3157eb20810031bfc2c846e902e8f9b6e912307244eb26309086b1aed",
       "rules": [
         "chinese"
       ],
@@ -194,7 +194,7 @@
     },
     {
       "path": "web/test/rules.test.ts",
-      "sha256": "d5ae23663ff9f6c61a81402734ba96343cf21a89776a4fb50d4b808ee6b9f18e",
+      "sha256": "aeba3351ffa023577fc52fba1755ecdae064516b26dfd66d65abe97185b8f8de",
       "rules": [
         "chinese"
       ],
@@ -507,7 +507,7 @@
     },
     {
       "path": "docs/images/plan-en.png",
-      "sha256": "dfd62eee76defed1f2a9a606140276a07aeace8fdd86327122cec808212eb96e",
+      "sha256": "57be79162950146eff66371c5135d67aed65f5f07088d539a02ca67a3c61486e",
       "rules": [
         "binary"
       ],
@@ -515,7 +515,7 @@
     },
     {
       "path": "docs/images/plan-zh.png",
-      "sha256": "b47d018d2d53d8cc886051219836ff9017d6a9ad8c300b74b0751a1c440d2fee",
+      "sha256": "592ab319052ae445d353611e9d14db275ef38f317b2f169ce4ab2b1fa50f7546",
       "rules": [
         "binary"
       ],
@@ -555,7 +555,7 @@
     },
     {
       "path": "docs/images/update-en.png",
-      "sha256": "23e060ef40d08171f99c5d3ecc15a317aec0d2dfd99d3eb62d9527a0dfb3827f",
+      "sha256": "3b6018b3a11ee1dc6f5de992023778932bf57d724d4213e5b57931e6b081552d",
       "rules": [
         "binary"
       ],
@@ -563,7 +563,7 @@
     },
     {
       "path": "docs/images/update-zh.png",
-      "sha256": "d6203829669d26ebd6e008d2343d0ada3de1ced2fd3be2051f7322226818d8ea",
+      "sha256": "a38771e8fc95b7c4234a883c6c649c0c23606d6cddc2951c8e35e57116ba7467",
       "rules": [
         "binary"
       ],
@@ -683,7 +683,7 @@
     },
     {
       "path": "web/test/copy-integrity.test.ts",
-      "sha256": "7ca9feae2781c5b344d7c64c6d8521ce7defafe50d12b16fb378278128b6a197",
+      "sha256": "55258f4148f878fed95ea825b21636f1fbe64a47413ff1a59cd481e644c7881b",
       "rules": [
         "chinese"
       ],
@@ -731,7 +731,7 @@
     },
     {
       "path": "web/e2e/gpu-support-hints.spec.ts",
-      "sha256": "2eb6e23c963592a3c66d5a444f5b77f9ae15a3acda9ba1a41be2d085d1313a24",
+      "sha256": "c0970b32f1554257c3346cf70b2002249f7889cdc428d6d9b6b8b8458af0285f",
       "rules": [
         "chinese"
       ],
@@ -768,11 +768,27 @@
         "chinese"
       ],
       "reason": "Chinese user interface assertions using synthetic local fixtures."
+    },
+    {
+      "path": "web/e2e/other-version.spec.ts",
+      "sha256": "84543e9c2e5a876f7e002ee5119e8d1c5ab86eb7b228629b1cbca10c7fe02b9c",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Approved bilingual version-selection messages and assertions using synthetic local fixtures."
+    },
+    {
+      "path": "web/test/version-wording.test.ts",
+      "sha256": "d9cd68f1b1b4202b96264170e5db0913407a7831f0fecf9079289418ebf19f05",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Approved bilingual version-selection messages and assertions using synthetic local fixtures."
     }
   ],
   "public_hosts": [
     "127.0.0.1",
-    "deb.debian.org",
+    "api.github.com",
     "download.nvidia.com",
     "ghcr.io",
     "github.com",

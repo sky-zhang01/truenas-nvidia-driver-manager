@@ -1,0 +1,12 @@
+# Findings accepted for a limited time. Each entry names one advisory, why it does not
+# apply to this program, and the date by which it must be revisited.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+ignoreUntil = 2027-01-31T00:00:00Z
+reason = """crypto-bigint 0.5.5 reaches this program only through ssh-key 0.6 -> p256/p384, \
+where the server verifies SSH login signatures against registered public keys \
+(src/ssh_login.rs). Verification works on public data only; signing happens on the \
+user's own machine, so there is no secret integer whose timing could leak. The fix \
+(crypto-bigint 0.7.6) needs ssh-key 0.7, which is still a pre-release. Revisit when \
+ssh-key 0.7 is released."""

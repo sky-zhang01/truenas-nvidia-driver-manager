@@ -437,7 +437,7 @@ test("community patch and module failures normalize only the fixed suffixes", ()
   assert.deepEqual(normalizeReason("community_patch_failed:archive"), {
     key: "build.community_patch_failed.archive", params: {},
   });
-  for (const patch of ["0033", "0043", "0047", "0055"]) {
+  for (const patch of Array.from({ length: 54 }, (_, i) => String(i + 1).padStart(2, "0"))) {
     const reason = normalizeReason(`community_patch_failed:${patch}`);
     assert.deepEqual(reason, { key: "build.community_patch_failed", params: { patch } });
     assert.match(expandText(reason.key, reason.params ?? {}, "en"), new RegExp(`patch ${patch} failed`));
@@ -459,8 +459,11 @@ test("community patch and module failures normalize only the fixed suffixes", ()
     }
   }
   for (const code of [
-    "community_patch_failed", "community_patch_failed:", "community_patch_failed:0034",
-    "community_patch_failed:0055\n", "community_patch_failed:../0033",
+    "community_patch_failed", "community_patch_failed:", "community_patch_failed:00",
+    "community_patch_failed:55", "community_patch_failed:1",
+    "community_patch_failed:01\n", "community_patch_failed:01\r", "community_patch_failed:01\t",
+    "community_patch_failed:01 ", "community_patch_failed: 01",
+    "community_patch_failed:../01",
     "kernel_module_missing:", "kernel_module_missing:nvidia-drm",
     "kernel_module_missing:nvidia_other", "kernel_module_install_failed:../nvidia",
     "kernel_module_install_failed:nvidia_uvm\n",

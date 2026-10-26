@@ -11,7 +11,7 @@ const placeholders = (text: string): string[] => [...new Set([...text.matchAll(/
 const segments = (text: string): string[] => text.split("\n").map((line) => line.match(/^(?:(?:info|warning|error)\|)?(?:(?:title|body|action|list|note)\|)?/)?.[0] ?? "");
 
 test("the approved catalog has every retained key and no deleted or merged aliases", () => {
-  assert.equal(Object.keys(contract).length, 766);
+  assert.equal(Object.keys(contract).length, 775);
   assert.deepEqual(messageKeys(), Object.keys(contract).sort());
 });
 
@@ -52,8 +52,8 @@ test("both original-driver choices name what is saved and explain the failure co
 });
 
 test("official catalog and footer mention manual upload only in the catalog guidance", () => {
-  assert.equal(MESSAGES["catalog.help"]!.zh, "info|列表只含本机能构建且支持所选显卡的版本，每个分支取最新一版；其他版本请点「手动上传文件…」。");
-  assert.equal(MESSAGES["catalog.help"]!.en, 'info|The list contains only versions that build on this host and support the selected GPUs, with the latest version of each branch; for other versions, choose "Upload files manually…".');
+  assert.equal(MESSAGES["catalog.help"]!.zh, "info|列表为各分支在本机可构建的最新版本。离线或自备文件请用「手动上传文件…」。");
+  assert.equal(MESSAGES["catalog.help"]!.en, 'info|The list shows the latest version of each branch that builds on this host. For offline or your own files, use "Upload files manually…".');
   assert.equal(MESSAGES["upload.entry.hint"]!.zh, "选好版本后，程序从 NVIDIA 下载并校验。");
   assert.equal(MESSAGES["upload.entry.hint"]!.en, "After you pick a version, the program downloads it from NVIDIA and checks it.");
   assert.equal(Object.hasOwn(MESSAGES, "catalog.help_upload"), false);

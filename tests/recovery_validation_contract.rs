@@ -330,7 +330,7 @@ async fn version_readings_run_concurrently() {
     let host = default_host();
     prime_canonical(&host, "580.178.04");
     host.add_gpu("0000:01:00.0", 0x1b80, Some("nvidia"));
-    prime_kernel_headers(&host, KERNEL);
+    fake_host::prime_kernel_headers(&host, KERNEL);
     host.set_curl(
         CATALOG_URL,
         200,
@@ -848,7 +848,7 @@ async fn a_catalog_query_inside_the_catalog_command_budget_is_not_a_reading_time
     let host = default_host();
     prime_canonical(&host, "580.178.04");
     host.add_gpu("0000:01:00.0", 0x1b80, Some("nvidia"));
-    prime_kernel_headers(&host, KERNEL);
+    fake_host::prime_kernel_headers(&host, KERNEL);
     host.set_curl(
         CATALOG_URL,
         200,
@@ -1020,7 +1020,7 @@ fn put_checksum_deadline_row(h: &FakeHost) -> String {
 fn prime_checksum_deadline_host(h: &FakeHost) {
     prime_canonical(h, "580.178.04");
     h.add_gpu("0000:01:00.0", 0x1b80, Some("nvidia"));
-    prime_kernel_headers(h, KERNEL);
+    fake_host::prime_kernel_headers(h, KERNEL);
     h.set_curl(
         CATALOG_URL,
         200,

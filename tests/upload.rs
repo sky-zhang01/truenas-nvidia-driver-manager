@@ -1442,7 +1442,7 @@ async fn an_admitted_upload_cannot_replace_files_locked_before_commit() {
 #[tokio::test]
 async fn an_old_580_open_upload_still_reaches_isolated_build_submission() {
     let (app, cookie) = setup().await;
-    prime_kernel_headers(&app.host, KERNEL);
+    fake_host::prime_kernel_headers(&app.host, KERNEL);
     app.host.add_gpu("0000:01:00.0", 0x1e37, Some("nvidia"));
     let group = open_group(&app, &cookie).await;
     fill_group(&app, &cookie, &group, "1.20.1", "580.119.02").await;

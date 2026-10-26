@@ -14,12 +14,15 @@ const INDEX: &str = r#"<a href="615.71.09/">615.71.09</a>
 <a href="595.104.02/">595.104.02</a>
 <a href="590.48.01/">590.48.01</a>
 <a href="580.178.04/">580.178.04</a>
+<a href="570.211.01/">570.211.01</a>
+<a href="565.77/">565.77</a>
+<a href="470.256.02/">470.256.02</a>
 "#;
 
 async fn setup() -> (TestApp, String) {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    prime_kernel_headers(&host, KERNEL);
+    fake_host::prime_kernel_headers(&host, KERNEL);
     host.set_curl(CATALOG_URL, 200, INDEX.as_bytes());
     signed_in_app(host).await
 }
@@ -133,7 +136,18 @@ async fn an_invalid_button_is_rejected() {
 #[tokio::test]
 async fn a_running_task_blocks_new_plans_and_submissions() {
     let (app, cookie) = setup().await;
-    let gate = app.host.set_gate("curl", &["--silent"]);
+    let gate = app.host.set_gate(
+        "curl",
+        &[
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--proto",
+            "=https",
+            "--connect-timeout",
+            "20",
+        ],
+    );
     let (_, plan) = official_plan(&app, &cookie, "580.178.04").await;
     let id = "20260928T101530Z-3f9a0c12";
     let mut state = write_state(&app.host, id, Status::Running, Some(Phase::Download));
@@ -364,7 +378,7 @@ async fn a_local_unreadable_record_is_blocked_not_404() {
 async fn setup_with_gpus(gpus: &[(&str, u16, Option<&str>)]) -> (TestApp, String) {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    prime_kernel_headers(&host, KERNEL);
+    fake_host::prime_kernel_headers(&host, KERNEL);
     host.set_curl(CATALOG_URL, 200, INDEX.as_bytes());
     for (address, device, driver) in gpus {
         host.add_gpu(address, *device, *driver);

@@ -4,7 +4,7 @@
 
 ## Return to the saved original driver
 
-In Local drivers, choose a usable Original row, click Restore this version, and confirm the plan. This uses the saved TrueNAS image without downloading or building. It requires an original compatible with the current kernel and TrueNAS version; an NVIDIA download cannot supply that saved image.
+In Local drivers, choose a usable Original row, click Restore this version, and confirm the plan. This uses the saved driver image without downloading or building. The original is the driver file at the permanent path when you first choose to save it for the current kernel and TrueNAS version; the manager does not determine whether TrueNAS supplied it. It requires an original compatible with the current kernel and TrueNAS version; an NVIDIA download cannot supply that saved image.
 
 The automatic restore path runs after a replacement's driver check fails, when a usable original
 copy exists. It does not cover every download, build, unload, or write failure, and restoration
@@ -15,8 +15,8 @@ Inspect task check records and loaded versions; app availability must be checked
 
 First read the home-page blockers, task status, error, and check records. Download/build failures
 can come from unreachable NVIDIA, Docker Hub, or Debian snapshot endpoints. For the official
-`470.256.02` driver on `6.12` kernels, the host also downloads a community patch archive from
-`deb.debian.org`; allow this additional source through the outbound firewall. Fix connectivity
+`470.256.02` driver on `6.12` or `6.18` kernels, the host also downloads a community patch archive
+from snapshot.debian.org, the same source as the build packages. Fix connectivity
 or prepare the offline inputs in the [deployment guide](deploy.en.md), then confirm a new plan.
 Do not repeatedly submit while a task is running or its state is unreadable.
 
@@ -48,9 +48,8 @@ and checksums are under File details in confirmation.
 
 The manager checks content, architecture and versions and runs the installer's own integrity
 check at build time. It does not verify NVIDIA signatures or compare official checksums. Passing
-these checks does not prove the source is trustworthy: only upload files downloaded from NVIDIA
-that you trust. Offline builds also need the build image and packages in the
-[deployment guide](deploy.en.md).
+these checks does not prove the source is trustworthy. Offline builds also need the build image
+and packages in the [deployment guide](deploy.en.md).
 
 ## SSH key sign-in
 

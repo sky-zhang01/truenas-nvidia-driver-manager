@@ -31,11 +31,16 @@ pub(super) async fn create_plan(
 ) -> Response {
     let ctx2 = ctx.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let versions = if matches!(&req.source, SourceRequest::Official { .. }) {
+            catalog::read_versions(ctx2.host.as_ref())
+        } else {
+            Ok(Vec::new())
+        };
         let _guard = ctx2.process_lock.blocking_lock();
         if let Some(response) = reject_if_session_lost(&ctx2, &headers) {
             return response;
         }
-        match plan::precheck(&ctx2, &req.source) {
+        match plan::precheck(&ctx2, &req.source, &versions) {
             Ok((Precheck::Ready(dialog), snapshot)) => {
                 let plan_id = plan::remember(&ctx2, snapshot);
                 json_response(json!({
@@ -95,19 +100,39 @@ fn source_invalid_response(e: plan::SourceInvalid) -> Response {
             "plan.source_invalid.version_below_470",
         )
         .into_response(),
-        S::BranchUnbuildable { branch, reasons } => ApiError::new(
+        S::BranchUnbuildable {
+            version,
+            from,
+            reasons,
+        } => ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "plan.source_invalid.branch_unbuildable",
         )
         .params(json!({
-            "branch": branch,
             // Every reason field has the `{key, params}` shape; these phrases have no
             // placeholder.
+            "version": version,
+            "from": from,
             "reasons": reasons
                 .iter()
                 .map(|key| json!({"key": key, "params": {}}))
                 .collect::<Vec<_>>(),
         }))
+        .into_response(),
+        S::VersionNotOfficial { version } => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "plan.source_invalid.version_not_official",
+        )
+        .params(json!({"version": version}))
+        .into_response(),
+        S::VersionUnconfirmed {
+            version,
+            unreadable,
+        } => ApiError::new(
+            StatusCode::CONFLICT,
+            "plan.source_invalid.version_unconfirmed",
+        )
+        .params(json!({"version": version, "unreadable": unreadable}))
         .into_response(),
         S::BranchUndecidable { unreadable } => ApiError::new(
             StatusCode::CONFLICT,
@@ -124,11 +149,15 @@ fn source_invalid_response(e: plan::SourceInvalid) -> Response {
                 }))
                 .into_response()
         }
-        S::GpuUnsupported { gpus, conflict } => ApiError::new(
+        S::GpuUnsupported {
+            version,
+            gpus,
+            conflict,
+        } => ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "plan.source_invalid.gpu_unsupported",
         )
-        .params(json!({"gpus": gpus, "conflict": conflict}))
+        .params(json!({"version": version, "gpus": gpus, "conflict": conflict}))
         .into_response(),
         S::GpusChanged => ApiError::new(StatusCode::CONFLICT, "plan.changed")
             .params(json!({"changed": ["gpus"]}))

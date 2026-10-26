@@ -228,8 +228,8 @@ export const MESSAGES: Record<string, Message> = {
   },
 
   "upload.how.nosig": {
-    "zh": "程序不验证 NVIDIA 签名，也不比对官方校验值。上传的须是自己从 NVIDIA 官网下载的文件。",
-    "en": "The program does not verify NVIDIA signatures or compare official checksums. Upload files you downloaded from the NVIDIA website yourself.",
+    "zh": "程序不验证 NVIDIA 签名。",
+    "en": "The program does not verify NVIDIA signatures.",
   },
 
   "upload.how.body": {
@@ -960,12 +960,20 @@ export const MESSAGES: Record<string, Message> = {
     "en": "the kernel's `drm_mode_config_funcs` no longer has the member `output_poll_changed` that the driver source uses",
   },
   "branch.pci_resize_resource_args": {
-    "zh": "内核的 `pci_resize_resource()` 参数个数与该分支驱动源码中的调用不一致",
-    "en": "the number of arguments of the kernel's `pci_resize_resource()` does not match the call in this branch's driver source",
+    "zh": "内核的 `pci_resize_resource()` 参数个数与此版本驱动源码中的调用不一致",
+    "en": "the number of arguments of the kernel's `pci_resize_resource()` does not match the call in this version's driver source",
+  },
+  "branch.extra_cflags_removed": {
+    "zh": "内核的构建脚本已不再支持此版本驱动源码使用的 `EXTRA_CFLAGS`",
+    "en": "the kernel's build scripts no longer support the `EXTRA_CFLAGS` that this version's driver source uses",
+  },
+  "branch.fb_create_format_info": {
+    "zh": "此版本的 `nvidia-drm` 源码与当前内核头文件不匹配（例如 `fb_create` 多了一个 `drm_format_info` 参数）",
+    "en": "this version's `nvidia-drm` source does not match the current kernel headers (for example, `fb_create` takes an extra `drm_format_info` argument)",
   },
   "branch.installer_loads_module": {
-    "zh": "该分支的安装程序在构建时要加载内核模块，构建容器不允许",
-    "en": "this branch's installer loads a kernel module during the build, which the build container does not allow",
+    "zh": "此版本的安装程序在构建时要加载内核模块，构建容器不允许",
+    "en": "this version's installer loads a kernel module during the build, which the build container does not allow",
   },
   "branch.nvidia_not_loaded": {
     "zh": "主机未加载 `nvidia` 模块，安装程序在构建时要加载它，构建容器不允许",
@@ -1909,12 +1917,12 @@ export const MESSAGES: Record<string, Message> = {
     "en": "error|The version must be two to four groups of digits separated by dots, for example `580.173.02`.",
   },
   "plan.source_invalid.version_below_470": {
-    "zh": "error|官网版本须为 470 及以上。请在「更新驱动」页的下拉框中选择版本。",
-    "en": "error|Official versions must be 470 or later. Select a version in the list on the Update driver page.",
+    "zh": "error|官网版本须为 470 及以上。",
+    "en": "error|Official versions must be 470 or later.",
   },
   "plan.source_invalid.branch_unbuildable": {
-    "zh": "error|{branch} 开头的官方版本无法在本机构建：{unbuildable_reason}。请刷新「更新驱动」页，选择列表中的版本。",
-    "en": "error|Official versions starting with {branch} cannot be built on this host: {unbuildable_reason}. Reload the Update driver page and select a listed version.",
+    "zh": "error|版本 {version} 无法在本机构建：{unbuildable_reason}。",
+    "en": "error|Version {version} cannot be built on this host: {unbuildable_reason}.",
   },
   "plan.source_invalid.branch_undecidable": {
     "zh": "error|无法判断所选版本能否在当前内核上构建，更新未开始。",
@@ -2425,8 +2433,8 @@ export const MESSAGES: Record<string, Message> = {
     "en": "Local driver · {source} (checksum {checksum})",
   },
   "confirm.upload_trust": {
-    "zh": "上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。请使用从 NVIDIA 官网下载的安装包。",
-    "en": "The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. Use an installer downloaded from the NVIDIA website.",
+    "zh": "上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。",
+    "en": "The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures.",
   },
   "confirm.community_patch": {
     "zh": "此驱动使用 Debian 社区兼容补丁：不支持用户 I/O 内存映射，显示热插拔行为可能不同，启用 IBT 的系统上无法加载。Kepler 上的加载、显示及 CUDA 工作负载尚未验证。",
@@ -2919,9 +2927,44 @@ export const MESSAGES: Record<string, Message> = {
     "en": "warning|If you skip saving and this update fails, there is no original driver to restore.",
   },
 
+  "catalog.help.no_other": {
+    "zh": "info|离线或自备文件请用「手动上传文件…」。",
+    "en": "info|For offline or your own files, use \"Upload files manually…\".",
+  },
+
+  "catalog.other_version": {
+    "zh": "其他版本…",
+    "en": "Other version…",
+  },
+
+  "update.other_version_example": {
+    "zh": "例如 580.159.03",
+    "en": "For example 580.159.03",
+  },
+
+  "plan.source_invalid.branch_unbuildable.from": {
+    "zh": "error|版本 {version} 无法在本机构建：{unbuildable_reason}。请改用 {from} 或同分支更新的版本。",
+    "en": "error|Version {version} cannot be built on this host: {unbuildable_reason}. Use {from} or a later version of the same branch.",
+  },
+
+  "plan.source_invalid.version_not_official": {
+    "zh": "error|NVIDIA 官网没有版本 {version}，请核对版本号。",
+    "en": "error|NVIDIA does not list version {version}. Check the version number.",
+  },
+
+  "plan.source_invalid.version_unconfirmed": {
+    "zh": "error|无法确认 NVIDIA 官网是否有版本 {version}，更新未开始。",
+    "en": "error|Cannot confirm whether NVIDIA lists version {version}. The update was not started.",
+  },
+
+  "plan.source_invalid.gpu_unsupported": {
+    "zh": "error|下列显卡不支持版本 {version}。",
+    "en": "error|The following GPUs do not support version {version}.",
+  },
+
   "catalog.help": {
-    "zh": "info|列表只含本机能构建且支持所选显卡的版本，每个分支取最新一版；其他版本请点「手动上传文件…」。",
-    "en": "info|The list contains only versions that build on this host and support the selected GPUs, with the latest version of each branch; for other versions, choose \"Upload files manually…\".",
+    "zh": "info|列表为各分支在本机可构建的最新版本。离线或自备文件请用「手动上传文件…」。",
+    "en": "info|The list shows the latest version of each branch that builds on this host. For offline or your own files, use \"Upload files manually…\".",
   },
 
   "setting.unknown": {

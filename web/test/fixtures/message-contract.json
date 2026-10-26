@@ -7,6 +7,8 @@
   "app.title": [],
   "auth.origin_mismatch": [],
   "auth.required": [],
+  "branch.extra_cflags_removed": [],
+  "branch.fb_create_format_info": [],
   "branch.follow_pfn_removed": [],
   "branch.installer_loads_module": [],
   "branch.nvidia_drm_not_loaded": [],
@@ -75,8 +77,10 @@
     "gpu_name"
   ],
   "catalog.help": [],
+  "catalog.help.no_other": [],
   "catalog.no_usable_version": [],
   "catalog.no_usable_version.one": [],
+  "catalog.other_version": [],
   "check.expected.refresh": [],
   "check.expected.version": [
     "target"
@@ -945,10 +949,18 @@
     "changed_items"
   ],
   "plan.source_invalid.branch_unbuildable": [
-    "branch",
-    "unbuildable_reason"
+    "unbuildable_reason",
+    "version"
+  ],
+  "plan.source_invalid.branch_unbuildable.from": [
+    "from",
+    "unbuildable_reason",
+    "version"
   ],
   "plan.source_invalid.branch_undecidable": [],
+  "plan.source_invalid.gpu_unsupported": [
+    "version"
+  ],
   "plan.source_invalid.local_row_missing": [],
   "plan.source_invalid.upload_group_gone": [],
   "plan.source_invalid.upload_incomplete": [
@@ -961,6 +973,12 @@
   "plan.source_invalid.upload_version_required": [],
   "plan.source_invalid.version_below_470": [],
   "plan.source_invalid.version_format": [],
+  "plan.source_invalid.version_not_official": [
+    "version"
+  ],
+  "plan.source_invalid.version_unconfirmed": [
+    "version"
+  ],
   "plan.uncomputable": [
     "item"
   ],
@@ -1263,6 +1281,7 @@
     "pci_address"
   ],
   "update.gpu_select": [],
+  "update.other_version_example": [],
   "upload.action_failed": [],
   "upload.big_file": [],
   "upload.busy": [],

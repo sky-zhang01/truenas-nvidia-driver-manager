@@ -44,11 +44,14 @@ const INDEX: &str = r#"<a href="615.71.09/">615.71.09</a>
 <a href="595.104.02/">595.104.02</a>
 <a href="590.48.01/">590.48.01</a>
 <a href="580.178.04/">580.178.04</a>
+<a href="580.159.03/">580.159.03</a>
+<a href="580.119.02/">580.119.02</a>
 <a href="575.64.05/">575.64.05</a>
 <a href="570.211.01/">570.211.01</a>
 <a href="565.77/">565.77</a>
 <a href="550.163.01/">550.163.01</a>
 <a href="470.256.02/">470.256.02</a>
+<a href="470.239.06/">470.239.06</a>
 "#;
 
 struct FakeLog(common::SharedBuf);
@@ -192,7 +195,7 @@ fn prepare(host: &FakeHost, scenario: &str) {
             host.put_link("/proc/101/fd/3", "/dev/nvidia0");
             host.put_link("/proc/202/fd/0", "/dev/null");
         }
-        "truenas27" | "truenas27_replacement" => {
+        "truenas27" | "truenas27_replacement" | "kepler27" | "pascal27" => {
             let kernel = "6.18.52-production+truenas";
             common::fake_host::prime_kernel_scene(
                 host,
@@ -201,6 +204,11 @@ fn prepare(host: &FakeHost, scenario: &str) {
                 "gcc (Debian 14.2.0-19) 14.2.0",
             );
             host.set_listing(CANONICAL_PATH, &canonical_listing(kernel, "580.173.02"));
+            if scenario == "kepler27" {
+                host.add_gpu("0000:01:00.0", 0x1180, Some("nvidia"));
+            } else if scenario == "pascal27" {
+                host.add_gpu("0000:01:00.0", 0x1b80, Some("nvidia"));
+            }
             if scenario == "truenas27_replacement" {
                 prepare_local_replacement(host, kernel, "27.0.0-RC.1");
             }

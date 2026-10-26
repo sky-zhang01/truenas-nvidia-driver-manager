@@ -1193,7 +1193,7 @@ async fn release_api_serializes_a_concurrent_task_submission() {
     let x = release_state(&app.host, RELEASE_X);
     app.host.remove(paths.state(RELEASE_X).to_str().unwrap());
     app.host.remove(paths.task_dir(RELEASE_X).to_str().unwrap());
-    prime_kernel_headers(&app.host, KERNEL);
+    fake_host::prime_kernel_headers(&app.host, KERNEL);
     app.host.set_curl(
         CATALOG_URL,
         200,

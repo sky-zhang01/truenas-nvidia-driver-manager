@@ -605,7 +605,7 @@ fn a_readonly_that_does_not_read_back_is_reported_with_its_reading() {
 async fn setup() -> (TestApp, String) {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    prime_kernel_headers(&host, KERNEL);
+    fake_host::prime_kernel_headers(&host, KERNEL);
     host.set_curl(CATALOG_URL, 200, INDEX.as_bytes());
     signed_in_app(host).await
 }

@@ -2,6 +2,15 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
+## 0.3.2
+
+- Offer official 470.256.02 on TrueNAS 27 as well as TrueNAS 25.10, applying all 54 compatibility patches from Debian tesla-470 packaging 470.256.02-10 at build time. Kepler loading, display and CUDA remain unverified on real hardware.
+- On TrueNAS 27, omit all versions from branches 550, 565 and 575, and some 570 versions, because they cannot build against its kernel.
+- When an official version cannot be built, explain the cause and name an alternative version of the same branch when one is available.
+- Add "Other version…" to the update page to enter an official version outside the list.
+- Reject versions absent from the NVIDIA website before starting the update.
+- Explain driver choices for older GPUs, the saved original driver, and how a previous tool's boot settings can affect the driver after a restart; credit the Debian patch source.
+
 ## 0.3.1
 
 - When the GPU is in use, the page lists the apps that requested it within about a

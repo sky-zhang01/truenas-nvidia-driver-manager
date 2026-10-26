@@ -11,7 +11,7 @@ Jump to: [Install](#install) · [Update your driver](#update-your-driver) · [Tr
 
 <img src="docs/images/home-landing-en.png" width="900" alt="The manager's Home page after sign-in: header, navigation, the driver loaded in the kernel, the GPU and the saved original driver.">
 
-Choose an official NVIDIA version, uploaded files, or a local driver. Every update requires confirmation and checks the loaded version. Save the driver supplied with TrueNAS (the "original driver") before your first update: a failed post-update check can then attempt recovery. Recovery can also fail.
+Choose an official NVIDIA version, uploaded files, or a local driver. Every update requires confirmation and checks the loaded version. Save the "original driver" before your first update: a failed post-update check can then attempt recovery. The original is the driver file at the permanent path when you first choose to save it for the current kernel and TrueNAS version; the manager does not determine whether TrueNAS supplied it. Recovery can also fail.
 
 Works on TrueNAS SCALE 25.10.7 and TrueNAS 27.0.0-RC.1 (amd64).
 
@@ -60,6 +60,8 @@ The manager is then on port 8199 of your host. For macvlan or ipvlan, another po
 
 The code works once and stays valid for 24 hours; restarting the app before setup makes a new one, so use the latest. After setup, sign in with `admin` and your password; no setup code is needed. For rejected codes, see the [FAQ](#faq).
 
+If a tool you used before restores its own driver at boot, a restart may switch the driver in use again; this manager does not change that tool's boot settings, and you decide whether to disable it.
+
 ## Update your driver
 
 > [!WARNING]
@@ -80,11 +82,13 @@ Screenshots for each step are in the update guide below.
 <summary>1. Choose GPUs and a driver</summary>
 
 1. Open Update driver in the menu on the left (at the bottom on a narrow screen). If you have more than one NVIDIA GPU, tick the GPUs that will use the driver.
-2. Click the "Official NVIDIA versions" dropdown to choose a version. It lists the latest release in each branch that builds on this host's kernel and supports the selected GPUs. The GPU hint shows the first supported branch that can be installed on this host.
+2. Open the "Official NVIDIA versions" dropdown and pick a version. It lists the latest version of each branch that builds on this host; for another version, choose the last item, "Other version…", and enter the version number.
 3. If unsure, open "NVIDIA website ↗", find "Latest Production Branch", and choose that version here if listed.
 4. Click Check and continue.
 
-For offline use or your own downloads, choose Upload files manually… and follow the five-file checklist in [Driver sources](#driver-sources).
+For offline use or your own files (including community-modified installers), choose Upload files manually… and follow the five-file checklist in [Driver sources](#driver-sources).
+
+Debian community compatibility patches are applied only when building official 470.256.02: manually uploaded 470 installers do not receive them. The patched official 470.256.02 build needs to download the patch archive over the network; it cannot be placed in `manager/build-kit/` in advance like the build packages.
 
 <img src="docs/images/update-en.png" width="900" alt="The Update driver page: choose an official NVIDIA driver version and click Check and continue.">
 
@@ -153,7 +157,7 @@ You can choose a driver from three places:
 - Files you upload. Choose Upload files manually… and follow the five-row checklist: one driver installer and four toolkit packages. Each row has a download link that opens in a new tab. Use `NVIDIA-Linux-x86_64-<version>-no-compat32.run` to leave out the 32-bit libraries TrueNAS does not need; all four `.deb` files must be amd64 packages of the same version. The toolkit version comes from NVIDIA's official index, with `1.20.1-1` used when it cannot be read.
 - A driver you saved before. Switching to it needs no download.
 
-Choosing files starts the upload immediately: `.deb` files first, then the larger `.run`. File content determines the checklist row (extensions must be `.run` or `.deb`). Each row shows progress and errors; the footer shows the ready count while files are incomplete, then a completion summary. Canceling an upload asks for confirmation and keeps files already received. Once all five are ready, choose Check and continue. The confirmation window opens only after the check succeeds; Back to selection returns to the checklist with the files kept. Once the task starts, its uploaded files cannot be replaced. Fingerprints and checksums are under File details in the confirmation window. The manager checks file content and package versions and runs the installer's own integrity check at build time. It does not verify NVIDIA signatures or compare official checksums. Only upload files downloaded from NVIDIA that you trust.
+Choosing files starts the upload immediately: `.deb` files first, then the larger `.run`. File content determines the checklist row (extensions must be `.run` or `.deb`). Each row shows progress and errors; the footer shows the ready count while files are incomplete, then a completion summary. Canceling an upload asks for confirmation and keeps files already received. Once all five are ready, choose Check and continue. The confirmation window opens only after the check succeeds; Back to selection returns to the checklist with the files kept. Once the task starts, its uploaded files cannot be replaced. Fingerprints and checksums are under File details in the confirmation window. The manager checks file content and package versions and runs the installer's own integrity check at build time. The program does not verify NVIDIA signatures. If the build fails, the driver file stays unchanged.
 
 </details>
 
@@ -198,6 +202,17 @@ Every change requires confirmation in the window.
 <summary>Which systems are supported?</summary>
 
 TrueNAS SCALE 25.10.7 and TrueNAS 27.0.0-RC.1 on amd64 are supported and tested. Other versions and architectures are untested. Maxwell, Pascal and Volta GPUs have not been tested on TrueNAS 27. A version in the list does not promise it works with your GPU or apps. Read the checks and warnings before you confirm.
+
+</details>
+
+<details>
+<summary>Which driver does my GPU use?</summary>
+
+The manager chooses the kernel module type from the GPUs you tick. For driver versions 555 and later, when at least one GPU is selected, it builds proprietary modules if any selected GPU requires them (including Maxwell, Pascal and Volta); otherwise it builds open modules. The last driver branch supporting Maxwell, Pascal and Volta is 580.
+
+For Kepler GPUs (including some GTX 600/700 models), choose official 470.256.02. It is offered on TrueNAS 25.10 (kernel 6.12) and TrueNAS 27 (kernel 6.18); the manager downloads and applies Debian's community compatibility patches. Patching and compilation have been tested against the kernels of TrueNAS 25.10.7 and 27.0.0-RC.1. Loading, display and CUDA on real Kepler hardware have not been verified. NVIDIA no longer maintains 470 or publishes security fixes for it; use it only for GPUs with no other supported driver.
+
+These Debian patches make 470 refuse to load when the kernel has IBT (Indirect Branch Tracking) enabled. The patch notes identify Intel 11th-generation and newer CPUs. In the TrueNAS Shell, run `grep '^flags[[:space:]]*:' /proc/cpuinfo | grep -c -w ibt` to count lines reporting `ibt`. A result of 0 only means this command found no match; it does not establish that 470 can load. With no match, the command exits with status 1.
 
 </details>
 
@@ -284,6 +299,10 @@ gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.
 ## Help
 
 Open an issue and include: the manager version, your TrueNAS and kernel versions, the GPU model, the driver source and target version, the task status and the task log. Remove addresses, paths, passwords and keys from the log first. Report security problems privately, as described in [SECURITY.md](SECURITY.md).
+
+## Acknowledgements
+
+The 470 compatibility patches come from Debian's `nvidia-graphics-drivers-tesla-470` packaging (470.256.02-10), maintained by Debian's NVIDIA maintainers; most are by Andreas Beckmann, with contributions from several others. Debian marks these patches with a public-domain dedication that waives copyright. The manager downloads them from snapshot.debian.org at build time and applies them unchanged; this repository does not contain the patches. Parts of the build script come from `biohazardious/truenas-nvidia-driver-updater`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License and trademarks
 

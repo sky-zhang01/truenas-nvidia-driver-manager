@@ -58,8 +58,8 @@ Shell button has nothing to start.
   Only upload trusted files and compare their SHA-256 values with a trusted source. A checksum
   identifies bytes; it does not establish who supplied them.
 - Online builds depend on NVIDIA downloads, Docker Hub, and Debian snapshot packages. For the
-  official `470.256.02` driver on `6.12` kernels, the host also downloads a community patch archive
-  from `deb.debian.org`; allow this additional source through the outbound firewall. Failed
+  official `470.256.02` driver on `6.12` or `6.18` kernels, the host also downloads a community patch
+  archive from snapshot.debian.org, the same source as the build packages. Failed
   downloads or checksum checks stop preparation; inspect the task log and retry after fixing
   the cause. Offline builds require the pinned build image and package set in advance.
 - The community-patched driver does not support user I/O memory mappings and cannot load with

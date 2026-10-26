@@ -20,7 +20,7 @@ import {
   type ReasonLike,
 } from "../dom.js";
 import type { App } from "../main.js";
-import { queryObjectKey } from "../rules.js";
+import { joinReasons, queryObjectKey } from "../rules.js";
 import { closeDialog, makeDialog } from "../dialog.js";
 import type { Lang } from "../messages.js";
 import { gpuUsersNode, watchGpuUsers } from "../gpu-users.js";
@@ -67,11 +67,6 @@ export function armUpdateCheckStatus(anchor: HTMLElement, lang: Lang, app?: App,
   };
   app?.addCleanup(stop);
   return stop;
-}
-
-function joinReasons(reasons: ReasonLike[], lang: Lang): string {
-  const sep = lang === "zh" ? ";" : "; ";
-  return reasons.map((r) => expandText(r.key, (r.params ?? {}) as Params, lang)).join(sep);
 }
 
 export function failureText(app: App, f: PrecheckFailure): string {
@@ -406,12 +401,17 @@ export function renderPlanError(app: App, box: HTMLElement, err: ApiError, after
       box.append(
         renderNotice(
           "plan.source_invalid.branch_unbuildable",
-          { branch: params["branch"] ?? "", unbuildable_reason: joinReasons(reasons, lang) },
+          { ...params, unbuildable_reason: joinReasons(reasons, lang) },
           lang,
+          { variant: typeof params["from"] === "string" ? "from" : undefined },
         ),
       );
       break;
     }
+    case "plan.source_invalid.version_unconfirmed":
+      box.append(renderNotice("plan.source_invalid.version_unconfirmed", params, lang));
+      appendUnreadable(app, box, params);
+      break;
     case "plan.source_invalid.branch_undecidable":
       box.append(renderNotice("plan.source_invalid.branch_undecidable", {}, lang));
       appendUnreadable(app, box, params);
@@ -424,13 +424,14 @@ export function renderPlanError(app: App, box: HTMLElement, err: ApiError, after
         device: string;
         name?: string;
         last_branch?: number;
-        first_branch?: number;
+        usable_from_branch?: number | null;
       }[];
+      const details: HTMLElement[] = [];
       for (const g of gpus) {
         const gpuName = g.name && g.name !== "" ? g.name : `10de:${g.device}`;
         // A catalog key used in a plan rejection must remain in the error region.
-        if (g.last_branch !== undefined) {
-          box.append(
+        if (typeof g.last_branch === "number") {
+          details.push(
             renderNotice(
               "catalog.gpu.not_listed",
               { gpu_name: gpuName, branch: g.last_branch },
@@ -438,23 +439,22 @@ export function renderPlanError(app: App, box: HTMLElement, err: ApiError, after
               { level: "error" },
             ),
           );
-        }
-        if (g.first_branch !== undefined) {
-          box.append(
+        } else if (typeof g.usable_from_branch === "number") {
+          details.push(
             renderNotice(
               "catalog.gpu.not_listed",
-              { gpu_name: gpuName, branch: g.first_branch },
+              { gpu_name: gpuName, branch: g.usable_from_branch },
               lang,
               { variant: "from", level: "error" },
             ),
           );
         }
       }
-      // A single unsupported branch still leaves other versions usable; only a true module-kind
-      // conflict blocks them all.
-      if (params["conflict"] === true) {
-        box.append(renderNotice("catalog.no_usable_version", {}, lang));
+      if (details.length > 0) {
+        if (params["conflict"] !== true && typeof params["version"] === "string") box.append(renderNotice("plan.source_invalid.gpu_unsupported", params, lang));
+        box.append(...details);
       }
+      if (params["conflict"] === true) box.append(renderNotice("catalog.no_usable_version", {}, lang));
       break;
     }
     case "plan.precheck_failed": {
