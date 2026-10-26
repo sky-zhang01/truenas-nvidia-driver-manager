@@ -366,6 +366,10 @@ jobs:
           docker image inspect "${image_id}" >/dev/null
           docker save "${image_id}" -o nvm-image.tar
           echo "image: $(wc -c < nvm-image.tar | tr -d ' ') bytes in the docker save archive (sha256 $(sha256sum nvm-image.tar | awk '{print $1}'))"
+      - name: the release accepts this artifact
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: GHCR_IMAGE="ghcr.io/${RELEASE_REPOSITORY,,}" python3 .github/scripts/ghcr_release.py artifact
       - name: the image filesystem holds only the listed files
         run: python3 ci/image-assert.py nvm-image.tar
       - name: log predicate controls

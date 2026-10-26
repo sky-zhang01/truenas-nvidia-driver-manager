@@ -156,7 +156,37 @@ class Registry:
         return tags
 
 
+def archive_names(archive, config_digest):
+    """Return the digests a Docker image store can use as this archive's image ID.
+
+    The classic store names an image by its config digest; the containerd store
+    names it by the digest of a manifest in the archive index that points to
+    that config.
+    """
+    names = {config_digest}
+    try:
+        index = json.load(archive.extractfile("index.json"))
+    except KeyError:
+        return names
+    for entry in index.get("manifests", []) if isinstance(index, dict) else []:
+        digest = entry.get("digest", "") if isinstance(entry, dict) else ""
+        if not DIGEST.fullmatch(digest):
+            continue
+        try:
+            member = archive.extractfile("blobs/sha256/" + digest[len("sha256:"):])
+        except KeyError:
+            continue
+        body = member.read() if member else b""
+        if "sha256:" + hashlib.sha256(body).hexdigest() != digest:
+            continue
+        manifest = json.loads(body)
+        if isinstance(manifest, dict) and manifest.get("config", {}).get("digest") == config_digest:
+            names.add(digest)
+    return names
+
+
 def artifact():
+    """Bind the archive to the tested image and load it; return the local ID and config digest."""
     image_id = Path("nvm-image.id").read_text().strip()
     if not DIGEST.fullmatch(image_id):
         raise ValueError("invalid image artifact ID")
@@ -165,11 +195,20 @@ def artifact():
         if len(entries) != 1:
             raise ValueError("image archive must contain one image")
         config = archive.extractfile(entries[0]["Config"]).read()
-    config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
-    if config_digest != image_id:
+        config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+        names = archive_names(archive, config_digest)
+    if image_id not in names:
         raise ValueError("image archive config differs from the tested image ID")
     metadata = json.loads(Path("nvm-build-metadata.json").read_text())
-    if not isinstance(metadata, dict) or metadata.get("containerimage.config.digest") != config_digest:
+    if not isinstance(metadata, dict):
+        raise ValueError("build metadata differs from the tested image config")
+    # With the classic store BuildKit's metadata names the config digest. With
+    # the containerd store it names only the manifest digest, the image ID there.
+    if "containerimage.config.digest" in metadata:
+        built = metadata["containerimage.config.digest"] == config_digest
+    else:
+        built = metadata.get("containerimage.digest") == image_id
+    if not built:
         raise ValueError("build metadata differs from the tested image config")
     provenance = metadata.get("buildx.build.provenance")
     if not isinstance(provenance, dict) or not provenance:
@@ -177,13 +216,19 @@ def artifact():
     platform = json.loads(config)
     if platform.get("os") != "linux" or platform.get("architecture") != "amd64":
         raise ValueError("image archive is not linux/amd64")
-    subprocess.run(("docker", "load", "-i", "nvm-image.tar"), check=True)
-    if run("docker", "image", "inspect", "-f", "{{.Id}}", image_id) != image_id:
+    # The loading runner's image store may differ from the one that built the image.
+    loaded = re.findall(r"(?m)^Loaded image ID: (sha256:[0-9a-f]{64})$", run("docker", "load", "-i", "nvm-image.tar"))
+    if len(loaded) != 1 or loaded[0] not in names:
         raise ValueError("loaded image differs from the tested image ID")
+    if run("docker", "image", "inspect", "-f", "{{.Id}}", loaded[0]) != loaded[0]:
+        raise ValueError("loaded image differs from the tested image ID")
+    return loaded[0], config_digest
+
+
+def tested_sbom():
     sbom = json.loads(Path("nvm-image.spdx.json").read_text())
     if not sbom.get("spdxVersion", "").startswith("SPDX-") or not sbom.get("packages"):
         raise ValueError("image SBOM is missing SPDX package data")
-    return image_id, config_digest
 
 
 def readback(registry, reference, config_digest):
@@ -241,6 +286,10 @@ def receipt(version, digest, latest):
 
 
 def main(command):
+    if command == "artifact":
+        # The image job runs this check on every build, before any tag exists.
+        artifact()
+        return
     version = validate()
     if command == "validate":
         return
@@ -248,6 +297,7 @@ def main(command):
         raise ValueError("unknown command")
     attestation_mode()
     image_id, config_digest = artifact()
+    tested_sbom()
     registry = Registry()
     if command == "publish":
         if registry.manifest(version, missing=True) is None:

@@ -75,6 +75,12 @@ requireRule(!/rust:1-bookworm@sha256:[a-f0-9]{64}/.test(container), 'do not dupl
 writeRun(container, 'container.sh');
 const upload = step(image, 'upload the image for the release job');
 for (const file of ['nvm-build-metadata.json', 'nvm-image.id']) requireRule(upload?.includes('            ' + file + '\n'), 'retain ' + file);
+const imageSteps = image.split(/(?=^      - (?:name:|uses:))/m);
+const accepts = imageSteps.findIndex(value => value.startsWith('      - name: the release accepts this artifact\n'));
+const exported = imageSteps.findIndex(value => value.startsWith('      - name: export the image with its id\n'));
+requireRule(accepts > exported && exported >= 0, 'check the release artifact right after the archive exists');
+requireRule(imageSteps[accepts].includes('python3 .github/scripts/ghcr_release.py artifact') && !/^        if:/m.test(imageSteps[accepts]),
+    'every image build runs the release artifact check');
 const release = job('release');
 const merged = step(release, 'require a merged main pull request');
 requireRule(release.includes('      pull-requests: read\n'), 'release needs read-only pull request access');

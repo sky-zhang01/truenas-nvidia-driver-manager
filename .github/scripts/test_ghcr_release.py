@@ -221,45 +221,99 @@ class ReleaseTests(unittest.TestCase):
             r.request("https://ghcr.io/test", {})
         self.assertEqual(opening.call_count, 1)
 
-    def image_archive(self):
+    def image_archive(self, store="classic"):
+        """Write an archive as docker save does; return the tested ID, config and manifest digests."""
         config = json.dumps({"os": "linux", "architecture": "amd64"}).encode()
-        image_id = "sha256:" + hashlib.sha256(config).hexdigest()
+        config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+        manifest = json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                               "config": {"digest": config_digest}, "layers": []}).encode()
+        manifest_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        self.write_archive({"manifest.json": json.dumps([{"Config": "blobs/sha256/" + config_digest[7:]}]).encode(),
+                            "index.json": json.dumps({"manifests": [{"digest": manifest_digest}]}).encode(),
+                            "blobs/sha256/" + config_digest[7:]: config,
+                            "blobs/sha256/" + manifest_digest[7:]: manifest})
+        provenance = {"buildType": "https://mobyproject.org/buildkit@v1"}
+        if store == "classic":
+            image_id = config_digest
+            metadata = {"containerimage.config.digest": config_digest, "containerimage.digest": DIGEST,
+                        "buildx.build.provenance": provenance}
+        else:
+            image_id = manifest_digest
+            metadata = {"containerimage.digest": manifest_digest, "buildx.build.provenance": provenance}
         Path("nvm-image.id").write_text(image_id)
-        Path("nvm-build-metadata.json").write_text(json.dumps({"containerimage.config.digest": image_id,
-            "buildx.build.provenance": {"buildType": "https://mobyproject.org/buildkit@v1"}}))
+        Path("nvm-build-metadata.json").write_text(json.dumps(metadata))
+        return image_id, config_digest, manifest_digest
+
+    @staticmethod
+    def write_archive(members):
         with tarfile.open("nvm-image.tar", "w") as archive:
-            for name, body in (("manifest.json", b'[{"Config":"config.json"}]'), ("config.json", config)):
+            for name, body in members.items():
                 entry = tarfile.TarInfo(name)
                 entry.size = len(body)
                 archive.addfile(entry, io.BytesIO(body))
-        return image_id
 
-    def test_artifact_config_and_loaded_id(self):
-        image_id = self.image_archive()
-        with patch.object(r.subprocess, "run"), patch.object(r, "run", return_value=image_id):
-            self.assertEqual(r.artifact(), (image_id, image_id))
-        with patch.object(r.subprocess, "run"), patch.object(r, "run", return_value=DIGEST), self.assertRaises(ValueError):
-            r.artifact()
+    @staticmethod
+    def docker(*loaded):
+        """Answer docker load with the given image IDs and docker image inspect with its argument."""
+        return lambda *args: ("\n".join("Loaded image ID: " + value for value in loaded)
+                              if args[1] == "load" else args[-1])
+
+    def test_artifact_binds_either_store_and_loads_into_either_store(self):
+        for store in ("classic", "containerd"):
+            image_id, config_digest, manifest_digest = self.image_archive(store)
+            for loaded in (config_digest, manifest_digest):
+                with self.subTest(store=store, loaded=loaded), patch.object(r, "run", side_effect=self.docker(loaded)):
+                    self.assertEqual(r.artifact(), (loaded, config_digest))
 
     def test_artifact_rejects_archive_not_matching_tested_id_before_load(self):
-        self.image_archive()
-        Path("nvm-image.id").write_text(CONFIG)
-        with patch.object(r.subprocess, "run") as process, patch.object(r, "run", return_value=CONFIG):
-            with self.assertRaisesRegex(ValueError, "archive.*tested image"):
+        for store in ("classic", "containerd"):
+            self.image_archive(store)
+            Path("nvm-image.id").write_text(CONFIG)
+            with self.subTest(store=store), patch.object(r, "run") as docker:
+                with self.assertRaisesRegex(ValueError, "archive.*tested image"):
+                    r.artifact()
+                docker.assert_not_called()
+
+    def test_artifact_ignores_index_entries_whose_bytes_differ(self):
+        _, config_digest, _ = self.image_archive("containerd")
+        manifest = json.dumps({"config": {"digest": config_digest}}).encode()
+        self.write_archive({"manifest.json": json.dumps([{"Config": "blobs/sha256/" + config_digest[7:]}]).encode(),
+                            "index.json": json.dumps({"manifests": [{"digest": DIGEST}]}).encode(),
+                            "blobs/sha256/" + config_digest[7:]: json.dumps({"os": "linux", "architecture": "amd64"}).encode(),
+                            "blobs/sha256/" + DIGEST[7:]: manifest})
+        Path("nvm-image.id").write_text(DIGEST)
+        Path("nvm-build-metadata.json").write_text(json.dumps({"containerimage.digest": DIGEST,
+            "buildx.build.provenance": {"buildType": "https://mobyproject.org/buildkit@v1"}}))
+        with patch.object(r, "run") as docker, self.assertRaisesRegex(ValueError, "archive.*tested image"):
+            r.artifact()
+        docker.assert_not_called()
+
+    def test_artifact_rejects_a_loaded_image_outside_the_archive(self):
+        _, config_digest, manifest_digest = self.image_archive("containerd")
+        for loaded in ((DIGEST,), (), (config_digest, manifest_digest)):
+            with self.subTest(loaded=loaded), patch.object(r, "run", side_effect=self.docker(*loaded)):
+                with self.assertRaisesRegex(ValueError, "loaded image"):
+                    r.artifact()
+        with patch.object(r, "run", side_effect=lambda *args: "Loaded image ID: " + config_digest if args[1] == "load" else DIGEST):
+            with self.assertRaisesRegex(ValueError, "loaded image"):
                 r.artifact()
-            process.assert_not_called()
 
     def test_artifact_requires_matching_metadata_and_native_provenance(self):
-        image_id = self.image_archive()
-        for metadata in (None, [], {"containerimage.config.digest": CONFIG, "buildx.build.provenance": {"buildType": "test"}},
-                         {"containerimage.config.digest": image_id},
-                         {"containerimage.config.digest": image_id, "buildx.build.provenance": {}},
-                         {"containerimage.config.digest": image_id, "buildx.build.provenance": []}):
-            Path("nvm-build-metadata.json").write_text(json.dumps(metadata))
-            with self.subTest(metadata=metadata), patch.object(r.subprocess, "run") as process:
-                with self.assertRaises(ValueError):
-                    r.artifact()
-                process.assert_not_called()
+        provenance = {"buildType": "https://mobyproject.org/buildkit@v1"}
+        for store in ("classic", "containerd"):
+            image_id, config_digest, manifest_digest = self.image_archive(store)
+            for metadata in (None, [], {"buildx.build.provenance": provenance},
+                             {"containerimage.config.digest": CONFIG, "containerimage.digest": image_id,
+                              "buildx.build.provenance": provenance},
+                             {"containerimage.digest": DIGEST, "buildx.build.provenance": provenance},
+                             {"containerimage.config.digest": config_digest},
+                             {"containerimage.config.digest": config_digest, "buildx.build.provenance": {}},
+                             {"containerimage.digest": manifest_digest, "buildx.build.provenance": []}):
+                Path("nvm-build-metadata.json").write_text(json.dumps(metadata))
+                with self.subTest(store=store, metadata=metadata), patch.object(r, "run") as docker:
+                    with self.assertRaises(ValueError):
+                        r.artifact()
+                    docker.assert_not_called()
 
     def test_receipt_binds_evidence_bytes_and_describes_record_mode(self):
         self.assertEqual(r.attestation_mode(), "github")
@@ -276,6 +330,33 @@ class ReleaseTests(unittest.TestCase):
                 self.assertFalse(receipt["build_record"]["github_signed"])
                 self.assertEqual(receipt["sbom"]["sha256"],
                                  hashlib.sha256(Path("nvm-image.spdx.json").read_bytes()).hexdigest())
+
+    @patch.object(r, "validate")
+    @patch.object(r, "artifact", return_value=(CONFIG, CONFIG))
+    @patch.object(r, "Registry")
+    def test_artifact_command_checks_a_build_without_a_tag(self, registry, artifact, validate):
+        with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/1/merge"}):
+            r.main("artifact")
+        artifact.assert_called_once_with()
+        validate.assert_not_called()
+        registry.assert_not_called()
+
+    def test_artifact_command_rejects_an_image_id_outside_the_archive(self):
+        self.image_archive("containerd")
+        Path("nvm-image.id").write_text(DIGEST)
+        with patch.object(r, "run") as docker, self.assertRaisesRegex(ValueError, "archive.*tested image"):
+            r.main("artifact")
+        docker.assert_not_called()
+
+    @patch.object(r, "validate", return_value="0.2.0")
+    @patch.object(r, "artifact", return_value=(CONFIG, CONFIG))
+    @patch.object(r, "Registry")
+    def test_publication_requires_the_tested_sbom(self, registry, artifact, validate):
+        for body in ('{"spdxVersion":"SPDX-2.3","packages":[]}', '{"packages":[{}]}'):
+            Path("nvm-image.spdx.json").write_text(body)
+            with self.subTest(body=body), self.assertRaisesRegex(ValueError, "SBOM"):
+                r.main("publish")
+        registry.assert_not_called()
 
     @patch.object(r, "validate", return_value="0.2.0")
     @patch.object(r, "artifact", return_value=(CONFIG, CONFIG))
