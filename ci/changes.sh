@@ -31,6 +31,8 @@ classify_path() { # classify_path <path> — echo the switch set; empty = static
         # build container.
         docker/*) echo "rust e2e image build_kit" ;;
         Cargo.toml|Cargo.lock) echo "rust e2e image locks" ;;
+        # Accepted dependency findings: a change re-runs the dependency scan.
+        osv-scanner.toml) echo "locks" ;;
         # Unit tests run in static; browser tests do not enter runtime assets.
         web/test/*) echo "" ;;
         web/e2e/*|web/playwright.config.ts) echo "e2e" ;;

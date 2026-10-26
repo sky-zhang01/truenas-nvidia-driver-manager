@@ -1023,7 +1023,7 @@ async fn versions(State((ctx, _)): State<AppState>) -> Response {
 /// exactly like the same reading's other failures: the catalog and the GPUs list an
 /// `unreadable` item, kernel header reading unreadable means no branch verdict, and module
 /// reading unreadable removes no branch and adds no item. An unreadable kernel only removes
-/// the version that requires a 6.12 kernel.
+/// the patched version that requires a 6.12 or 6.18 kernel.
 async fn read_versions(ctx: &Arc<Ctx>) -> Response {
     if !ctx.startup.pid_host_ok {
         return json_response(json!({
@@ -1037,7 +1037,9 @@ async fn read_versions(ctx: &Arc<Ctx>) -> Response {
         }));
     }
     let h1 = ctx.host.clone();
-    let catalog = bounded_reading_with(CATALOG_CMD_TIMEOUT, move || catalog_fetch(h1.as_ref()));
+    let catalog = bounded_reading_with(CATALOG_CMD_TIMEOUT, move || {
+        catalog::read_versions(h1.as_ref())
+    });
     let h2 = ctx.host.clone();
     let interfaces = bounded_reading(move || catalog::read_interfaces(h2.as_ref()));
     let h3 = ctx.host.clone();
@@ -1056,7 +1058,7 @@ async fn read_versions(ctx: &Arc<Ctx>) -> Response {
             // the failure reason is the reading's `{key, params}` object, not an internal
             // short code.
             crate::log::error_json(Event::CatalogQueryFailed, &[("reason", f.reason_json())]);
-            Err(catalog_item(f.reason_json(), ""))
+            Err(catalog::catalog_item(f.reason_json(), ""))
         }
     };
     let interfaces = match interfaces {
@@ -1180,58 +1182,6 @@ async fn read_versions(ctx: &Arc<Ctx>) -> Response {
         "unreadable": unreadable,
         "gpus": gpus_json,
     }))
-}
-
-/// catalog query with the failure classification. The curl stderr is the `raw` field of the
-/// versions item, whatever the reason kind.
-fn catalog_fetch(h: &dyn Host) -> Result<Vec<facts::Version>, Value> {
-    let out = match catalog::fetch(h) {
-        Ok(stdout) => stdout,
-        Err(out) => {
-            let reason = catalog::fetch_failure_reason(&out);
-            let (key, params) = match &reason {
-                crate::host::Reason::Keyed { key, params } => ((*key), params.clone()),
-                crate::host::Reason::Stderr(_) => match out.exit {
-                    crate::host::Exit::Code(code) => (REASON_EXIT_STATUS, json!({"code": code})),
-                    crate::host::Exit::Signal(signal) => (REASON_SIGNAL, json!({"signal": signal})),
-                    crate::host::Exit::TimedOut => (
-                        REASON_TIMED_OUT,
-                        json!({"seconds": CATALOG_CMD_TIMEOUT.as_secs()}),
-                    ),
-                    crate::host::Exit::SpawnFailed => (REASON_SPAWN_FAILED, json!({})),
-                },
-            };
-            let raw = out.stderr_text();
-            // the log's reason is the real `{key, params}` object and the curl stderr is the
-            // external raw of that same object.
-            let log_reason = crate::log::reason_object(key, params.clone(), Some(&raw));
-            crate::log::error_json(Event::CatalogQueryFailed, &[("reason", log_reason)]);
-            return Err(catalog_item(json!({"key": key, "params": params}), &raw));
-        }
-    };
-    let (body, status) = catalog::split_status(&out);
-    if status != Some(200) {
-        let reason = json!({"key": REASON_HTTP_STATUS, "params": {"status": status}});
-        crate::log::error_json(Event::CatalogQueryFailed, &[("reason", reason.clone())]);
-        return Err(catalog_item(reason, ""));
-    }
-    let versions = catalog::parse_index(&body);
-    if versions.is_empty() {
-        let reason = json!({"key": REASON_INDEX_UNRECOGNIZED, "params": {}});
-        crate::log::error_json(Event::CatalogQueryFailed, &[("reason", reason.clone())]);
-        return Err(catalog_item(reason, ""));
-    }
-    // A successful query writes no failure event.
-    Ok(versions)
-}
-
-/// One versions `unreadable` item; `raw` is written only when there is text.
-fn catalog_item(reason: Value, raw: &str) -> Value {
-    let mut item = json!({"object": "catalog", "reason": reason});
-    if !raw.is_empty() {
-        item["raw"] = json!(raw);
-    }
-    item
 }
 
 /// The snapshot never takes process_lock: plans may be waiting for GPU release while it runs.

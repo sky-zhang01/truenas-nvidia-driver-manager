@@ -1,6 +1,6 @@
 # 第三方声明 / Third-party notices
 
-本仓库内含下列第三方材料。/ This repository contains the following third-party material.
+本项目包含或在运行时下载下列第三方材料。/ This project contains or downloads the following third-party material at runtime.
 
 ## 运行时依赖 / Runtime dependencies
 
@@ -36,6 +36,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Debian tesla-470 兼容补丁 / Debian tesla-470 compatibility patches
+
+- **来源 / Source:** Debian `nvidia-graphics-drivers-tesla-470` packaging, version `470.256.02-10`, `debian/module/debian/patches/series.in`; [固定 snapshot 归档 / Fixed snapshot archive](https://snapshot.debian.org/archive/debian/20261010T023936Z/pool/non-free/n/nvidia-graphics-drivers-tesla-470/nvidia-graphics-drivers-tesla-470_470.256.02-10.debian.tar.xz).
+- **作者 / Authors:** Debian 的 NVIDIA 维护者整理，主要作者为 Andreas Beckmann，另有数位贡献者。/ Maintained by Debian's NVIDIA maintainers; most patches are by Andreas Beckmann, with contributions from several others.
+- **使用方式 / Use:** 程序在构建时从 snapshot.debian.org 下载归档，并按补丁列表顺序原样应用全部 54 个补丁。补丁不随本程序分发，也不包含在本仓库中。/ At build time the manager downloads the archive from snapshot.debian.org and applies all 54 patches unchanged in series order. The patches are not distributed with the manager or included in this repository.
+- **许可 / License:** Debian `debian/copyright` 的 `anbe-public-domain` 条款将这些补丁标为放弃版权的公有领域声明。/ Debian's `debian/copyright` identifies these patches under `anbe-public-domain`, a public-domain dedication waiving copyright.
+
+## 内核测试样本 / Kernel test fixtures
+
+`tests/fixtures/kernel/25.10.7-Makefile.lib` 为 [release/25.10.7 的真实摘录](https://github.com/truenas/linux/blob/release/25.10.7/scripts/Makefile.lib)，`tests/fixtures/kernel/27.0.0-RC.1-Makefile.lib` 保留 [release/27.0.0-RC.1 全文](https://github.com/truenas/linux/blob/release/27.0.0-RC.1/scripts/Makefile.lib)。两份样本来自 `truenas/linux`，仅用于测试，均按原文 SPDX 标识采用 `GPL-2.0`，不适用本项目的 MIT 许可。
+
+The `truenas/linux` test fixtures contain an excerpt from release/25.10.7 and the full release/27.0.0-RC.1 file linked above. Both are used only for tests and retain their source's `GPL-2.0` SPDX license identifier; the project's MIT license does not apply to them.
 
 ## `docker/build-driver.sh`
 

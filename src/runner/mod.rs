@@ -79,6 +79,11 @@ impl RunCtx {
     /// Run a host command and record it in the task log.
     pub fn cmd(&self, cmd: &Cmd) -> Output {
         let out = self.host.run(cmd);
+        self.log_cmd(cmd, &out);
+        out
+    }
+
+    pub(crate) fn log_cmd(&self, cmd: &Cmd, out: &Output) {
         let params = if cmd.program == "systemd-sysext" {
             // The full stdout above is used for parsing. The log retains only
             // bounded verbatim diagnostics from each stream.
@@ -97,7 +102,6 @@ impl RunCtx {
             })
         };
         self.log(LogKey::Cmd, params);
-        out
     }
 
     /// Record a failure; `finish` commits the terminal state after the final observations.

@@ -47,5 +47,5 @@ test("the update page ties the select to its descriptions", async ({ page, reque
   await page.goto("/#/update");
   const select = page.locator("#version-select");
   await expect(select).toHaveAttribute("aria-describedby", "catalog-describe");
-  await expect(page.locator("#catalog-describe")).toContainText(/versions that build on this host and support the selected GPUs|本机能构建、且支持所选显卡的版本/);
+  await expect(page.locator("#catalog-describe")).toContainText(/latest version of each branch that builds on this host|列表为各分支在本机可构建的最新版本/);
 });

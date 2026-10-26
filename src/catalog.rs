@@ -1,6 +1,7 @@
 //! Version index, branch table, GPU table and kernel module type.
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::codes::*;
 use crate::facts::{self, ModuleLine, Reading, Version};
@@ -73,7 +74,9 @@ pub fn community_patch_470(is_official: bool, version: &str, kernel: &str) -> bo
     }
     let mut fields = kernel.splitn(3, '.');
     matches!(fields.next(), Some("6"))
-        && matches!(fields.next(), Some("12"))
+        && fields
+            .next()
+            .is_some_and(|minor| COMMUNITY_PATCH_KERNEL_SERIES.contains(&minor))
         && fields
             .next()
             .is_some_and(|patch| patch.as_bytes().first().is_some_and(u8::is_ascii_digit))
@@ -145,22 +148,144 @@ pub fn fetch_failure_reason(out: &crate::host::Output) -> crate::host::Reason {
     }
 }
 
-// ---- Branch table -------------------------------------------
+/// catalog query with the failure classification. The curl stderr is the `raw` field of the
+/// versions item, whatever the reason kind.
+pub fn read_versions(h: &dyn Host) -> Result<Vec<Version>, serde_json::Value> {
+    let out = match fetch(h) {
+        Ok(stdout) => stdout,
+        Err(out) => {
+            let reason = fetch_failure_reason(&out);
+            let (key, params) = match &reason {
+                crate::host::Reason::Keyed { key, params } => ((*key), params.clone()),
+                crate::host::Reason::Stderr(_) => match out.exit {
+                    crate::host::Exit::Code(code) => (REASON_EXIT_STATUS, json!({"code": code})),
+                    crate::host::Exit::Signal(signal) => (REASON_SIGNAL, json!({"signal": signal})),
+                    crate::host::Exit::TimedOut => (
+                        REASON_TIMED_OUT,
+                        json!({"seconds": CATALOG_CMD_TIMEOUT.as_secs()}),
+                    ),
+                    crate::host::Exit::SpawnFailed => (REASON_SPAWN_FAILED, json!({})),
+                },
+            };
+            let raw = out.stderr_text();
+            // the log's reason is the real `{key, params}` object and the curl stderr is the
+            // external raw of that same object.
+            let log_reason = crate::log::reason_object(key, params.clone(), Some(&raw));
+            crate::log::error_json(Event::CatalogQueryFailed, &[("reason", log_reason)]);
+            return Err(catalog_item(json!({"key": key, "params": params}), &raw));
+        }
+    };
+    let (body, status) = split_status(&out);
+    if status != Some(200) {
+        let reason = json!({"key": REASON_HTTP_STATUS, "params": {"status": status}});
+        crate::log::error_json(Event::CatalogQueryFailed, &[("reason", reason.clone())]);
+        return Err(catalog_item(reason, ""));
+    }
+    let versions = parse_index(&body);
+    if versions.is_empty() {
+        let reason = json!({"key": REASON_INDEX_UNRECOGNIZED, "params": {}});
+        crate::log::error_json(Event::CatalogQueryFailed, &[("reason", reason.clone())]);
+        return Err(catalog_item(reason, ""));
+    }
+    // A successful query writes no failure event.
+    Ok(versions)
+}
 
-const PCI_RESIZE_ADAPTED_580: &str = "580.126.09";
+/// One versions `unreadable` item; `raw` is written only when there is text.
+pub(crate) fn catalog_item(reason: serde_json::Value, raw: &str) -> serde_json::Value {
+    let mut item = json!({"object": "catalog", "reason": reason});
+    if !raw.is_empty() {
+        item["raw"] = json!(raw);
+    }
+    item
+}
+
+// ---- Branch table -------------------------------------------
 
 pub type BranchSet = &'static [u32];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    Absent,
+    Present,
+    Args(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    FollowPfn,
+    OutputPollChanged,
+    PciResizeResource,
+    ExtraCflags,
+    FbCreateFormatInfo,
+}
+
+impl Probe {
+    const ALL: [Probe; 5] = [
+        Self::FollowPfn,
+        Self::OutputPollChanged,
+        Self::PciResizeResource,
+        Self::ExtraCflags,
+        Self::FbCreateFormatInfo,
+    ];
+
+    fn header(self) -> &'static str {
+        match self {
+            Self::FollowPfn => "/usr/src/linux-headers-truenas-production-amd64/include/linux/mm.h",
+            Self::OutputPollChanged | Self::FbCreateFormatInfo => {
+                "/usr/src/linux-headers-truenas-production-amd64/include/drm/drm_mode_config.h"
+            }
+            Self::PciResizeResource => {
+                "/usr/src/linux-headers-truenas-production-amd64/include/linux/pci.h"
+            }
+            Self::ExtraCflags => {
+                "/usr/src/linux-headers-truenas-production-amd64/scripts/Makefile.lib"
+            }
+        }
+    }
+
+    fn parse(self, text: &str) -> Reading<Seen> {
+        match self {
+            Self::FollowPfn => presence(text.contains("follow_pfn(")),
+            Self::OutputPollChanged => presence(text.contains("(*output_poll_changed)(")),
+            Self::PciResizeResource => parse_pci_resize_args(text),
+            Self::ExtraCflags => presence(supports_extra_cflags(text)),
+            Self::FbCreateFormatInfo => parse_fb_create_format_info(text),
+        }
+    }
+}
+
+fn presence(present: bool) -> Reading<Seen> {
+    Reading::Value(if present { Seen::Present } else { Seen::Absent })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fires {
+    WhenAbsent,
+    WhenPresent,
+    WhenArgsOtherThan(u32),
+}
+
+impl Fires {
+    fn matches(self, seen: Seen) -> bool {
+        match (self, seen) {
+            (Self::WhenAbsent, Seen::Absent) | (Self::WhenPresent, Seen::Present) => true,
+            (Self::WhenArgsOtherThan(expected), Seen::Args(actual)) => expected != actual,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Condition {
     Always,
-    FollowPfnAbsent,
-    OutputPollChangedAbsent,
-    PciResizeResourceArgs(u32),
+    Reads(Probe, Fires),
 }
 
 pub struct BranchRule {
     pub branches: BranchSet,
+    pub below: &'static [&'static str],
+    pub open_only: bool,
     pub when: Condition,
     pub reason: &'static str,
     pub source: &'static str,
@@ -176,27 +301,53 @@ pub struct ModuleRule {
 pub static BRANCHES: &[BranchRule] = &[
     BranchRule {
         branches: &[470, 495, 510, 515, 520, 525, 530, 545],
-        when: Condition::FollowPfnAbsent,
+        below: &[],
+        open_only: false,
+        when: Condition::Reads(Probe::FollowPfn, Fires::WhenAbsent),
         reason: BRANCH_FOLLOW_PFN_REMOVED,
         source: "NVIDIA/open-gpu-kernel-modules 470.256.02-545.29.06 kernel/nvidia/os-mlock.c; torvalds/linux v6.9 has follow_pfn(), v6.10 removed it; truenas/linux release/25.10.7 has none (2026-09-28)",
     },
     BranchRule {
         branches: &[470, 495, 510, 515, 520, 525, 530, 545, 555, 560],
-        when: Condition::OutputPollChangedAbsent,
+        below: &[],
+        open_only: false,
+        when: Condition::Reads(Probe::OutputPollChanged, Fires::WhenAbsent),
         reason: BRANCH_OUTPUT_POLL_CHANGED_REMOVED,
         source: "driver kernels set .output_poll_changed unconditionally (470.256.02-560.35.03); include/drm/drm_mode_config.h has it in v6.11, not in v6.12 or truenas release/25.10.7 (2026-09-28)",
     },
     BranchRule {
         branches: &[545, 550, 555, 560, 565, 570, 575],
-        when: Condition::PciResizeResourceArgs(3),
+        below: &["580.126.09"],
+        open_only: true,
+        when: Condition::Reads(Probe::PciResizeResource, Fires::WhenArgsOtherThan(3)),
         reason: BRANCH_PCI_RESIZE_RESOURCE_ARGS,
         source: "kernel-open/nvidia/nv-pci.c calls pci_resize_resource() with 3 arguments (545.29.06-575.64.05); this condition does not apply to proprietary modules or an unspecified installer type; include/linux/pci.h has 3 in v6.12.96 and 4 in v6.12.97/6.12.105 and truenas release/25.10.7; 580.119.02 lacks the detection; 580.126.09 adds it (2026-10-21)",
     },
     BranchRule {
         branches: &[510, 515, 520, 525, 530, 535],
+        below: &[],
+        open_only: false,
         when: Condition::Always,
         reason: BRANCH_INSTALLER_LOADS_MODULE,
         source: "nvidia-installer 510.108.03-535.247.01 try to load the new module or run modprobe after installing; the zero-capability build container refuses (2026-09-28)",
+    },
+    BranchRule {
+        branches: &[
+            470, 495, 510, 515, 520, 525, 530, 535, 545, 550, 555, 560, 565,
+        ],
+        below: &["570.153.02", "575.57.08"],
+        open_only: false,
+        when: Condition::Reads(Probe::ExtraCflags, Fires::WhenAbsent),
+        reason: BRANCH_EXTRA_CFLAGS_REMOVED,
+        source: "Linux v6.15 commit e966ad0edd00 (Masahiro Yamada, 2025-02-06) removed both scripts/Makefile.build initialization and scripts/Makefile.lib ccflags-y += $(EXTRA_CFLAGS); truenas/linux release/25.10.7 has the effective append in Makefile.lib:4, release/27.0.0-RC.1 has none; official kernel and kernel-open Kbuild use EXTRA_CFLAGS in 570.124.04, 570.133.07, 570.144 and 575.51.02, and ccflags-y in 570.153.02, 575.57.08 and 580.65.06; Debian tesla-470 470.256.02-10 patch 0065 backports the change; unpatched 470.256.02, 550.163.01 and 565.77 fail with 6.18.52 headers (2026-10-24)",
+    },
+    BranchRule {
+        branches: &[575],
+        below: &[],
+        open_only: false,
+        when: Condition::Reads(Probe::FbCreateFormatInfo, Fires::WhenPresent),
+        reason: BRANCH_FB_CREATE_FORMAT_INFO,
+        source: "Known-version rule for 575: Linux v6.17 added a drm_format_info argument to fb_create (joanbm nvidia-470xx-fix-linux-6.17.patch and Debian tesla-470 patch 0074); truenas/linux release/27.0.0-RC.1 include/drm/drm_mode_config.h:83-86 has it, release/25.10.7 does not; 575.64.05 production entry first fails Building kernel modules, then the installer's nvidia-uvm-only rebuild reports unresolved nvUvmInterface* (main-build details were not retained); direct make with the same 6.18.52 headers reports nvidia-drm errors in fb_create, drm_helper_mode_fill_fb_struct and pfn_to_pfn_t; 570.211.01 proprietary and 580.196.07 build (2026-10-24)",
     },
 ];
 
@@ -215,41 +366,36 @@ pub static MODULE_RULES: &[ModuleRule] = &[
     },
 ];
 
-/// Kernel interfaces used by the driver compatibility rules.
+/// Fixed probe readings, indexed only through the typed Probe enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KernelInterfaces {
-    pub follow_pfn: Reading<bool>,
-    pub output_poll_changed: Reading<bool>,
-    pub pci_resize_resource_args: Reading<Option<u32>>,
-}
+pub struct KernelInterfaces([Reading<Seen>; 5]);
 
 impl KernelInterfaces {
-    pub fn all_unknown(reason: &'static str) -> KernelInterfaces {
-        KernelInterfaces {
-            follow_pfn: Reading::Unknown(reason),
-            output_poll_changed: Reading::Unknown(reason),
-            pci_resize_resource_args: Reading::Unknown(reason),
-        }
+    fn from_probes(read: impl FnMut(Probe) -> Reading<Seen>) -> Self {
+        Self(Probe::ALL.map(read))
+    }
+
+    pub fn all_unknown(reason: &'static str) -> Self {
+        Self::from_probes(|_| Reading::Unknown(reason))
+    }
+
+    pub fn get(&self, probe: Probe) -> &Reading<Seen> {
+        &self.0[probe as usize]
     }
 
     pub fn complete(&self) -> bool {
-        self.follow_pfn.is_value()
-            && self.output_poll_changed.is_value()
-            && self.pci_resize_resource_args.is_value()
+        self.0.iter().all(Reading::is_value)
+    }
+
+    #[cfg(test)]
+    fn with(mut self, probe: Probe, reading: Reading<Seen>) -> Self {
+        self.0[probe as usize] = reading;
+        self
     }
 }
 
-/// Header files used by the compatibility probes.
-pub fn header_paths() -> [&'static str; 3] {
-    [
-        "/usr/src/linux-headers-truenas-production-amd64/include/linux/mm.h",
-        "/usr/src/linux-headers-truenas-production-amd64/include/drm/drm_mode_config.h",
-        "/usr/src/linux-headers-truenas-production-amd64/include/linux/pci.h",
-    ]
-}
-
 /// Count the arguments of every `pci_resize_resource(` declaration.
-pub fn parse_pci_resize_args(text: &str) -> Reading<Option<u32>> {
+pub fn parse_pci_resize_args(text: &str) -> Reading<Seen> {
     let needle = b"pci_resize_resource(";
     let bytes = text.as_bytes();
     let mut best: Option<u32> = None;
@@ -284,57 +430,123 @@ pub fn parse_pci_resize_args(text: &str) -> Reading<Option<u32>> {
             i += 1;
         }
     }
-    Reading::Value(best)
+    Reading::Value(best.map_or(Seen::Absent, Seen::Args))
 }
 
-/// kernel header reading: read the three kernel interface readings. The three reads share one
-/// `READING_TIMEOUT` deadline; a read that completes only after the deadline counts as
-/// unreadable.
+/// Read each distinct header once under the shared READING_TIMEOUT deadline.
 pub fn read_interfaces(h: &dyn Host) -> KernelInterfaces {
     let start = h.now();
-    let paths = header_paths();
-    let follow_pfn = read_header_bool(h, paths[0], b"follow_pfn(", start);
-    let output_poll_changed = read_header_bool(h, paths[1], b"(*output_poll_changed)(", start);
-    let pci = read_pci_interface(h, paths[2], start);
-    KernelInterfaces {
-        follow_pfn,
-        output_poll_changed,
-        pci_resize_resource_args: pci,
+    let mut files: Vec<(&'static str, Reading<String>)> = Vec::new();
+    KernelInterfaces::from_probes(|probe| {
+        let header = probe.header();
+        let index = match files.iter().position(|(path, _)| *path == header) {
+            Some(index) => index,
+            None => {
+                files.push((header, read_header(h, header, start)));
+                files.len() - 1
+            }
+        };
+        match &files[index].1 {
+            Reading::Value(text) => probe.parse(text),
+            Reading::Unknown(reason) => Reading::Unknown(reason),
+        }
+    })
+}
+
+/// Recognize kbuild's effective compatibility append, excluding comments and
+/// similarly named variables. Keep the exact assignment and expansion intact.
+fn supports_extra_cflags(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        line.strip_prefix("ccflags-y")
+            .and_then(|rest| rest.trim_start().strip_prefix("+="))
+            .is_some_and(|rest| rest.trim() == "$(EXTRA_CFLAGS)")
+    })
+}
+
+fn strip_c_comments(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"/*") {
+            let end = bytes[i + 2..].windows(2).position(|w| w == b"*/")?;
+            out.push(b' ');
+            i += end + 4;
+        } else if bytes[i..].starts_with(b"//") {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
     }
+    Some(out)
+}
+
+/// Find the unique whitespace-tolerant callback anchor, then inspect only the
+/// fragment ending at its first semicolon. This is a header probe, not a C parser.
+pub fn parse_fb_create_format_info(text: &str) -> Reading<Seen> {
+    let unknown = Reading::Unknown(REASON_FORMAT_UNRECOGNIZED);
+    let Some(bytes) = strip_c_comments(text) else {
+        return unknown;
+    };
+    let mut anchor_end = None;
+    for start in 0..bytes.len() {
+        if bytes[start] != b'(' {
+            continue;
+        }
+        let mut end = start;
+        let matched = [b"(".as_slice(), b"*", b"fb_create", b")", b"("]
+            .iter()
+            .all(|token| {
+                while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+                    end += 1;
+                }
+                if !bytes[end..].starts_with(token) {
+                    return false;
+                }
+                end += token.len();
+                true
+            });
+        if matched {
+            if anchor_end.is_some() {
+                return unknown;
+            }
+            anchor_end = Some(end);
+        }
+    }
+    let Some(start) = anchor_end else {
+        return unknown;
+    };
+    let Some(end) = bytes[start..].iter().position(|byte| *byte == b';') else {
+        return unknown;
+    };
+    let tokens: Vec<_> = bytes[start..start + end]
+        .split(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+        .filter(|token| !token.is_empty())
+        .collect();
+    presence(
+        tokens
+            .windows(2)
+            .any(|pair| pair == [b"struct".as_slice(), b"drm_format_info".as_slice()]),
+    )
 }
 
 fn header_deadline_expired(h: &dyn Host, start: std::time::Instant) -> bool {
     h.now().saturating_duration_since(start) >= READING_TIMEOUT
 }
 
-/// Read one header and answer whether it carries `needle`.
-fn read_header_bool(
-    h: &dyn Host,
-    path: &str,
-    needle: &[u8],
-    start: std::time::Instant,
-) -> Reading<bool> {
+fn read_header(h: &dyn Host, path: &str, start: std::time::Instant) -> Reading<String> {
     if header_deadline_expired(h, start) {
         return Reading::Unknown(REASON_TIMED_OUT);
     }
     let p = h.view(std::path::Path::new(path));
     let value = match h.read(&p) {
-        Ok(bytes) => Reading::Value(bytes.windows(needle.len()).any(|w| w == needle)),
-        Err(e) => Reading::Unknown(crate::log::io_reason_key(&e)),
-    };
-    if header_deadline_expired(h, start) {
-        return Reading::Unknown(REASON_TIMED_OUT);
-    }
-    value
-}
-
-fn read_pci_interface(h: &dyn Host, path: &str, start: std::time::Instant) -> Reading<Option<u32>> {
-    if header_deadline_expired(h, start) {
-        return Reading::Unknown(REASON_TIMED_OUT);
-    }
-    let p = h.view(std::path::Path::new(path));
-    let value = match h.read(&p) {
-        Ok(bytes) => parse_pci_resize_args(&String::from_utf8_lossy(&bytes)),
+        Ok(bytes) => Reading::Value(String::from_utf8_lossy(&bytes).into_owned()),
         Err(e) => Reading::Unknown(crate::log::io_reason_key(&e)),
     };
     if header_deadline_expired(h, start) {
@@ -353,19 +565,7 @@ pub enum BranchVerdict {
 fn condition_verdict(c: Condition, k: &KernelInterfaces) -> Option<bool> {
     match c {
         Condition::Always => Some(true),
-        Condition::FollowPfnAbsent => match k.follow_pfn {
-            Reading::Value(has) => Some(!has),
-            Reading::Unknown(_) => None,
-        },
-        Condition::OutputPollChangedAbsent => match k.output_poll_changed {
-            Reading::Value(has) => Some(!has),
-            Reading::Unknown(_) => None,
-        },
-        Condition::PciResizeResourceArgs(n) => match k.pci_resize_resource_args {
-            Reading::Value(Some(m)) => Some(m != n),
-            Reading::Value(None) => Some(false),
-            Reading::Unknown(_) => None,
-        },
+        Condition::Reads(probe, fires) => k.get(probe).value().map(|seen| fires.matches(*seen)),
     }
 }
 
@@ -374,12 +574,13 @@ fn rule_applies(
     version: &Version,
     module_type: Option<KernelModuleType>,
 ) -> bool {
-    let old_580 = matches!(rule.when, Condition::PciResizeResourceArgs(_))
-        && version.major() == 580
-        && version < &facts::parse_version_exact(PCI_RESIZE_ADAPTED_580).unwrap();
-    (rule.branches.contains(&version.major()) || old_580)
-        && (!matches!(rule.when, Condition::PciResizeResourceArgs(_))
-            || module_type == Some(KernelModuleType::Open))
+    (!rule.open_only || module_type == Some(KernelModuleType::Open))
+        && (rule.branches.contains(&version.major())
+            || rule
+                .below
+                .iter()
+                .filter_map(|boundary| facts::parse_version_exact(boundary))
+                .any(|boundary| boundary.major() == version.major() && version < &boundary))
 }
 
 /// Decide the conditions applicable to the planned module type. An unspecified type leaves
@@ -410,7 +611,7 @@ pub fn verdict(
     }
 }
 
-/// Official source verdict, including the one fixed 470/6.12 exception.
+/// Official source verdict, including the fixed 470 exception on 6.12 and 6.18.
 pub fn official_verdict(
     version: &Version,
     kernel: &str,
@@ -422,6 +623,40 @@ pub fn official_verdict(
     } else {
         verdict(version, k, module_type)
     }
+}
+
+/// The earliest replacement within this branch, when its failing rules have a boundary.
+pub fn branch_range(
+    version: &Version,
+    kernel: &str,
+    interfaces: &KernelInterfaces,
+    loaded: &Reading<Vec<ModuleLine>>,
+    module_type: Option<KernelModuleType>,
+) -> Option<String> {
+    if version.major() == 470 && community_patch_470(true, COMMUNITY_PATCH_VERSION, kernel) {
+        return Some(COMMUNITY_PATCH_VERSION.to_string());
+    }
+    let matching: Vec<_> = BRANCHES
+        .iter()
+        .filter(|rule| {
+            rule_applies(rule, version, module_type)
+                && condition_verdict(rule.when, interfaces) == Some(true)
+        })
+        .collect();
+    if matching
+        .iter()
+        .any(|rule| rule.branches.contains(&version.major()))
+        || !official_module_reasons(version, kernel, loaded).is_empty()
+    {
+        return None;
+    }
+    matching
+        .iter()
+        .flat_map(|rule| rule.below.iter())
+        .filter_map(|boundary| facts::parse_version_exact(boundary))
+        .filter(|boundary| boundary.major() == version.major() && version < boundary)
+        .max()
+        .map(|boundary| boundary.text().to_string())
 }
 
 /// Runtime conditions: modules that are not loaded make a branch fail.
@@ -460,57 +695,45 @@ pub struct HeaderUnreadable {
     pub path: &'static str,
 }
 
-/// The three header readings could not be completed.
+/// One or more kernel interface readings could not be completed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadersUnreadable {
     pub items: Vec<HeaderUnreadable>,
 }
 
 impl HeadersUnreadable {
-    pub fn from_interfaces(k: &KernelInterfaces) -> HeadersUnreadable {
-        let paths = header_paths();
-        let mut items = Vec::new();
-        if let Reading::Unknown(reason) = k.follow_pfn {
-            items.push(HeaderUnreadable {
-                reason,
-                path: paths[0],
-            });
+    fn collect(k: &KernelInterfaces, keep: impl Fn(Probe) -> bool) -> Self {
+        let mut items: Vec<HeaderUnreadable> = Vec::new();
+        for probe in Probe::ALL {
+            if !keep(probe) {
+                continue;
+            }
+            if let Reading::Unknown(reason) = k.get(probe) {
+                let path = probe.header();
+                if !items.iter().any(|item| item.path == path) {
+                    items.push(HeaderUnreadable { reason, path });
+                }
+            }
         }
-        if let Reading::Unknown(reason) = k.output_poll_changed {
-            items.push(HeaderUnreadable {
-                reason,
-                path: paths[1],
-            });
-        }
-        if let Reading::Unknown(reason) = k.pci_resize_resource_args {
-            items.push(HeaderUnreadable {
-                reason,
-                path: paths[2],
-            });
-        }
-        HeadersUnreadable { items }
+        Self { items }
     }
 
-    /// plan creation reports only unknown readings used by this branch and module type.
+    pub fn from_interfaces(k: &KernelInterfaces) -> Self {
+        Self::collect(k, |_| true)
+    }
+
+    /// Only unknown probes consumed by an applicable rule contribute a path.
     pub fn for_branch(
         version: &Version,
         k: &KernelInterfaces,
         module_type: Option<KernelModuleType>,
-    ) -> HeadersUnreadable {
-        let paths = header_paths();
-        let mut result = Self::from_interfaces(k);
-        result.items.retain(|item| {
+    ) -> Self {
+        Self::collect(k, |probe| {
             BRANCHES.iter().any(|rule| {
                 rule_applies(rule, version, module_type)
-                    && match rule.when {
-                        Condition::Always => false,
-                        Condition::FollowPfnAbsent => item.path == paths[0],
-                        Condition::OutputPollChangedAbsent => item.path == paths[1],
-                        Condition::PciResizeResourceArgs(_) => item.path == paths[2],
-                    }
+                    && matches!(rule.when, Condition::Reads(p, _) if p == probe)
             })
-        });
-        result
+        })
     }
 }
 
@@ -906,6 +1129,63 @@ mod tests {
         "615.71.09",
     ];
 
+    #[test]
+    fn branch_range_tracks_only_the_matching_branch_and_host_conditions() {
+        let loaded = Reading::Value(vec![]);
+        let interfaces = ifaces(false, false, Some(4), false, true);
+        for kernel in ["6.12.105-production+truenas", "6.18.52-production+truenas"] {
+            let v = facts::parse_version_exact("470.239.06").unwrap();
+            assert_eq!(
+                branch_range(&v, kernel, &interfaces, &loaded, None),
+                Some(COMMUNITY_PATCH_VERSION.to_string())
+            );
+        }
+        let v = facts::parse_version_exact("570.124.04").unwrap();
+        assert_eq!(
+            branch_range(
+                &v,
+                "6.18.52-production+truenas",
+                &interfaces,
+                &loaded,
+                Some(KernelModuleType::Proprietary)
+            ),
+            Some("570.153.02".to_string())
+        );
+        let v = facts::parse_version_exact("580.119.02").unwrap();
+        assert_eq!(
+            branch_range(
+                &v,
+                "6.18.52-production+truenas",
+                &interfaces,
+                &loaded,
+                Some(KernelModuleType::Open)
+            ),
+            Some("580.126.09".to_string())
+        );
+        let v = facts::parse_version_exact("575.64.05").unwrap();
+        assert_eq!(
+            branch_range(
+                &v,
+                "6.18.52-production+truenas",
+                &interfaces,
+                &loaded,
+                Some(KernelModuleType::Open)
+            ),
+            None
+        );
+        let v = facts::parse_version_exact("545.29.06").unwrap();
+        assert_eq!(
+            branch_range(
+                &v,
+                "6.9.1",
+                &ifaces(true, true, Some(3), true, false),
+                &loaded,
+                None
+            ),
+            None
+        );
+    }
+
     /// Sample GPUs covering branch limits, module choices and subsystem rows.
     pub const TEST_GPUS: &[GpuEntry] = &[
         GpuEntry {
@@ -1016,6 +1296,24 @@ mod tests {
         }
     }
 
+    fn ifaces(
+        pfn_absent: bool,
+        poll_absent: bool,
+        pci: Option<u32>,
+        cflags_present: bool,
+        fb_present: bool,
+    ) -> KernelInterfaces {
+        KernelInterfaces::all_unknown(REASON_FILE_MISSING)
+            .with(Probe::FollowPfn, presence(!pfn_absent))
+            .with(Probe::OutputPollChanged, presence(!poll_absent))
+            .with(
+                Probe::PciResizeResource,
+                Reading::Value(pci.map_or(Seen::Absent, Seen::Args)),
+            )
+            .with(Probe::ExtraCflags, presence(cflags_present))
+            .with(Probe::FbCreateFormatInfo, presence(fb_present))
+    }
+
     #[test]
     fn index_parsing_takes_version_directories() {
         let html = r#"<a href="../">..</a> <a href="latest.txt">latest</a>
@@ -1115,6 +1413,8 @@ mod tests {
         struct SlowHeaders {
             seconds: std::sync::atomic::AtomicU64,
             base: std::time::Instant,
+            delay: u64,
+            reads: std::sync::Mutex<Vec<std::path::PathBuf>>,
         }
         impl Host for SlowHeaders {
             fn run(&self, _: &Cmd) -> crate::host::Output {
@@ -1134,10 +1434,11 @@ mod tests {
             fn mount_table(&self) -> std::io::Result<Vec<facts::MountLine>> {
                 unreachable!()
             }
-            fn read(&self, _: &std::path::Path) -> std::io::Result<Vec<u8>> {
+            fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+                self.reads.lock().unwrap().push(path.to_path_buf());
                 self.seconds
-                    .fetch_add(6, std::sync::atomic::Ordering::SeqCst);
-                Ok(Vec::new())
+                    .fetch_add(self.delay, std::sync::atomic::Ordering::SeqCst);
+                Ok(b"(*fb_create)(void);".to_vec())
             }
             fn open(&self, _: &std::path::Path) -> std::io::Result<Box<dyn std::io::Read + Send>> {
                 unreachable!()
@@ -1200,6 +1501,8 @@ mod tests {
         let h = SlowHeaders {
             seconds: std::sync::atomic::AtomicU64::new(0),
             base: std::time::Instant::now(),
+            delay: 6,
+            reads: std::sync::Mutex::new(Vec::new()),
         };
         let k = read_interfaces(&h);
         assert_eq!(
@@ -1207,13 +1510,303 @@ mod tests {
             std::time::Duration::from_secs(18)
         );
         assert!(!k.complete());
-        match k.pci_resize_resource_args {
-            Reading::Unknown(reason) => assert_eq!(reason, REASON_TIMED_OUT),
+        match k.get(Probe::PciResizeResource) {
+            Reading::Unknown(reason) => assert_eq!(*reason, REASON_TIMED_OUT),
             other => panic!("expected a timed-out reading, got {other:?}"),
         }
         // The other two readings finished before the deadline.
-        assert!(k.follow_pfn.is_value());
-        assert!(k.output_poll_changed.is_value());
+        assert!(k.get(Probe::FollowPfn).is_value());
+        assert!(k.get(Probe::OutputPollChanged).is_value());
+        assert_eq!(
+            k.get(Probe::FbCreateFormatInfo),
+            &Reading::Value(Seen::Absent)
+        );
+        assert_eq!(
+            k.get(Probe::ExtraCflags),
+            &Reading::Unknown(REASON_TIMED_OUT)
+        );
+        let expected: Vec<std::path::PathBuf> = [
+            Probe::FollowPfn,
+            Probe::OutputPollChanged,
+            Probe::PciResizeResource,
+            Probe::ExtraCflags,
+        ]
+        .map(|probe| std::path::PathBuf::from(probe.header()))
+        .to_vec();
+        assert_eq!(*h.reads.lock().unwrap(), expected[..3]);
+        let fast = SlowHeaders {
+            seconds: std::sync::atomic::AtomicU64::new(0),
+            base: std::time::Instant::now(),
+            delay: 0,
+            reads: std::sync::Mutex::new(Vec::new()),
+        };
+        assert!(read_interfaces(&fast).complete());
+        assert_eq!(*fast.reads.lock().unwrap(), expected);
+    }
+
+    #[test]
+    fn fb_create_probe_is_scoped_to_the_callback_declaration() {
+        for (text, expected) in [
+            // TrueNAS release/25.10.7 and release/27.0.0-RC.1 declarations.
+            ("struct drm_framebuffer *(*fb_create)(struct drm_device *dev,\n struct drm_file *file_priv,\n const struct drm_mode_fb_cmd2 *mode_cmd);", false),
+            ("struct drm_framebuffer *(*fb_create)(struct drm_device *dev,\n struct drm_file *file_priv,\n const struct drm_format_info *info,\n const struct drm_mode_fb_cmd2 *mode_cmd);", true),
+            ("(*fb_create)(struct drm_device *dev); struct drm_format_info *outside;", false),
+            ("(*fb_create)(void; struct drm_format_info *outside);", false),
+            ("// (*fb_create)(const struct drm_format_info *info);\n(*fb_create)(struct drm_device *dev /* struct drm_format_info unavailable */);", false),
+            ("( \t * fb_create \n ) (const struct drm_format_info *info);", true),
+            ("(*fb_create)(const struct drm_format_info_x *info);", false),
+        ] {
+            assert_eq!(parse_fb_create_format_info(text), presence(expected), "{text}");
+        }
+        for text in [
+            "(*fb_create)(void); (*fb_create)(void);",
+            "no callback here",
+            "/* unterminated",
+            "(*fb_create)(void)",
+        ] {
+            assert_eq!(
+                parse_fb_create_format_info(text),
+                Reading::Unknown(REASON_FORMAT_UNRECOGNIZED),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn probe_rules_and_fires_are_total() {
+        assert_eq!(
+            Probe::ALL,
+            [
+                Probe::FollowPfn,
+                Probe::OutputPollChanged,
+                Probe::PciResizeResource,
+                Probe::ExtraCflags,
+                Probe::FbCreateFormatInfo
+            ]
+        );
+        for (index, probe) in Probe::ALL.into_iter().enumerate() {
+            assert_eq!(probe as usize, index);
+            assert!(BRANCHES
+                .iter()
+                .any(|rule| matches!(rule.when, Condition::Reads(p, _) if p == probe)));
+        }
+        for seen in [Seen::Absent, Seen::Present, Seen::Args(3), Seen::Args(4)] {
+            assert_eq!(Fires::WhenAbsent.matches(seen), seen == Seen::Absent);
+            assert_eq!(Fires::WhenPresent.matches(seen), seen == Seen::Present);
+            assert_eq!(
+                Fires::WhenArgsOtherThan(3).matches(seen),
+                seen == Seen::Args(4)
+            );
+        }
+        assert_eq!(
+            parse_pci_resize_args("no declaration"),
+            Reading::Value(Seen::Absent)
+        );
+        assert_eq!(parse_pci_resize_args("pci_resize_resource(int a, int b, int c); pci_resize_resource(int a, int b, int c, int d);"), Reading::Value(Seen::Args(4)));
+        assert_eq!(
+            parse_pci_resize_args("pci_resize_resource(unfinished"),
+            Reading::Unknown(REASON_FORMAT_UNRECOGNIZED)
+        );
+        let unknown = KernelInterfaces::all_unknown(REASON_FILE_MISSING);
+        assert_eq!(
+            condition_verdict(
+                Condition::Reads(Probe::PciResizeResource, Fires::WhenArgsOtherThan(3)),
+                &unknown
+            ),
+            None
+        );
+        let all = HeadersUnreadable::from_interfaces(&unknown);
+        assert_eq!(
+            all.items.iter().map(|item| item.path).collect::<Vec<_>>(),
+            vec![
+                Probe::FollowPfn.header(),
+                Probe::OutputPollChanged.header(),
+                Probe::PciResizeResource.header(),
+                Probe::ExtraCflags.header()
+            ]
+        );
+        let only_fb_unknown = ifaces(false, false, Some(3), true, false).with(
+            Probe::FbCreateFormatInfo,
+            Reading::Unknown(REASON_FORMAT_UNRECOGNIZED),
+        );
+        assert!(HeadersUnreadable::for_branch(
+            &facts::parse_version_exact("545.29.06").unwrap(),
+            &only_fb_unknown,
+            None
+        )
+        .items
+        .is_empty());
+        let both_unknown = only_fb_unknown
+            .clone()
+            .with(Probe::OutputPollChanged, Reading::Unknown(REASON_IO_ERROR));
+        assert_eq!(
+            HeadersUnreadable::from_interfaces(&both_unknown).items,
+            vec![HeaderUnreadable {
+                reason: REASON_IO_ERROR,
+                path: Probe::OutputPollChanged.header()
+            }]
+        );
+        assert_eq!(
+            HeadersUnreadable::for_branch(
+                &facts::parse_version_exact("575.64.05").unwrap(),
+                &both_unknown,
+                None
+            )
+            .items,
+            vec![HeaderUnreadable {
+                reason: REASON_FORMAT_UNRECOGNIZED,
+                path: Probe::FbCreateFormatInfo.header()
+            }]
+        );
+        let fb = HeadersUnreadable::for_branch(
+            &facts::parse_version_exact("575.64.05").unwrap(),
+            &only_fb_unknown,
+            None,
+        );
+        assert_eq!(
+            fb.items,
+            vec![HeaderUnreadable {
+                reason: REASON_FORMAT_UNRECOGNIZED,
+                path: Probe::FbCreateFormatInfo.header()
+            }]
+        );
+    }
+
+    #[test]
+    fn rule_table_is_well_formed() {
+        for rule in BRANCHES {
+            assert!(rule
+                .below
+                .iter()
+                .all(|boundary| facts::parse_version_exact(boundary).is_some()));
+        }
+        let unparseable = BranchRule {
+            branches: &[],
+            below: &["not-a-version"],
+            open_only: false,
+            when: Condition::Always,
+            reason: BRANCH_EXTRA_CFLAGS_REMOVED,
+            source: "test",
+        };
+        assert!(!rule_applies(
+            &unparseable,
+            &facts::parse_version_exact("570.124.04").unwrap(),
+            None
+        ));
+        for (reason, boundaries, open_only) in [
+            (BRANCH_PCI_RESIZE_RESOURCE_ARGS, &["580.126.09"][..], true),
+            (
+                BRANCH_EXTRA_CFLAGS_REMOVED,
+                &["570.153.02", "575.57.08"][..],
+                false,
+            ),
+        ] {
+            let rule = BRANCHES.iter().find(|rule| rule.reason == reason).unwrap();
+            assert_eq!(rule.below, boundaries);
+            assert_eq!(rule.open_only, open_only);
+        }
+    }
+
+    #[test]
+    fn extra_cflags_version_boundaries_apply_to_every_module_type() {
+        for extra_cflags in [true, false] {
+            for format_info in [true, false] {
+                let k = ifaces(true, true, Some(4), extra_cflags, format_info);
+                for text in [
+                    "570.124.04",
+                    "570.133.07",
+                    "570.144",
+                    "570.153.02",
+                    "570.211.01",
+                    "575.51.02",
+                    "575.57.08",
+                ] {
+                    let version = facts::parse_version_exact(text).unwrap();
+                    let old = matches!(text, "570.124.04" | "570.133.07" | "570.144" | "575.51.02");
+                    for module_type in [
+                        None,
+                        Some(KernelModuleType::Proprietary),
+                        Some(KernelModuleType::Open),
+                    ] {
+                        let actual = verdict(&version, &k, module_type);
+                        let mut expected = vec![];
+                        if module_type == Some(KernelModuleType::Open) {
+                            expected.push(BRANCH_PCI_RESIZE_RESOURCE_ARGS);
+                        }
+                        if !extra_cflags && old {
+                            expected.push(BRANCH_EXTRA_CFLAGS_REMOVED);
+                        }
+                        if format_info && version.major() == 575 {
+                            expected.push(BRANCH_FB_CREATE_FORMAT_INFO);
+                        }
+                        let expected = if expected.is_empty() {
+                            BranchVerdict::Buildable
+                        } else {
+                            BranchVerdict::Unbuildable(expected)
+                        };
+                        assert_eq!(
+                            actual, expected,
+                            "{text}/{module_type:?}/extra={extra_cflags}/format={format_info}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn official_branch_verdicts_follow_kernel_build_and_drm_interfaces() {
+        for (kernel, extra_cflags, format_info) in [
+            ("6.12.105-production+truenas", true, false),
+            ("6.18.52-production+truenas", false, true),
+        ] {
+            let k = ifaces(true, true, Some(4), extra_cflags, format_info);
+            for version in [
+                "470.256.02",
+                "550.163.01",
+                "565.77",
+                "570.211.01",
+                "575.64.05",
+                "580.196.07",
+            ] {
+                let expected = if !extra_cflags && matches!(version, "550.163.01" | "565.77") {
+                    BranchVerdict::Unbuildable(vec![BRANCH_EXTRA_CFLAGS_REMOVED])
+                } else if format_info && version == "575.64.05" {
+                    BranchVerdict::Unbuildable(vec![BRANCH_FB_CREATE_FORMAT_INFO])
+                } else {
+                    BranchVerdict::Buildable
+                };
+                assert_eq!(
+                    official_verdict(
+                        &facts::parse_version_exact(version).unwrap(),
+                        kernel,
+                        &k,
+                        Some(KernelModuleType::Proprietary)
+                    ),
+                    expected,
+                    "{kernel}/{version}"
+                );
+            }
+        }
+        let k = KernelInterfaces::all_unknown(REASON_FILE_MISSING);
+        for (version, path) in [
+            ("550.163.01", Probe::ExtraCflags.header()),
+            ("575.64.05", Probe::OutputPollChanged.header()),
+        ] {
+            let version = facts::parse_version_exact(version).unwrap();
+            assert_eq!(
+                verdict(&version, &k, Some(KernelModuleType::Proprietary)),
+                BranchVerdict::Undecidable
+            );
+            assert_eq!(
+                HeadersUnreadable::for_branch(&version, &k, Some(KernelModuleType::Proprietary))
+                    .items
+                    .iter()
+                    .map(|item| item.path)
+                    .collect::<Vec<_>>(),
+                vec![path]
+            );
+        }
     }
 
     #[test]
@@ -1230,16 +1823,18 @@ mod tests {
         for text in ["580.119.02", "580.126.09", "580.178.04"] {
             let version = facts::parse_version_exact(text).unwrap();
             for pci in [
-                Reading::Value(Some(3)),
-                Reading::Value(Some(4)),
-                Reading::Value(None),
+                Reading::Value(Seen::Args(3)),
+                Reading::Value(Seen::Args(4)),
+                Reading::Value(Seen::Absent),
                 Reading::Unknown(REASON_FILE_MISSING),
             ] {
-                let k = KernelInterfaces {
-                    follow_pfn: Reading::Unknown(REASON_FILE_MISSING),
-                    output_poll_changed: Reading::Unknown(REASON_FILE_MISSING),
-                    pci_resize_resource_args: pci.clone(),
-                };
+                let k = ifaces(false, false, None, true, false)
+                    .with(Probe::FollowPfn, Reading::Unknown(REASON_FILE_MISSING))
+                    .with(
+                        Probe::OutputPollChanged,
+                        Reading::Unknown(REASON_FILE_MISSING),
+                    )
+                    .with(Probe::PciResizeResource, pci.clone());
                 for module_type in [
                     None,
                     Some(KernelModuleType::Proprietary),
@@ -1248,7 +1843,7 @@ mod tests {
                     let expected =
                         if text == "580.119.02" && module_type == Some(KernelModuleType::Open) {
                             match pci {
-                                Reading::Value(Some(4)) => BranchVerdict::Unbuildable(vec![
+                                Reading::Value(Seen::Args(4)) => BranchVerdict::Unbuildable(vec![
                                     BRANCH_PCI_RESIZE_RESOURCE_ARGS,
                                 ]),
                                 Reading::Unknown(_) => BranchVerdict::Undecidable,
@@ -1268,7 +1863,7 @@ mod tests {
                         && matches!(pci, Reading::Unknown(_));
                     assert_eq!(unreadable.items.len(), usize::from(needs_pci));
                     if needs_pci {
-                        assert_eq!(unreadable.items[0].path, header_paths()[2]);
+                        assert_eq!(unreadable.items[0].path, Probe::PciResizeResource.header());
                     }
                 }
             }
@@ -1277,11 +1872,7 @@ mod tests {
 
     #[test]
     fn kernel_interface_readings_on_kernel_612_105() {
-        let k = KernelInterfaces {
-            follow_pfn: Reading::Value(false),
-            output_poll_changed: Reading::Value(false),
-            pci_resize_resource_args: Reading::Value(Some(4)),
-        };
+        let k = ifaces(true, true, Some(4), true, false);
         for text in [
             "615.71.09",
             "610.57.04",
@@ -1342,11 +1933,7 @@ mod tests {
 
     #[test]
     fn kernel_interface_readings_on_kernel_69() {
-        let k = KernelInterfaces {
-            follow_pfn: Reading::Value(true),
-            output_poll_changed: Reading::Value(true),
-            pci_resize_resource_args: Reading::Value(Some(3)),
-        };
+        let k = ifaces(false, false, Some(3), true, false);
         for branch in [470, 495, 545, 550, 615] {
             assert_eq!(
                 verdict(
@@ -1363,16 +1950,13 @@ mod tests {
     #[test]
     fn pci_condition_uses_only_explicit_open_and_its_actual_reading() {
         for pci in [
-            Reading::Value(Some(3)),
-            Reading::Value(Some(4)),
-            Reading::Value(None),
+            Reading::Value(Seen::Args(3)),
+            Reading::Value(Seen::Args(4)),
+            Reading::Value(Seen::Absent),
             Reading::Unknown(REASON_FILE_MISSING),
         ] {
-            let k = KernelInterfaces {
-                follow_pfn: Reading::Value(true),
-                output_poll_changed: Reading::Value(true),
-                pci_resize_resource_args: pci.clone(),
-            };
+            let k =
+                ifaces(false, false, None, true, false).with(Probe::PciResizeResource, pci.clone());
             for major in [545, 550, 555, 560, 565, 570, 575] {
                 for module_type in [None, Some(KernelModuleType::Proprietary)] {
                     assert_eq!(
@@ -1385,7 +1969,7 @@ mod tests {
                     );
                 }
                 let expected = match pci {
-                    Reading::Value(Some(4)) => {
+                    Reading::Value(Seen::Args(4)) => {
                         BranchVerdict::Unbuildable(vec![BRANCH_PCI_RESIZE_RESOURCE_ARGS])
                     }
                     Reading::Unknown(_) => BranchVerdict::Undecidable,
@@ -1407,21 +1991,21 @@ mod tests {
     fn branch_unreadable_lists_only_the_applicable_interfaces() {
         let k = KernelInterfaces::all_unknown(REASON_FILE_MISSING);
         let open = HeadersUnreadable::for_branch(
-            &facts::parse_version_exact("570.0").unwrap(),
+            &facts::parse_version_exact("570.211.01").unwrap(),
             &k,
             Some(KernelModuleType::Open),
         );
         assert_eq!(open.items.len(), 1);
-        assert_eq!(open.items[0].path, header_paths()[2]);
+        assert_eq!(open.items[0].path, Probe::PciResizeResource.header());
         assert!(HeadersUnreadable::for_branch(
-            &facts::parse_version_exact("570.0").unwrap(),
+            &facts::parse_version_exact("570.211.01").unwrap(),
             &k,
             None
         )
         .items
         .is_empty());
         assert!(HeadersUnreadable::for_branch(
-            &facts::parse_version_exact("570.0").unwrap(),
+            &facts::parse_version_exact("570.211.01").unwrap(),
             &k,
             Some(KernelModuleType::Proprietary)
         )
@@ -1431,18 +2015,23 @@ mod tests {
             HeadersUnreadable::for_branch(&facts::parse_version_exact("545.0").unwrap(), &k, None);
         assert_eq!(
             generic.items.iter().map(|i| i.path).collect::<Vec<_>>(),
-            header_paths()[..2]
+            vec![
+                Probe::FollowPfn.header(),
+                Probe::OutputPollChanged.header(),
+                Probe::ExtraCflags.header()
+            ]
         );
-        assert_eq!(HeadersUnreadable::from_interfaces(&k).items.len(), 3);
+        assert_eq!(HeadersUnreadable::from_interfaces(&k).items.len(), 4);
     }
 
     #[test]
     fn unreadable_header_makes_a_branch_undecidable() {
-        let k = KernelInterfaces {
-            follow_pfn: Reading::Unknown(REASON_FILE_MISSING),
-            output_poll_changed: Reading::Unknown(REASON_FILE_MISSING),
-            pci_resize_resource_args: Reading::Value(Some(4)),
-        };
+        let k = ifaces(false, false, Some(4), true, false)
+            .with(Probe::FollowPfn, Reading::Unknown(REASON_FILE_MISSING))
+            .with(
+                Probe::OutputPollChanged,
+                Reading::Unknown(REASON_FILE_MISSING),
+            );
         assert_eq!(
             verdict(
                 &facts::parse_version_exact("470.0").unwrap(),
@@ -1491,7 +2080,12 @@ mod tests {
 
     #[test]
     fn fixed_official_470_uses_only_exact_version_and_numeric_kernel_family() {
-        for kernel in ["6.12.105-production+truenas", "6.12.96-production+truenas"] {
+        for kernel in [
+            "6.12.105-production+truenas",
+            "6.12.96-production+truenas",
+            "6.18.52-production+truenas",
+            "6.18.0",
+        ] {
             assert!(community_patch_470(true, COMMUNITY_PATCH_VERSION, kernel));
         }
         for (official, version, kernel) in [
@@ -1504,15 +2098,16 @@ mod tests {
             (true, COMMUNITY_PATCH_VERSION, "6.13.1-production+truenas"),
             (true, COMMUNITY_PATCH_VERSION, "6.120.1-production+truenas"),
             (true, COMMUNITY_PATCH_VERSION, "6.12evil.1"),
+            (true, COMMUNITY_PATCH_VERSION, "6.19.1"),
+            (true, COMMUNITY_PATCH_VERSION, "6.180.1"),
+            (true, COMMUNITY_PATCH_VERSION, "6.18evil.1"),
+            (true, COMMUNITY_PATCH_VERSION, "6.1.x"),
+            (true, COMMUNITY_PATCH_VERSION, "6.11.x"),
             (true, COMMUNITY_PATCH_VERSION, ""),
         ] {
             assert!(!community_patch_470(official, version, kernel));
         }
-        let k = KernelInterfaces {
-            follow_pfn: Reading::Value(false),
-            output_poll_changed: Reading::Value(false),
-            pci_resize_resource_args: Reading::Value(Some(4)),
-        };
+        let k = ifaces(true, true, Some(4), true, false);
         let version = facts::parse_version(COMMUNITY_PATCH_VERSION).unwrap();
         let unloaded = Reading::Value(vec![]);
         assert_eq!(
@@ -1721,11 +2316,7 @@ mod tests {
             gpu("0000:02:00.0", 0x2684),
             gpu("0000:03:00.0", 0x2b85),
         ];
-        let interfaces = KernelInterfaces {
-            follow_pfn: Reading::Value(false),
-            output_poll_changed: Reading::Value(false),
-            pci_resize_resource_args: Reading::Value(Some(4)),
-        };
+        let interfaces = ifaces(true, true, Some(4), true, false);
         let excluded = open_unbuildable(&items, "6.12.105", &interfaces);
         assert_eq!(excluded, ["580.119.02", "570.211.01", "565.77"]);
         let list = gpu_list(&items, &gpus, TABLE, &[], Some(&excluded));

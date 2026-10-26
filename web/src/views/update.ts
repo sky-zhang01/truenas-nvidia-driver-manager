@@ -29,7 +29,7 @@ import {
 } from "../dom.js";
 import type { App } from "../main.js";
 import { message } from "../messages.js";
-import { conflict, fileTooLarge, filterVersions, gpuLabel, queryObjectKey, versionFormatOk } from "../rules.js";
+import { catalogHelpKey, conflict, fileTooLarge, filterVersions, gpuLabel, queryObjectKey, versionFormatOk } from "../rules.js";
 import { deriveUploadSlots, rejectionSlot, sortUploadFiles, uploadRejectionKey } from "../upload-slots.js";
 import { closeDialog, openDialog, makeDialog } from "../dialog.js";
 import { armUpdateCheckStatus, openCheckDialog, openConfirmDialog, renderPlanError } from "./plan.js";
@@ -149,6 +149,8 @@ export function renderUpdate(app: App, container: HTMLElement): void {
     const selected = new Set<string>();
     if (gpus.length === 1 && gpus[0]) selected.add(gpus[0].address);
     let chosen: string | null = null;
+    let otherVersion = false;
+    let enteredVersion = "";
     let planInFlight = false;
 
     container.append(el("h2", { text: expandText("nav.update", {}, lang) }));
@@ -203,14 +205,36 @@ export function renderUpdate(app: App, container: HTMLElement): void {
       for (const v of filtered.options) {
         select.append(el("option", { value: v, text: v }));
       }
-      if (chosen !== null && filtered.options.includes(chosen)) {
+      const helpKey = catalogHelpKey(filtered, versions.unreadable ?? []);
+      const hasOther = helpKey === "catalog.help";
+      if (hasOther) select.append(el("option", { value: "other", text: expandText("catalog.other_version", {}, lang) }));
+      if (otherVersion && hasOther) {
+        select.value = "other";
+        chosen = enteredVersion === "" ? null : enteredVersion;
+      } else if (chosen !== null && filtered.options.includes(chosen)) {
         select.value = chosen;
+        otherVersion = false;
       } else {
         select.selectedIndex = -1;
         chosen = null;
+        otherVersion = false;
       }
+      const other = el("div", { class: "other-version", hidden: !otherVersion });
+      const input = el("input", { id: "other-version-input", type: "text", value: enteredVersion });
+      input.setAttribute("placeholder", expandText("update.other_version_example", {}, lang));
+      input.setAttribute("aria-describedby", "catalog-describe");
+      other.append(el("label", { for: input.id, text: expandText("upload.version_label", {}, lang) }), input);
+      selectArea.append(other);
+      input.addEventListener("input", () => {
+        enteredVersion = input.value;
+        chosen = enteredVersion === "" ? null : enteredVersion;
+        refreshButton();
+      });
       select.addEventListener("change", () => {
-        chosen = select.value === "" ? null : select.value;
+        otherVersion = select.value === "other";
+        other.hidden = !otherVersion;
+        chosen = otherVersion ? (enteredVersion === "" ? null : enteredVersion) : (select.value === "" ? null : select.value);
+        if (otherVersion) input.focus();
         refreshButton();
       });
 
@@ -223,7 +247,7 @@ export function renderUpdate(app: App, container: HTMLElement): void {
             variant: gpuCount === 1 ? "one" : undefined,
           })
         : null;
-      describe.append(el("p", { class: "hint", text: expandText("catalog.help", {}, lang) }));
+      if (helpKey) describe.append(el("p", { class: "hint", text: expandText(helpKey, {}, lang) }));
       describe.append(notesNode(app, filtered.notes));
       if (conclusion) {
         conclusion.id = "catalog-conclusion";
@@ -406,6 +430,7 @@ function openUploadDialog(
   let toolkitVersion: string | null = null;
   let toolkitFallback = false;
   let downloadVersion = initialDownloadVersion ?? "";
+  let downloadOther = downloadVersion !== "" && !versions.items.some((v) => v.version === downloadVersion);
   let uploadAbort: AbortController | null = null;
   let batchIndex = 0;
   let batchTotal = 0;
@@ -529,23 +554,38 @@ function openUploadDialog(
   const rebuildDownloadVersion = (): void => {
     clear(versionControl);
     const label = el("label", { for: "upload-link-version", text: text("upload.version_label") });
-    let input: HTMLInputElement | HTMLSelectElement;
-    if (versions.items.length > 0) {
-      input = el("select", { id: "upload-link-version" });
-      input.append(el("option", { value: "", text: text("upload.version.placeholder") }));
-      for (const v of versions.items) input.append(el("option", { value: v.version, text: v.version }));
-      input.value = downloadVersion;
-    } else input = el("input", { id: "upload-link-version", type: "text", value: downloadVersion });
-    input.addEventListener("input", () => {
+    const hint = el("p", { class: "hint", id: "upload-link-hint", text: text("upload.version.link_hint") });
+    const updateVersion = (input: HTMLInputElement | HTMLSelectElement): void => {
       downloadVersion = input.value;
       const invalid = input.value !== "" && !versionFormatOk(input.value);
       input.setAttribute("aria-invalid", String(invalid));
       hint.textContent = text("upload.version.link_hint") + (invalid ? ` ${text("upload.version.invalid")}` : "");
       rebuildLinks(); rebuildMismatch();
-    });
-    input.setAttribute("aria-describedby", "upload-link-hint");
-    const hint = el("p", { class: "hint", id: "upload-link-hint", text: text("upload.version.link_hint") });
-    versionControl.append(label, input, hint);
+    };
+    if (versions.items.length > 0 && (versions.unreadable ?? []).length === 0) {
+      const select = el("select", { id: "upload-link-version" });
+      select.append(el("option", { value: "", text: text("upload.version.placeholder") }));
+      for (const v of versions.items) select.append(el("option", { value: v.version, text: v.version }));
+      select.append(el("option", { value: "other", text: text("catalog.other_version") }));
+      select.value = downloadOther ? "other" : downloadVersion;
+      select.setAttribute("aria-describedby", hint.id);
+      const input = el("input", { id: "upload-other-version-input", type: "text", value: downloadOther ? downloadVersion : "", hidden: !downloadOther });
+      input.setAttribute("aria-label", text("upload.version_label"));
+      input.setAttribute("aria-describedby", hint.id);
+      input.addEventListener("input", () => updateVersion(input));
+      select.addEventListener("change", () => {
+        downloadOther = select.value === "other";
+        input.hidden = !downloadOther;
+        updateVersion(downloadOther ? input : select);
+        if (downloadOther) input.focus();
+      });
+      versionControl.append(label, select, input, hint);
+    } else {
+      const input = el("input", { id: "upload-link-version", type: "text", value: downloadVersion });
+      input.setAttribute("aria-describedby", hint.id);
+      input.addEventListener("input", () => updateVersion(input));
+      versionControl.append(label, input, hint);
+    }
   };
   const rebuildMismatch = (): void => {
     summaryBox.querySelector(".upload-version-mismatch")?.remove();

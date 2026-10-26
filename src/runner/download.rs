@@ -4,28 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::codes::*;
 use crate::host::{At, Cmd, Stream, Watch};
 use crate::runner::RunCtx;
 use crate::upload;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DownloadFailure {
-    pub code: ErrorCode,
-    pub params: Value,
-    pub raw: Option<String>,
-    /// The host command that failed, for `error.command`/`error.exit`.
-    pub command: Option<(Vec<String>, crate::host::Exit)>,
-}
-
-impl DownloadFailure {
-    fn with_command(mut self, cmd: &Cmd, exit: crate::host::Exit) -> DownloadFailure {
-        self.command = Some((cmd.argv(), exit));
-        self
-    }
-}
+pub type DownloadFailure = crate::runner::build::BuildFailure;
 
 fn timeout_failure() -> DownloadFailure {
     DownloadFailure {
@@ -49,29 +35,21 @@ fn timeout_failure_with_output(cmd: &Cmd, out: &crate::host::Output) -> Download
 }
 
 fn request_failure(file_name: &str, raw: String) -> DownloadFailure {
-    DownloadFailure {
-        code: ErrorCode::DownloadFailed,
-        params: json!({
-            "reason": {
-                "key": DOWNLOAD_REQUEST_FAILED,
-                "params": {"file_name": file_name},
-            },
-        }),
-        raw: Some(raw),
-        command: None,
-    }
+    DownloadFailure::new(
+        ErrorCode::DownloadFailed,
+        DOWNLOAD_REQUEST_FAILED,
+        json!({"file_name": file_name}),
+        Some(raw),
+    )
 }
 
 fn checksum_failure(file_name: &str) -> DownloadFailure {
-    DownloadFailure {
-        code: ErrorCode::DownloadFailed,
-        params: json!({"reason": {
-            "key": DOWNLOAD_CHECKSUM_MISMATCH,
-            "params": {"file_name": file_name},
-        }}),
-        raw: None,
-        command: None,
-    }
+    DownloadFailure::new(
+        ErrorCode::DownloadFailed,
+        DOWNLOAD_CHECKSUM_MISMATCH,
+        json!({"file_name": file_name}),
+        None,
+    )
 }
 
 fn community_patch(ctx: &RunCtx) -> bool {
@@ -254,13 +232,11 @@ struct ProgressWatch<'a> {
     ctx: &'a mut RunCtx,
     part: PathBuf,
     headers: PathBuf,
-    interval_reached: bool,
 }
 
 impl<'a> Watch for ProgressWatch<'a> {
     fn line(&mut self, _from: Stream, _line: &[u8]) {}
     fn tick(&mut self) {
-        self.interval_reached = true;
         let done = self
             .ctx
             .host
@@ -336,7 +312,7 @@ pub(crate) fn remaining(now: Instant, deadline: Instant) -> Option<Duration> {
 
 /// `curl` ended by its `--max-time` or by the host deadline is a build timeout, not a
 /// download failure.
-pub(crate) fn curl_timed_out(exit: crate::host::Exit) -> bool {
+fn curl_timed_out(exit: crate::host::Exit) -> bool {
     matches!(
         exit,
         crate::host::Exit::TimedOut | crate::host::Exit::Code(28)
@@ -344,17 +320,18 @@ pub(crate) fn curl_timed_out(exit: crate::host::Exit) -> bool {
 }
 
 /// Whether this one download follows redirects. Chosen at the call site.
-pub(crate) enum CurlRedirects {
+#[derive(Clone, Copy)]
+pub enum CurlRedirects {
     /// The first response is the whole transfer. A 3xx stays that status.
     Stop,
     /// Follow https redirects, at most five times.
     ///
-    /// Only a build-kit package uses this. Its bytes are kept only when they
-    /// match the fixed SHA256 and size in `packages.tsv`.
+    /// Build-kit packages and the community archive use this. Bytes are kept
+    /// only when their fixed SHA256 and size match.
     Https,
 }
 
-/// Redirects one build-kit download may follow. snapshot.debian.org answers an
+/// Redirects a build-kit or community archive download may follow. snapshot.debian.org answers an
 /// `/archive/…` URL with one same-host https redirect; five is the cap.
 const CURL_MAX_REDIRS: u32 = 5;
 
@@ -371,7 +348,7 @@ const CURL_RETRIES: u32 = 2;
 /// Every caller passes `CurlRedirects` itself. `Https` adds `--location`, `--proto-redir
 /// =https` and `--max-redirs 5`. `Stop` leaves those off, so `%{http_code}` is the first
 /// response.
-pub(crate) fn curl_cmd(
+fn curl_cmd(
     url: &str,
     output: &std::path::Path,
     headers: &std::path::Path,
@@ -408,8 +385,101 @@ pub(crate) fn curl_cmd(
         .arg(url)
 }
 
-pub(crate) fn http_status(out: &crate::host::Output) -> Option<u16> {
+fn http_status(out: &crate::host::Output) -> Option<u16> {
     out.stdout_text().trim().parse::<u16>().ok()
+}
+
+/// One download's transport policy, verification and final destination.
+/// The caller creates the parent directories; the final name is written only after verification.
+pub struct FixedInput {
+    pub url: String,
+    pub file_name: String,
+    pub part: PathBuf,
+    pub headers: PathBuf,
+    pub target: PathBuf,
+    pub redirects: CurlRedirects,
+    pub expected: Option<(u64, String)>,
+    pub progress: bool,
+}
+
+/// Download, verify and flush one input before moving it to its final name.
+pub fn fetch(
+    ctx: &mut RunCtx,
+    spec: &FixedInput,
+    deadline: Instant,
+) -> Result<u64, DownloadFailure> {
+    let Some(left) = remaining(ctx.host.now(), deadline) else {
+        ctx.log(LogKey::BuildTimeout, json!({}));
+        return Err(timeout_failure());
+    };
+    let cmd = curl_cmd(&spec.url, &spec.part, &spec.headers, left, spec.redirects);
+    let out = if spec.progress {
+        let host = ctx.host.clone();
+        let mut watch = ProgressWatch {
+            ctx: &mut *ctx,
+            part: spec.part.clone(),
+            headers: spec.headers.clone(),
+        };
+        let out = host.run_watch(&cmd, DOWNLOAD_PROGRESS_INTERVAL, &mut watch);
+        watch.ctx.log_cmd(&cmd, &out);
+        out
+    } else {
+        ctx.cmd(&cmd)
+    };
+    if curl_timed_out(out.exit) {
+        ctx.log(LogKey::BuildTimeout, json!({}));
+        return Err(timeout_failure_with_output(&cmd, &out));
+    }
+    if spec.expected.is_some() && remaining(ctx.host.now(), deadline).is_none() {
+        ctx.log(LogKey::BuildTimeout, json!({}));
+        return Err(timeout_failure_with_output(&cmd, &out));
+    }
+    if !out.exit.ok() {
+        return Err(
+            request_failure(&spec.file_name, out.raw_tail(ERROR_RAW_LINES))
+                .with_command(cmd.argv(), out.exit),
+        );
+    }
+    if http_status(&out) != Some(200) {
+        return Err(DownloadFailure::new(
+            ErrorCode::DownloadFailed,
+            DOWNLOAD_HTTP_STATUS,
+            json!({"file_name": spec.file_name, "status": http_status(&out).unwrap_or(0)}),
+            Some(out.stdout_text()),
+        ));
+    }
+    let actual = ctx.host.lstat(&spec.part).map(|m| m.len()).unwrap_or(0);
+    if spec.progress {
+        if let Some(expected) = read_content_length(ctx, &spec.headers) {
+            if expected != actual {
+                return Err(checksum_failure(&spec.file_name));
+            }
+        }
+    }
+    if let Some((bytes, sha256)) = &spec.expected {
+        if actual != *bytes {
+            return Err(checksum_failure(&spec.file_name));
+        }
+        let digest = hash_fixed_input(ctx, &spec.part, deadline, &spec.file_name)?;
+        if digest.size != *bytes || digest.sha256 != *sha256 {
+            return Err(checksum_failure(&spec.file_name));
+        }
+    }
+    if ctx.host.fsync_file(&spec.part).is_err() {
+        return Err(request_failure(&spec.file_name, "fsync failed".into()));
+    }
+    if spec.expected.is_some() && remaining(ctx.host.now(), deadline).is_none() {
+        ctx.log(LogKey::BuildTimeout, json!({}));
+        return Err(timeout_failure());
+    }
+    if ctx.host.rename(&spec.part, &spec.target).is_err() {
+        return Err(request_failure(&spec.file_name, "rename failed".into()));
+    }
+    ctx.log(
+        LogKey::FileDownloaded,
+        json!({"file_name": spec.file_name, "bytes": actual}),
+    );
+    Ok(actual)
 }
 
 /// toolkit first, then the driver.
@@ -445,9 +515,8 @@ pub(crate) fn read_toolkit_index(
         return Err(timeout_failure_with_output(&cmd, &out));
     }
     if !out.exit.ok() {
-        return Err(
-            request_failure("Packages", out.raw_tail(ERROR_RAW_LINES)).with_command(&cmd, out.exit)
-        );
+        return Err(request_failure("Packages", out.raw_tail(ERROR_RAW_LINES))
+            .with_command(cmd.argv(), out.exit));
     }
     if http_status(&out) != Some(200) {
         return Err(DownloadFailure {
@@ -528,244 +597,68 @@ pub fn toolkit(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailur
         return Err(request_failure("toolkit", "write failed".into()));
     }
     for file in &pick.files {
-        let Some(left) = remaining(ctx.host.now(), deadline) else {
-            ctx.log(LogKey::BuildTimeout, json!({}));
-            return Err(timeout_failure());
+        let spec = FixedInput {
+            url: format!(
+                "https://nvidia.github.io/libnvidia-container/stable/deb/amd64/{}",
+                file.filename
+            ),
+            file_name: file.filename.clone(),
+            part: dl.join(format!("{}.deb.part", file.package)),
+            headers: dl.join(format!("{}.headers", file.package)),
+            target: toolkit_dir.join(format!("{}.deb", file.package)),
+            redirects: CurlRedirects::Stop,
+            expected: Some((file.size, file.sha256.clone())),
+            progress: false,
         };
-        // The package is downloaded to a temporary name and only renamed to its fixed name
-        // after the bytes and the flush were verified, so a failed `curl` never leaves a
-        // partial `.deb` at the final download path.
-        let target = toolkit_dir.join(format!("{}.deb", file.package));
-        let part = dl.join(format!("{}.deb.part", file.package));
-        let headers = dl.join(format!("{}.headers", file.package));
-        let url = format!(
-            "https://nvidia.github.io/libnvidia-container/stable/deb/amd64/{}",
-            file.filename
-        );
-        let cmd = curl_cmd(&url, &part, &headers, left, CurlRedirects::Stop);
-        let out = ctx.cmd(&cmd);
-        if curl_timed_out(out.exit) {
-            ctx.log(LogKey::BuildTimeout, json!({}));
-            return Err(timeout_failure_with_output(&cmd, &out));
-        }
-        if !out.exit.ok() {
-            return Err(
-                request_failure(&file.filename, out.raw_tail(ERROR_RAW_LINES))
-                    .with_command(&cmd, out.exit),
-            );
-        }
-        if http_status(&out) != Some(200) {
-            return Err(DownloadFailure {
-                code: ErrorCode::DownloadFailed,
-                params: json!({
-                    "reason": {
-                        "key": DOWNLOAD_HTTP_STATUS,
-                        "params": {"file_name": file.filename, "status": http_status(&out).unwrap_or(0)},
-                    },
-                }),
-                raw: Some(out.stdout_text()),
-                command: None,
-            });
-        }
-        match crate::store::hash_file(ctx.host.as_ref(), &part) {
-            Ok(copied) if copied.sha256 == file.sha256 && copied.size == file.size => {}
-            _ => {
-                return Err(DownloadFailure {
-                    code: ErrorCode::DownloadFailed,
-                    params: json!({
-                        "reason": {
-                            "key": DOWNLOAD_CHECKSUM_MISMATCH,
-                            "params": {"file_name": file.filename},
-                        },
-                    }),
-                    raw: None,
-                    command: None,
-                })
-            }
-        }
-        // Flush the downloaded package before it counts as landed.
-        if ctx.host.fsync_file(&part).is_err() {
-            return Err(request_failure(&file.filename, "fsync failed".into()));
-        }
-        if ctx.host.rename(&part, &target).is_err() {
-            return Err(request_failure(&file.filename, "rename failed".into()));
-        }
-        ctx.log(
-            LogKey::FileDownloaded,
-            json!({"file_name": file.filename, "bytes": file.size}),
-        );
+        fetch(ctx, &spec, deadline)?;
     }
     Ok(())
 }
 
 pub fn driver(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailure> {
-    let plan = ctx.state.plan.as_ref().unwrap();
-    let version = plan.version.clone();
+    let version = ctx.state.plan.as_ref().unwrap().version.clone();
     let file_name = format!("NVIDIA-Linux-x86_64-{version}-no-compat32.run");
     let in_dir = ctx.task_dir().join("in");
     let _ = ctx.host.create_dir(&in_dir, 0o755);
     let dl = ctx.task_dir().join("dl");
     let _ = ctx.host.create_dir(&dl, 0o755);
-    let part = in_dir.join("driver.run.part");
-    let headers = dl.join("driver.headers");
-    let url = format!(
-        "https://download.nvidia.com/XFree86/Linux-x86_64/{v}/NVIDIA-Linux-x86_64-{v}-no-compat32.run",
-        v = version
-    );
-    let Some(left) = remaining(ctx.host.now(), deadline) else {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure());
-    };
-    let cmd = curl_cmd(&url, &part, &headers, left, CurlRedirects::Stop);
-    let mut watch = ProgressWatch {
-        ctx,
-        part: part.clone(),
-        headers,
-        interval_reached: false,
-    };
-    let _ = watch.interval_reached;
-    let host = watch.ctx.host.clone();
-    let out = host.run_watch(&cmd, DOWNLOAD_PROGRESS_INTERVAL, &mut watch);
-    let ctx = watch.ctx;
-    ctx.log(
-        LogKey::Cmd,
-        json!({
-            "argv": cmd.argv(),
-            "exit": out.exit.to_json(),
-            "ms": out.elapsed.as_millis() as u64,
+    let spec = FixedInput {
+        url: format!("https://download.nvidia.com/XFree86/Linux-x86_64/{version}/{file_name}"),
+        file_name,
+        part: in_dir.join("driver.run.part"),
+        headers: dl.join("driver.headers"),
+        target: in_dir.join("driver.run"),
+        redirects: CurlRedirects::Stop,
+        expected: community_patch(ctx).then(|| {
+            (
+                COMMUNITY_PATCH_RUN_BYTES,
+                COMMUNITY_PATCH_RUN_SHA256.to_string(),
+            )
         }),
-    );
-    if curl_timed_out(out.exit) {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure_with_output(&cmd, &out));
-    }
-    if community_patch(ctx) && remaining(ctx.host.now(), deadline).is_none() {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure_with_output(&cmd, &out));
-    }
-    if !out.exit.ok() {
-        return Err(
-            request_failure(&file_name, out.raw_tail(ERROR_RAW_LINES)).with_command(&cmd, out.exit)
-        );
-    }
-    if http_status(&out) != Some(200) {
-        return Err(DownloadFailure {
-            code: ErrorCode::DownloadFailed,
-            params: json!({
-                "reason": {
-                    "key": DOWNLOAD_HTTP_STATUS,
-                    "params": {"file_name": file_name, "status": http_status(&out).unwrap_or(0)},
-                },
-            }),
-            raw: Some(out.stdout_text()),
-            command: None,
-        });
-    }
-    // Size must equal Content-Length when the header exists.
-    let expected = read_content_length(ctx, &ctx.task_dir().join("dl").join("driver.headers"));
-    let actual = ctx.host.lstat(&part).map(|m| m.len()).unwrap_or(0);
-    if let Some(expected) = expected {
-        if expected != actual {
-            return Err(checksum_failure(&file_name));
-        }
-    }
-    if community_patch(ctx) {
-        if actual != COMMUNITY_PATCH_RUN_BYTES {
-            return Err(checksum_failure(&file_name));
-        }
-        let digest = hash_fixed_input(ctx, &part, deadline, &file_name)?;
-        if digest.size != COMMUNITY_PATCH_RUN_BYTES || digest.sha256 != COMMUNITY_PATCH_RUN_SHA256 {
-            return Err(checksum_failure(&file_name));
-        }
-    }
-    // Flush the downloaded installer before it is landed under its final name.
-    if ctx.host.fsync_file(&part).is_err() {
-        return Err(request_failure(&file_name, "fsync failed".into()));
-    }
-    if community_patch(ctx) && remaining(ctx.host.now(), deadline).is_none() {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure());
-    }
-    let final_path = in_dir.join("driver.run");
-    if ctx.host.rename(&part, &final_path).is_err() {
-        return Err(request_failure(&file_name, "rename failed".into()));
-    }
-    ctx.log(
-        LogKey::FileDownloaded,
-        json!({"file_name": file_name, "bytes": actual}),
-    );
+        progress: true,
+    };
+    fetch(ctx, &spec, deadline)?;
     ctx.state.download = None;
     let _ = ctx.write_state();
     Ok(())
 }
 
 fn community_archive(ctx: &mut RunCtx, deadline: Instant) -> Result<(), DownloadFailure> {
-    let file_name = COMMUNITY_PATCH_ARCHIVE_NAME;
     let dl = ctx.task_dir().join("dl");
-    let part = dl.join("community-patches.debian.tar.xz.part");
-    let headers = dl.join("community-patches.headers");
-    let target = ctx.task_dir().join("in").join(COMMUNITY_PATCH_INPUT_NAME);
-    let Some(left) = remaining(ctx.host.now(), deadline) else {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure());
+    let spec = FixedInput {
+        url: COMMUNITY_PATCH_ARCHIVE_URL.into(),
+        file_name: COMMUNITY_PATCH_ARCHIVE_NAME.into(),
+        part: dl.join(COMMUNITY_PATCH_PART_NAME),
+        headers: dl.join(COMMUNITY_PATCH_HEADERS_NAME),
+        target: ctx.task_dir().join("in").join(COMMUNITY_PATCH_INPUT_NAME),
+        redirects: CurlRedirects::Https,
+        expected: Some((
+            COMMUNITY_PATCH_ARCHIVE_BYTES,
+            COMMUNITY_PATCH_ARCHIVE_SHA256.into(),
+        )),
+        progress: false,
     };
-    let cmd = curl_cmd(
-        COMMUNITY_PATCH_ARCHIVE_URL,
-        &part,
-        &headers,
-        left,
-        CurlRedirects::Stop,
-    );
-    let out = ctx.cmd(&cmd);
-    if curl_timed_out(out.exit) {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure_with_output(&cmd, &out));
-    }
-    if remaining(ctx.host.now(), deadline).is_none() {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure_with_output(&cmd, &out));
-    }
-    if !out.exit.ok() {
-        return Err(
-            request_failure(file_name, out.raw_tail(ERROR_RAW_LINES)).with_command(&cmd, out.exit)
-        );
-    }
-    if http_status(&out) != Some(200) {
-        return Err(DownloadFailure {
-            code: ErrorCode::DownloadFailed,
-            params: json!({"reason": {
-                "key": DOWNLOAD_HTTP_STATUS,
-                "params": {"file_name": file_name, "status": http_status(&out).unwrap_or(0)},
-            }}),
-            raw: Some(out.stdout_text()),
-            command: None,
-        });
-    }
-    let digest = hash_fixed_input(ctx, &part, deadline, file_name)?;
-    if digest.size != COMMUNITY_PATCH_ARCHIVE_BYTES
-        || digest.sha256 != COMMUNITY_PATCH_ARCHIVE_SHA256
-    {
-        return Err(checksum_failure(file_name));
-    }
-    if remaining(ctx.host.now(), deadline).is_none() {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure());
-    }
-    ctx.host
-        .fsync_file(&part)
-        .map_err(|e| request_failure(file_name, e.to_string()))?;
-    if remaining(ctx.host.now(), deadline).is_none() {
-        ctx.log(LogKey::BuildTimeout, json!({}));
-        return Err(timeout_failure());
-    }
-    ctx.host
-        .rename(&part, &target)
-        .map_err(|e| request_failure(file_name, e.to_string()))?;
-    ctx.log(
-        LogKey::FileDownloaded,
-        json!({"file_name": file_name, "bytes": digest.size}),
-    );
-    Ok(())
+    fetch(ctx, &spec, deadline).map(drop)
 }
 
 #[cfg(test)]

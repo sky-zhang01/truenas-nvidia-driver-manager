@@ -1,11 +1,11 @@
 [package]
 name = "truenas-nvidia-driver-manager"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.87"
 # MSRV-aware resolution: resolver 3 makes `cargo update` — the command Renovate's
 # lock file maintenance runs in this directory — prefer dependency versions whose
-# `rust-version` is at most the 1.85 declared above, instead of locking a crate
+# `rust-version` is at most the 1.87 declared above, instead of locking a crate
 # that needs a newer compiler. Resolver 3 only changes the default of
 # `resolver.incompatible-rust-versions` to "fallback"; feature unification is
 # unchanged from resolver 2.

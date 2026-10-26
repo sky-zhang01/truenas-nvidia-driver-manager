@@ -1,6 +1,6 @@
 import type { CheckRecord, GpuReading, ReasonField, TaskDetail, Unreadable, Reading } from "./api.js";
 import { isUnknown } from "./api.js";
-import { expandText, formatDate, formatDateMicros, type Params } from "./dom.js";
+import { expandText, formatDate, formatDateMicros, type Params, type ReasonLike } from "./dom.js";
 import type { Lang } from "./messages.js";
 
 export const VERSION_PATTERN = /^[0-9]{1,9}(\.[0-9]{1,9}){1,3}$/;
@@ -192,6 +192,16 @@ export function filterVersions(
   return { options, notes, noUsableVersion, noneSelected: false, conflict: false };
 }
 
+export function catalogHelpKey(filtered: GpuFilterResult, unreadable: Unreadable[]): string | null {
+  if (filtered.conflict) return null;
+  return unreadable.length === 0 && filtered.options.length > 0 ? "catalog.help" : "catalog.help.no_other";
+}
+
+export function joinReasons(reasons: ReasonLike[], lang: Lang): string {
+  const sep = lang === "zh" ? "；" : "; ";
+  return reasons.map((r) => expandText(r.key, (r.params ?? {}) as Params, lang)).join(sep);
+}
+
 const BUILD_PLAIN: readonly string[] = [
   "run_check_failed",
   "modules_copy_failed",
@@ -221,8 +231,9 @@ export function normalizeReason(code: string, params: Params = {}): ReasonField 
   if (code === "community_patch_failed:archive") {
     return { key: "build.community_patch_failed.archive", params: {} };
   }
-  if (/^community_patch_failed:(0033|0043|0047|0055)$/.test(code)) {
-    return { key: "build.community_patch_failed", params: { patch: code.slice("community_patch_failed:".length) } };
+  const patchFailure = /^community_patch_failed:(0[1-9]|[1-4][0-9]|5[0-4])$/.exec(code);
+  if (patchFailure) {
+    return { key: "build.community_patch_failed", params: { patch: patchFailure[1] } };
   }
   const moduleFailure = /^(kernel_module_missing|kernel_module_install_failed):(nvidia|nvidia_uvm|nvidia_modeset|nvidia_drm|nvidia_peermem)$/.exec(code);
   if (moduleFailure) {

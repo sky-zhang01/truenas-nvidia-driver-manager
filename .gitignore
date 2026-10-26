@@ -34,3 +34,6 @@ web/blob-report/
 
 # Local working files
 .implementation/
+
+# Python control-test caches
+__pycache__/

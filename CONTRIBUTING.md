@@ -18,7 +18,7 @@ keep the diff focused, and update both English and Chinese documentation when ch
 
 ## Local development
 
-Use Rust **1.85+**, Node.js **24**, npm, Git, Bash, and Python 3. A Linux development environment
+Use Rust **1.87+**, Node.js **24**, npm, Git, Bash, and Python 3. A Linux development environment
 provides the fullest host-tool coverage; some tests exercise `dpkg-deb` when available. Backend
 tests use a fake TrueNAS host rather than managing a real NAS, but also use local temporary
 files and processes. Do not run development servers or tests on a production NAS.

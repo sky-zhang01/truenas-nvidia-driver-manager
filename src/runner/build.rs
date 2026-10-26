@@ -142,7 +142,12 @@ fn fail_reason_ok(reason: &str) -> bool {
         return bounded_digits(rest);
     }
     if let Some(rest) = reason.strip_prefix("community_patch_failed:") {
-        return rest == "archive" || COMMUNITY_PATCH_IDS.contains(&rest);
+        return rest == "archive"
+            || (rest.len() == 2
+                && rest.bytes().all(|b| b.is_ascii_digit())
+                && rest
+                    .parse::<u8>()
+                    .is_ok_and(|n| (1..=COMMUNITY_PATCH_COUNT).contains(&n)));
     }
     if let Some(rest) = reason.strip_prefix("kernel_module_missing:") {
         return facts::DRIVER_MODULES.contains(&rest);
@@ -928,6 +933,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn community_script_fixed_inputs_match_runner_constants() {
+        let script = include_str!("../../docker/build-driver.sh");
+        for (bytes, sha) in [
+            (COMMUNITY_PATCH_RUN_BYTES, COMMUNITY_PATCH_RUN_SHA256),
+            (
+                COMMUNITY_PATCH_ARCHIVE_BYTES,
+                COMMUNITY_PATCH_ARCHIVE_SHA256,
+            ),
+        ] {
+            assert!(
+                script.contains(&format!(" {bytes} \\")),
+                "missing byte count {bytes}"
+            );
+            assert!(script.contains(sha), "missing hash {sha}");
+        }
+        assert!(script.contains(COMMUNITY_PATCH_TREE_AFTER_SHA256));
+        assert!(script.contains(&format!(
+            "^6[.]({})[.][0-9]",
+            COMMUNITY_PATCH_KERNEL_SERIES.join("|")
+        )));
+        assert!(script.contains("--no-backup-if-mismatch"));
+        assert_eq!(
+            COMMUNITY_PATCH_ARCHIVE_URL.rsplit('/').next(),
+            Some(COMMUNITY_PATCH_ARCHIVE_NAME)
+        );
+    }
+
+    #[test]
     fn docker_argv_matches_design() {
         let argv = docker_run_argv(
             "20260928T101530Z-3f9a0c12",
@@ -1018,6 +1051,10 @@ mod tests {
         assert_eq!(parse_machine_line(b"NVM:FAIL:whatever"), None);
         assert_eq!(parse_machine_line(b"plain output"), None);
         assert_eq!(
+            parse_machine_line(b"NVM:FAIL:community_patch_failed:01\r\n"),
+            Some(MachineLine::Fail("community_patch_failed:01".into()))
+        );
+        assert_eq!(
             parse_machine_line(b"NVM:STEP:community_patch"),
             Some(MachineLine::Step("community_patch".into()))
         );
@@ -1030,10 +1067,9 @@ mod tests {
         );
         for key in [
             "community_patch_failed:archive",
-            "community_patch_failed:0033",
-            "community_patch_failed:0043",
-            "community_patch_failed:0047",
-            "community_patch_failed:0055",
+            "community_patch_failed:01",
+            "community_patch_failed:17",
+            "community_patch_failed:54",
             "kernel_module_build_failed",
             "kernel_module_missing:nvidia_uvm",
             "kernel_module_install_failed:nvidia_drm",
@@ -1045,8 +1081,12 @@ mod tests {
         }
         for key in [
             "community_patch_failed:",
-            "community_patch_failed:0034",
-            "community_patch_failed:../0033",
+            "community_patch_failed:00",
+            "community_patch_failed:55",
+            "community_patch_failed:99",
+            "community_patch_failed:../01",
+            "community_patch_failed: 01",
+            "community_patch_failed:01 ",
             "kernel_module_missing:",
             "kernel_module_missing:nvidia-uvm",
             "kernel_module_missing:nvidia_extra",
@@ -1186,7 +1226,7 @@ mod tests {
                 params: json!({"code": 15}),
             }
         );
-        let patch = "community_patch_failed:0043";
+        let patch = "community_patch_failed:07";
         assert_eq!(
             classify(Exit::Signal(15), true, Some(patch), false),
             BuildOutcome::Fail {

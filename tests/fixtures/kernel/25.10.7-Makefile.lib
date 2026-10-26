@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0
+# Excerpts from truenas/linux release/25.10.7, scripts/Makefile.lib.
+# Original line 4:
+ccflags-y  += $(EXTRA_CFLAGS)
+# Original line 10:
+KBUILD_CFLAGS += $(subdir-ccflags-y)
+# Original line 117:
+                         $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) $(ccflags-y)) \

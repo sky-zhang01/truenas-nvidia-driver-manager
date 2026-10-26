@@ -20,7 +20,7 @@ use crate::build_kit::{self, KitPackage};
 use crate::codes::*;
 use crate::host::{At, Cmd, Exit};
 use crate::runner::build::BuildFailure;
-use crate::runner::download::{curl_cmd, curl_timed_out, http_status, remaining, CurlRedirects};
+use crate::runner::download::{self, remaining, CurlRedirects, FixedInput};
 use crate::runner::RunCtx;
 use crate::store;
 
@@ -700,8 +700,8 @@ fn package_matches(ctx: &RunCtx, path: &Path, package: &KitPackage) -> bool {
     )
 }
 
-/// Download one package to its final name in the task directory. This is the
-/// only download that follows https redirects, at most five times. The final
+/// Download one package to its final name in the task directory. Like the
+/// community archive, it follows at most five HTTPS redirects. The final
 /// response must be 200, and the byte count and SHA256 must match the manifest.
 fn download_package(
     ctx: &mut RunCtx,
@@ -718,60 +718,17 @@ fn download_package(
             Some(format!("cannot create {}: {error}", dl.display())),
         )
     })?;
-    let part = dl.join(format!("{}.part", package.filename));
-    let headers = dl.join(format!("{}.headers", package.filename));
-    let Some(left) = remaining(ctx.host.now(), deadline) else {
-        return Err(deadline_failure(ctx));
+    let spec = FixedInput {
+        url: package.url.clone(),
+        file_name: package.filename.clone(),
+        part: dl.join(format!("{}.part", package.filename)),
+        headers: dl.join(format!("{}.headers", package.filename)),
+        target: target.to_path_buf(),
+        redirects: CurlRedirects::Https,
+        expected: Some((package.bytes, package.sha256.clone())),
+        progress: false,
     };
-    let cmd = curl_cmd(&package.url, &part, &headers, left, CurlRedirects::Https);
-    let out = ctx.cmd(&cmd);
-    if curl_timed_out(out.exit) {
-        return Err(deadline_failure_with_output(ctx, &cmd, &out));
-    }
-    if !out.exit.ok() {
-        return Err(BuildFailure::new(
-            ErrorCode::DownloadFailed,
-            DOWNLOAD_REQUEST_FAILED,
-            json!({"file_name": package.filename}),
-            Some(out.raw_tail(ERROR_RAW_LINES)),
-        )
-        .with_command(cmd.argv(), out.exit));
-    }
-    if http_status(&out) != Some(200) {
-        return Err(BuildFailure::new(
-            ErrorCode::DownloadFailed,
-            DOWNLOAD_HTTP_STATUS,
-            json!({"file_name": package.filename, "status": http_status(&out)}),
-            Some(out.stdout_text()),
-        ));
-    }
-    let copied = match store::hash_file_within(ctx.host.as_ref(), &part, deadline) {
-        Ok(copied) => copied,
-        Err(error) if error.kind() == ErrorKind::TimedOut => {
-            return Err(deadline_failure(ctx));
-        }
-        Err(error) => {
-            return Err(request_failure(&package.filename, error.to_string()));
-        }
-    };
-    if remaining(ctx.host.now(), deadline).is_none() {
-        return Err(deadline_failure(ctx));
-    }
-    if copied.sha256 != package.sha256 || copied.size != package.bytes {
-        return Err(checksum_failure(&package.filename));
-    }
-    // Flush the package before it counts as landed.
-    if ctx.host.fsync_file(&part).is_err() {
-        return Err(request_failure(&package.filename, "fsync failed".into()));
-    }
-    if ctx.host.rename(&part, target).is_err() {
-        return Err(request_failure(&package.filename, "rename failed".into()));
-    }
-    ctx.log(
-        LogKey::FileDownloaded,
-        json!({"file_name": package.filename, "bytes": package.bytes}),
-    );
-    Ok(())
+    download::fetch(ctx, &spec, deadline).map(drop)
 }
 
 /// Write the embedded installer and the package list into the task's `in`
@@ -806,26 +763,6 @@ fn write_installer(ctx: &RunCtx, env: &BuildEnv) -> Result<(), BuildFailure> {
 }
 
 // ---- Failure reporting -----------------------------------------------------
-
-/// The two download failure shapes match `runner/download.rs` (the same nested
-/// `{key, params}` and the same raw-output tail).
-fn request_failure(file_name: &str, raw: String) -> BuildFailure {
-    BuildFailure::new(
-        ErrorCode::DownloadFailed,
-        DOWNLOAD_REQUEST_FAILED,
-        json!({"file_name": file_name}),
-        Some(raw),
-    )
-}
-
-fn checksum_failure(file_name: &str) -> BuildFailure {
-    BuildFailure::new(
-        ErrorCode::DownloadFailed,
-        DOWNLOAD_CHECKSUM_MISMATCH,
-        json!({"file_name": file_name}),
-        None,
-    )
-}
 
 /// Report the timeout when no command can start within the remaining budget.
 fn deadline_failure(ctx: &RunCtx) -> BuildFailure {

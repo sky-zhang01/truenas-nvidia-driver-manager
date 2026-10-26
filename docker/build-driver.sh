@@ -5,10 +5,11 @@
 # version is checked by the runner against the artifact; when the plan carries a
 # kernel module type, the runner passes it through NVM_KERNEL_MODULE_TYPE.
 # The runner sets NVM_COMMUNITY_PATCH=470.256.02 only for the exact official
-# version on an actual 6.12 kernel and supplies the fixed Debian archive in /in.
+# version on an actual 6.12 or 6.18 kernel and supplies the fixed Debian
+# 470.256.02-10 archive in /in.
 #
 # Lines this script writes itself use only the three machine-readable forms
-# below; every other line is the verbatim output of an external command.
+# below; other lines are diagnostic logs or verbatim external-command output.
 #   NVM:STEP:<step>
 #   NVM:INFO:<key>=<value>   Keys: cc, install_mode, flag_unsupported.
 #   NVM:FAIL:<reason>        Reasons are parsed by the runner.
@@ -41,19 +42,26 @@ fixed_file() { # fixed_file <path> <bytes> <sha256>
         && [ "$(stat -c %s "$1" 2>/dev/null)" = "$2" ] \
         && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$3" ]
 }
-source_sha() { # source_sha <relative kernel path> <sha256>
-    local file="${PROBE_DIR}/kernel/$1"
-    [ -f "${file}" ] && [ ! -L "${file}" ] \
-        && [ "$(sha256sum "${file}" | cut -d' ' -f1)" = "$2" ]
+kernel_digest() { # hash every regular file in the kernel tree in byte-sorted path order
+    local dir="${PROBE_DIR}/kernel" odd
+    [ -d "${dir}" ] && [ ! -L "${dir}" ] || return 1
+    odd="$(cd "${dir}" && find . -mindepth 1 ! -type f ! -type d -print -quit)" \
+        || return 1
+    [ -z "${odd}" ] || return 1
+    (cd "${dir}" && find . -type f -print0 | LC_ALL=C sort -z \
+        | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+}
+community_member() { # community_member <literal archive member> <fixed local output>
+    tar -xJOf "${COMMUNITY_ARCHIVE}" "$1" > "$2"
 }
 community_inputs() {
     [ "${NVM_COMMUNITY_PATCH}" = 470.256.02 ] \
-        && [[ "${KERNEL}" =~ ^6[.]12[.][0-9] ]] \
+        && [[ "${KERNEL}" =~ ^6[.](12|18)[.][0-9] ]] \
         && [ -z "${NVM_KERNEL_MODULE_TYPE:-}" ] \
         && fixed_file "${DRIVER_RUN}" 223168377 \
             fe8f58732055dacc4af0c4bb2371022d6e116e9f9594d7d3bea71f5a8a29e2b1 \
-        && fixed_file "${COMMUNITY_ARCHIVE}" 225888 \
-            3aeddf4e778ef10535de28dbfa613b24bcf334767c0ac6473193b840ec48d973
+        && fixed_file "${COMMUNITY_ARCHIVE}" 245240 \
+            c05d60926d5fc604f06384e881db9348c067018a8ba639562e03329d7f55ca19
 }
 # The build container runs code from a user-supplied installer package, so its
 # output is external input: any unexpected failure becomes unexpected:<line>.
@@ -131,92 +139,38 @@ else
     step community_patch
     community_inputs || fail community_patch_failed:archive
 
-    # The source hashes bind the patch input to this one official installer.
-    source_paths=(
-        conftest.sh
-        nvidia/nvidia.Kbuild
-        nvidia/os-mlock.c
-        nvidia-drm/nvidia-drm-drv.c
-        nvidia-drm/nvidia-drm.Kbuild
-        nvidia/nv.c
-        nvidia-modeset/nvidia-modeset-linux.c
-    )
-    source_before=(
-        7aca4b60efbae7cc24f54f62bb2e10eed42bc1104578dbdfb12d0aeeebc981b7
-        8656a2a673022e9a91255e6ee809278306c531805ce0b1967b363ceef04a92d2
-        de34036fe20a190d013a6b1adbc83bf4c57f496ab72443d144431ccb9f5d2ecc
-        e1ade5185cdf612165151b13b399b6c7f0b0cb8c6355c8f61cdea0f0303d6349
-        c844df17b5b7105eae4a056ad889d59fd4db6e8f205705398b88cb0ad3a19839
-        a1c2f2693d442c02f2a865b8826aaa6fdfb680e42198c3c6f4a801ff1a72fdad
-        021d5383b551977654dfe64989f23684d271b4e9e9946b712954bb7a56dcd127
-    )
-    source_after=(
-        e66e3f1181498adeb10893152b83be57359cf95977ed5aef10092ceb20289418
-        2a09e8de7d7a39bdf05ef7ab3c8cad89c6278d1fbeb3416b004b95b300b55285
-        8f32ef6e5fa5b070fa84f3d1367229e262c934923991e9892c0ea057b0b2dce2
-        b818030f98e5c0ce518f7bdc555e65addde12fcdb6fbf280235ffe2d8030fc29
-        3a733181aea7c11f8a884ed67dfb7db692447ad2cfc545c12b099af7ee4ecf2c
-        20cec097b20400b7673008cd156c5898868e9524d8cc5345e5defb3e1ba0a076
-        db63758d02962019f151c26340be11c724fb90300160443741c01df60f526805
-    )
-    source_failure=(0055 0043 0043 0047 0055 0033 0033)
-    for i in "${!source_paths[@]}"; do
-        source_sha "${source_paths[$i]}" "${source_before[$i]}" \
-            || fail community_patch_failed:archive
-    done
-
-    # Only four exact regular archive members are emitted to fixed local files.
-    # The Debian tree and its maintainer scripts are never extracted or run.
-    patch_ids=(0033 0043 0047 0055)
-    patch_members=(
-        debian/module/debian/patches/0033-refuse-to-load-legacy-module-if-IBT-is-enabled.patch
-        debian/module/debian/patches/0043-backport-follow_pfn-changes-from-550.90.07.patch
-        debian/module/debian/patches/0047-backport-drm_output_poll_changed-changes-from-535.21.patch
-        debian/module/debian/patches/0055-backport-file_operations_fop_unsigned_offset_present.patch
-    )
-    patch_bytes=(2235 2891 3324 2331)
-    patch_hashes=(
-        8f63eeaeab9de29d5ed578a6613d39d11752b2214c0f31e608227d2cf620bc4d
-        c1f43733ca9890b31cd511c7b9af74fdc80c6608384dda0c88e95dde31932237
-        78b44db0e978d0f398a7b3f9ebf0341550a2339a29fe264570bfb4cb5f22047b
-        f6c730b3127ffb1003976a574c9bd937fba3cda7ae31448147a0d508d4f9cd58
-    )
+    # Extract only the fixed series and its named members. No other
+    # Debian files or maintainer scripts are extracted or run.
     patch_dir="$(mktemp -d /tmp/nvm-community.XXXXXXXX)" \
         || fail community_patch_failed:archive
-    tar -tJf "${COMMUNITY_ARCHIVE}" > "${patch_dir}/members" \
+    community_member debian/module/debian/patches/series.in "${patch_dir}/series.in" \
         || fail community_patch_failed:archive
-    for i in "${!patch_ids[@]}"; do
-        member="${patch_members[$i]}"
-        # The literal member has no absolute/parent/alias segment. Confirm the
-        # archive contains it once and advertises a plain file, not a link.
-        [ "$(grep -cFx -- "${member}" "${patch_dir}/members" || true)" = 1 ] \
-            || fail community_patch_failed:archive
-        metadata="$(tar -tvJf "${COMMUNITY_ARCHIVE}" "${member}")" \
-            || fail community_patch_failed:archive
-        [[ "${metadata}" = -* && "${metadata}" != *$'\n'* \
-            && "${metadata}" = *" ${member}" ]] \
-            || fail community_patch_failed:archive
-        [ "$(awk '{print $3}' <<< "${metadata}")" = "${patch_bytes[$i]}" ] \
-            || fail community_patch_failed:archive
-        patch_file="${patch_dir}/${patch_ids[$i]}.patch"
-        tar -xJOf "${COMMUNITY_ARCHIVE}" "${member}" > "${patch_file}" \
-            || fail community_patch_failed:archive
-        fixed_file "${patch_file}" "${patch_bytes[$i]}" "${patch_hashes[$i]}" \
-            || fail community_patch_failed:archive
+    patch_names=()
+    while IFS= read -r name || [ -n "${name}" ]; do
+        case "${name}" in ''|'#'*) continue ;; esac
+        patch_names+=("${name}")
+    done < "${patch_dir}/series.in"
+    # Stage the entire series before applying its first patch.
+    for i in "${!patch_names[@]}"; do
+        printf -v ordinal '%02d' "$((i + 1))"
+        community_member "debian/module/debian/patches/${patch_names[$i]}" \
+            "${patch_dir}/${ordinal}.patch" || fail community_patch_failed:archive
     done
-    for i in "${!patch_ids[@]}"; do
+    for i in "${!patch_names[@]}"; do
+        printf -v ordinal '%02d' "$((i + 1))"
+        printf 'Applying community patch %s: %s\n' "${ordinal}" "${patch_names[$i]}"
         if patch -d "${PROBE_DIR}/kernel" -p1 --batch --forward --fuzz=0 \
-            -i "${patch_dir}/${patch_ids[$i]}.patch"; then
+            --no-backup-if-mismatch -i "${patch_dir}/${ordinal}.patch"; then
             :
         else
             rc=$?
-            fail "community_patch_failed:${patch_ids[$i]}" "${rc}"
+            fail "community_patch_failed:${ordinal}" "${rc}"
         fi
     done
-    for i in "${!source_paths[@]}"; do
-        source_sha "${source_paths[$i]}" "${source_after[$i]}" \
-            || fail "community_patch_failed:${source_failure[$i]}"
-    done
+    tree_after="$(kernel_digest)" \
+        && [ "${tree_after}" = 91b69e7d074e79c7997cf78f06c717ffd188217b183c2e8eefef4b5b91a53ea7 ] \
+        || fail community_patch_failed:archive
+
 fi
 
 supports() { grep -qxF -- "$1" "${OPTIONS_LIST}"; }

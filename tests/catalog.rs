@@ -17,6 +17,9 @@ const INDEX: &str = r#"<a href="../">..</a>
 <a href="595.104.02/">595.104.02</a>
 <a href="590.48.01/">590.48.01</a>
 <a href="580.178.04/">580.178.04</a>
+<a href="580.159.03/">580.159.03</a>
+<a href="580.126.09/">580.126.09</a>
+<a href="580.119.02/">580.119.02</a>
 <a href="575.64.05/">575.64.05</a>
 <a href="570.211.01/">570.211.01</a>
 <a href="565.77/">565.77</a>
@@ -26,12 +29,13 @@ const INDEX: &str = r#"<a href="../">..</a>
 <a href="545.29.06/">545.29.06</a>
 <a href="535.309.01/">535.309.01</a>
 <a href="470.256.02/">470.256.02</a>
+<a href="470.239.06/">470.239.06</a>
 "#;
 
 async fn setup() -> (TestApp, String) {
     let host = default_host();
     prime_canonical(&host, "580.173.02");
-    prime_kernel_headers(&host, KERNEL);
+    fake_host::prime_kernel_headers(&host, KERNEL);
     host.set_curl(CATALOG_URL, 200, INDEX.as_bytes());
     signed_in_app(host).await
 }
@@ -260,7 +264,6 @@ async fn planning_rejects_an_unbuildable_branch_with_its_reasons() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["error"], "plan.source_invalid.branch_unbuildable");
-    assert_eq!(body["params"]["branch"], 470);
     let reasons = body["params"]["reasons"].as_array().unwrap();
     assert!(reasons.contains(&json!({"key": BRANCH_FOLLOW_PFN_REMOVED, "params": {}})));
     assert!(reasons.contains(&json!({"key": BRANCH_OUTPUT_POLL_CHANGED_REMOVED, "params": {}})));
@@ -340,7 +343,7 @@ async fn planning_rejects_when_the_headers_are_unreadable() {
 async fn planning_rejects_when_a_runtime_condition_holds() {
     let (app, cookie) = setup().await;
     // Kernel 6.9 headers make 470 buildable, but nvidia_drm is not loaded.
-    prime_kernel_headers(&app.host, "6.9.0");
+    fake_host::prime_kernel_headers(&app.host, "6.9.0");
     app.host.set_uname("6.9.0-production+truenas");
     app.host.unload_module("nvidia_drm");
     let (status, body) = post_plan(
@@ -398,6 +401,8 @@ async fn gtx_1080_scene() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["error"], "plan.source_invalid.gpu_unsupported");
+    assert_eq!(body["params"]["version"], "590.48.01");
+    assert_eq!(body["params"]["gpus"][0]["usable_from_branch"], 470);
     assert_eq!(body["params"]["gpus"][0]["device"], "1b80");
     assert_eq!(body["params"]["gpus"][0]["last_branch"], 580);
     assert_eq!(body["params"]["conflict"], false);
@@ -909,7 +914,7 @@ async fn planning_checks_generic_rules_and_runtime_before_gpu_reading() {
             {"key": BRANCH_OUTPUT_POLL_CHANGED_REMOVED, "params": {}},
         ])
     );
-    prime_kernel_headers(&app.host, "6.9.0");
+    fake_host::prime_kernel_headers(&app.host, "6.9.0");
     app.host.unload_module("nvidia");
     let (_, result) = post_plan(
         &app,
@@ -1016,7 +1021,8 @@ async fn old_official_580_open_is_rejected_before_starting_a_task() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["error"], "plan.source_invalid.branch_unbuildable");
-    assert_eq!(body["params"]["branch"], 580);
+    assert_eq!(body["params"]["version"], "580.119.02");
+    assert_eq!(body["params"]["from"], "580.126.09");
     assert_eq!(
         body["params"]["reasons"],
         json!([{"key": BRANCH_PCI_RESIZE_RESOURCE_ARGS, "params": {}}])
@@ -1055,6 +1061,16 @@ async fn gpu_usable_lower_bound_includes_open_buildability() {
         .as_array()
         .unwrap()
         .contains(&json!("580.178.04")));
+    let (status, rejected) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind":"official", "version":"550.163.01", "gpus":["0000:01:00.0"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{rejected}");
+    assert_eq!(rejected["params"]["version"], "550.163.01");
+    assert_eq!(rejected["params"]["gpus"][0]["first_branch"], 570);
+    assert_eq!(rejected["params"]["gpus"][0]["usable_from_branch"], 580);
     for failure in ["catalog", "headers", "modules", "kernel"] {
         match failure {
             "catalog" => app.host.set_curl_failure(CATALOG_URL, 6, "unavailable"),
@@ -1076,7 +1092,327 @@ async fn gpu_usable_lower_bound_includes_open_buildability() {
         );
         app.host.clear_failures();
         app.host.set_uname(KERNEL);
-        prime_kernel_headers(&app.host, KERNEL);
+        fake_host::prime_kernel_headers(&app.host, KERNEL);
         app.host.set_curl(CATALOG_URL, 200, INDEX.as_bytes());
     }
+}
+
+#[tokio::test]
+async fn truenas_27_lists_patched_kepler_and_excludes_failed_pascal_branches() {
+    for device in [0x1180, 0x1b80] {
+        let (app, cookie) = gpu_setup(&[("0000:01:00.0", device, Some("nvidia"))]).await;
+        common::fake_host::prime_kernel_scene(
+            &app.host,
+            "6.18.52-production+truenas",
+            "27.0.0-RC.1",
+            "gcc (Debian 14.2.0-19) 14.2.0",
+        );
+        let (status, body) = get(&app, "/api/versions", Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["unreadable"].as_array().unwrap().is_empty(), "{body}");
+        let versions: Vec<&str> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["version"].as_str().unwrap())
+            .collect();
+        assert!(versions.contains(&"470.256.02"), "{body}");
+        for excluded in ["550.163.01", "565.77", "575.64.05"] {
+            assert!(!versions.contains(&excluded), "{body}");
+        }
+        for retained in ["570.211.01", "580.178.04"] {
+            assert!(versions.contains(&retained), "{body}");
+        }
+        if device == 0x1180 {
+            let (status, plan) = post_plan(
+                &app,
+                &cookie,
+                json!({"kind":"official", "version":"470.256.02", "gpus":["0000:01:00.0"]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{plan}");
+            assert_eq!(plan["result"], "ready", "{plan}");
+            assert!(
+                plan["dialog"]["confirmation"]["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|warning| warning["key"] == "confirm.community_patch"),
+                "{plan}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn new_kernel_probes_distinguish_present_absent_and_unreadable() {
+    use truenas_nvidia_driver_manager::{
+        catalog::{self, Probe, Seen},
+        facts::Reading,
+    };
+    let host = default_host();
+    for (kernel, extra, format) in [
+        (KERNEL, true, false),
+        ("6.18.52-production+truenas", false, true),
+    ] {
+        fake_host::prime_kernel_headers(&host, kernel);
+        let interfaces = catalog::read_interfaces(&host);
+        assert_eq!(
+            interfaces.get(Probe::ExtraCflags),
+            &Reading::Value(if extra { Seen::Present } else { Seen::Absent })
+        );
+        assert_eq!(
+            interfaces.get(Probe::FbCreateFormatInfo),
+            &Reading::Value(if format { Seen::Present } else { Seen::Absent })
+        );
+        assert!(interfaces.complete());
+    }
+    host.remove("/usr/src/linux-headers-truenas-production-amd64/scripts/Makefile.lib");
+    host.remove("/usr/src/linux-headers-truenas-production-amd64/include/drm/drm_mode_config.h");
+    let interfaces = catalog::read_interfaces(&host);
+    assert_eq!(
+        interfaces.get(Probe::ExtraCflags),
+        &Reading::Unknown(REASON_FILE_MISSING)
+    );
+    assert_eq!(
+        interfaces.get(Probe::FbCreateFormatInfo),
+        &Reading::Unknown(REASON_FILE_MISSING)
+    );
+    assert_eq!(
+        catalog::HeadersUnreadable::from_interfaces(&interfaces)
+            .items
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn extra_cflags_probe_requires_the_effective_makefile_append() {
+    use truenas_nvidia_driver_manager::{
+        catalog::{self, Probe, Seen},
+        facts::Reading,
+    };
+    let host = default_host();
+    fake_host::prime_kernel_headers(&host, KERNEL);
+    let path = "/usr/src/linux-headers-truenas-production-amd64/scripts/Makefile.lib";
+    for (text, expected) in [
+        (include_str!("fixtures/kernel/25.10.7-Makefile.lib"), true),
+        (
+            include_str!("fixtures/kernel/27.0.0-RC.1-Makefile.lib"),
+            false,
+        ),
+        ("ccflags-y  += $(EXTRA_CFLAGS)\n", true),
+        (
+            " \tccflags-y\t+=\t$(EXTRA_CFLAGS) \t# compatibility\n",
+            true,
+        ),
+        ("# ccflags-y += $(EXTRA_CFLAGS)\n", false),
+        ("EXTRA_CFLAGS :=\n", false),
+        ("ccflags-y += $(EXTRA_CFLAGS_FOO)\n", false),
+        ("ccflags-y += $(EXTRA_CFLAGS) more\n", false),
+        ("other-ccflags-y += $(EXTRA_CFLAGS)\n", false),
+        ("ccflags-y = $(EXTRA_CFLAGS)\n", false),
+        ("", false),
+    ] {
+        host.put_text(path, text);
+        assert_eq!(
+            catalog::read_interfaces(&host).get(Probe::ExtraCflags),
+            &Reading::Value(if expected {
+                Seen::Present
+            } else {
+                Seen::Absent
+            }),
+            "{text}"
+        );
+    }
+    host.remove(path);
+    assert_eq!(
+        catalog::read_interfaces(&host).get(Probe::ExtraCflags),
+        &Reading::Unknown(REASON_FILE_MISSING)
+    );
+}
+
+#[tokio::test]
+async fn truenas_27_direct_plans_reject_only_the_affected_versions() {
+    for with_pascal in [false, true] {
+        let (app, cookie) = if with_pascal {
+            gpu_setup(&[("0000:01:00.0", 0x1b80, Some("nvidia"))]).await
+        } else {
+            setup().await
+        };
+        common::fake_host::prime_kernel_scene(
+            &app.host,
+            "6.18.52-production+truenas",
+            "27.0.0-RC.1",
+            "gcc (Debian 14.2.0-19) 14.2.0",
+        );
+        let gpus = if with_pascal {
+            json!(["0000:01:00.0"])
+        } else {
+            json!([])
+        };
+        for (version, reason) in [
+            ("565.77", BRANCH_EXTRA_CFLAGS_REMOVED),
+            ("575.64.05", BRANCH_FB_CREATE_FORMAT_INFO),
+            ("570.124.04", BRANCH_EXTRA_CFLAGS_REMOVED),
+            ("575.51.02", BRANCH_EXTRA_CFLAGS_REMOVED),
+        ] {
+            let (status, body) = post_plan(
+                &app,
+                &cookie,
+                json!({"kind":"official", "version":version, "gpus":gpus}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert_eq!(
+                body["error"], "plan.source_invalid.branch_unbuildable",
+                "{body}"
+            );
+
+            assert!(
+                body["params"]["reasons"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["key"] == reason),
+                "{body}"
+            );
+        }
+        let (status, plan) = post_plan(
+            &app,
+            &cookie,
+            json!({"kind":"official", "version":"570.211.01", "gpus":gpus}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{plan}");
+        assert_eq!(plan["result"], "ready", "{plan}");
+        assert_eq!(
+            app.ctx
+                .plan
+                .lock()
+                .unwrap()
+                .0
+                .as_ref()
+                .unwrap()
+                .kernel_module_type,
+            if with_pascal {
+                Some(KernelModuleType::Proprietary)
+            } else {
+                None
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn official_planning_checks_catalog_presence_before_gpu_support() {
+    let (app, cookie) = setup().await;
+    app.host
+        .set_curl(CATALOG_URL, 200, b"<a href=\"580.159.03/\">older</a>");
+    for (version, status, result) in [
+        ("580.159.03", StatusCode::OK, "ready"),
+        (
+            "580.999.99",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "plan.source_invalid.version_not_official",
+        ),
+    ] {
+        let before = app.host.count("curl");
+        let (actual, body) = post_plan(
+            &app,
+            &cookie,
+            json!({"kind":"official", "version":version, "gpus":[]}),
+        )
+        .await;
+        assert_eq!(actual, status, "{body}");
+        assert_eq!(
+            body[if status == StatusCode::OK {
+                "result"
+            } else {
+                "error"
+            }],
+            result,
+            "{body}"
+        );
+        if status != StatusCode::OK {
+            assert_eq!(body["params"], json!({"version":version}));
+        }
+        assert_eq!(app.host.count("curl") - before, 1);
+    }
+    app.host.add_gpu("0000:01:00.0", 0x1b80, Some("nvidia"));
+    let (_, body) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind":"official", "version":"590.48.01", "gpus":["0000:01:00.0"]}),
+    )
+    .await;
+    assert_eq!(body["error"], "plan.source_invalid.version_not_official");
+    assert_eq!(app.host.count("systemd-run"), 0);
+}
+
+#[tokio::test]
+async fn official_planning_reports_catalog_failure_with_the_version() {
+    let (app, cookie) = setup().await;
+    app.host
+        .set_curl_failure(CATALOG_URL, 6, "curl connection failed");
+    let (status, body) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind":"official", "version":"580.159.03", "gpus":[]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "plan.source_invalid.version_unconfirmed");
+    assert_eq!(
+        body["params"],
+        json!({"version":"580.159.03", "unreadable":[{"object":"catalog", "reason":{"key":REASON_CONNECT_FAILED, "params":{}}, "raw":"curl connection failed"}]})
+    );
+    assert_eq!(app.host.count("systemd-run"), 0);
+}
+
+#[tokio::test]
+async fn every_470_plan_requires_a_readable_current_kernel() {
+    let (app, cookie) = setup().await;
+    app.host.set_uname("invalid!");
+    let (_, body) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind":"official", "version":"470.239.06", "gpus":[]}),
+    )
+    .await;
+    assert_eq!(body["result"], "uncomputable", "{body}");
+    assert_eq!(body["items"][0]["object"], "current_kernel");
+}
+
+#[tokio::test]
+async fn catalog_read_does_not_take_the_process_lock() {
+    use std::time::Duration;
+    let (app, cookie) = setup().await;
+    let gate = app
+        .host
+        .set_gate_output("curl", &[], FakeOutput::stdout(&format!("{INDEX}\n200")));
+    let guard = app.ctx.process_lock.lock().await;
+    let other = app.clone();
+    let request = tokio::spawn(async move {
+        post_plan(
+            &other,
+            &cookie,
+            json!({"kind":"official", "version":"580.178.04", "gpus":[]}),
+        )
+        .await
+    });
+    let observed = tokio::time::timeout(Duration::from_secs(2), async {
+        while !gate.blocked() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    gate.release();
+    drop(guard);
+    let (status, body) = request.await.unwrap();
+    assert!(
+        observed.is_ok(),
+        "catalog must run while process_lock is held elsewhere"
+    );
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

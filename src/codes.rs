@@ -134,12 +134,18 @@ pub const COMMUNITY_PATCH_RUN_BYTES: u64 = 223_168_377;
 pub const COMMUNITY_PATCH_RUN_SHA256: &str =
     "fe8f58732055dacc4af0c4bb2371022d6e116e9f9594d7d3bea71f5a8a29e2b1";
 pub const COMMUNITY_PATCH_ARCHIVE_NAME: &str =
-    "nvidia-graphics-drivers-tesla-470_470.256.02-5~bpo12+1.debian.tar.xz";
+    "nvidia-graphics-drivers-tesla-470_470.256.02-10.debian.tar.xz";
 pub const COMMUNITY_PATCH_INPUT_NAME: &str = "community-patches.debian.tar.xz";
-pub const COMMUNITY_PATCH_ARCHIVE_URL: &str = "https://deb.debian.org/debian/pool/non-free/n/nvidia-graphics-drivers-tesla-470/nvidia-graphics-drivers-tesla-470_470.256.02-5~bpo12+1.debian.tar.xz";
-pub const COMMUNITY_PATCH_ARCHIVE_BYTES: u64 = 225_888;
+pub const COMMUNITY_PATCH_PART_NAME: &str = "community-patches.debian.tar.xz.part";
+pub const COMMUNITY_PATCH_HEADERS_NAME: &str = "community-patches.headers";
+pub const COMMUNITY_PATCH_ARCHIVE_URL: &str = "https://snapshot.debian.org/archive/debian/20261010T023936Z/pool/non-free/n/nvidia-graphics-drivers-tesla-470/nvidia-graphics-drivers-tesla-470_470.256.02-10.debian.tar.xz";
+pub const COMMUNITY_PATCH_ARCHIVE_BYTES: u64 = 245_240;
 pub const COMMUNITY_PATCH_ARCHIVE_SHA256: &str =
-    "3aeddf4e778ef10535de28dbfa613b24bcf334767c0ac6473193b840ec48d973";
+    "c05d60926d5fc604f06384e881db9348c067018a8ba639562e03329d7f55ca19";
+pub const COMMUNITY_PATCH_COUNT: u8 = 54;
+pub const COMMUNITY_PATCH_KERNEL_SERIES: [&str; 2] = ["12", "18"];
+pub const COMMUNITY_PATCH_TREE_AFTER_SHA256: &str =
+    "91b69e7d074e79c7997cf78f06c717ffd188217b183c2e8eefef4b5b91a53ea7";
 pub const TOOLKIT_PACKAGES: [&str; 4] = [
     "libnvidia-container1",
     "libnvidia-container-tools",
@@ -261,6 +267,8 @@ pub const DOWNLOAD_CHECKSUM_MISMATCH: &str = "download.checksum_mismatch";
 pub const BRANCH_FOLLOW_PFN_REMOVED: &str = "branch.follow_pfn_removed";
 pub const BRANCH_OUTPUT_POLL_CHANGED_REMOVED: &str = "branch.output_poll_changed_removed";
 pub const BRANCH_PCI_RESIZE_RESOURCE_ARGS: &str = "branch.pci_resize_resource_args";
+pub const BRANCH_EXTRA_CFLAGS_REMOVED: &str = "branch.extra_cflags_removed";
+pub const BRANCH_FB_CREATE_FORMAT_INFO: &str = "branch.fb_create_format_info";
 pub const BRANCH_INSTALLER_LOADS_MODULE: &str = "branch.installer_loads_module";
 pub const BRANCH_NVIDIA_NOT_LOADED: &str = "branch.nvidia_not_loaded";
 pub const BRANCH_NVIDIA_DRM_NOT_LOADED: &str = "branch.nvidia_drm_not_loaded";
@@ -296,7 +304,6 @@ pub const BUILD_COMMUNITY_PATCH_FAILED: &str = "community_patch_failed";
 pub const BUILD_KERNEL_MODULE_BUILD_FAILED: &str = "kernel_module_build_failed";
 pub const BUILD_KERNEL_MODULE_MISSING: &str = "kernel_module_missing";
 pub const BUILD_KERNEL_MODULE_INSTALL_FAILED: &str = "kernel_module_install_failed";
-pub const COMMUNITY_PATCH_IDS: [&str; 4] = ["0033", "0043", "0047", "0055"];
 
 pub const BUILD_DOCKER_RUN_FAILED: &str = "docker_run_failed";
 pub const BUILD_CONTAINER_EXIT: &str = "container_exit";

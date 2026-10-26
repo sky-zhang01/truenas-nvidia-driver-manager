@@ -59,7 +59,7 @@ jq . "$WORK/home.json" "$WORK/versions.json" "$WORK/drivers.json" "$WORK/tasks.j
 
 ## 2. 生成所请求的计划
 
-官方来源：从 versions 的 `.items[].version` 选择准确版本，从 `.gpus[].address` 选择目标显卡。不得擅自更换版本或显卡；服务端会核验来源支持情况与当前主机事实。
+官方来源可以使用 NVIDIA 官网目录中的任意版本，从 versions 的 `.gpus[].address` 选择目标显卡。保持请求的版本和显卡选择；服务端会核验官网目录、来源支持情况与当前主机事实。
 
 ```bash
 source '<private-session-directory>/env.sh'
@@ -98,7 +98,7 @@ jq . "$WORK/plan.json"
 | `confirm.how.official` | 从 NVIDIA 官网下载安装包，在本机构建。 |
 | `confirm.how.upload` | 使用已上传的安装包，不再下载。 |
 | `confirm.how.local` | 使用已有的本地驱动，不下载也不构建。 |
-| `confirm.upload_trust` | 上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。请使用从 NVIDIA 官网下载的安装包。 |
+| `confirm.upload_trust` | 上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。 |
 | `confirm.community_patch` | 此驱动使用 Debian 社区兼容补丁：不支持用户 I/O 内存映射，显示热插拔行为可能不同，启用 IBT 的系统上无法加载。Kepler 上的加载、显示及 CUDA 工作负载尚未验证。 |
 | `confirm.original.unsavable` | 无法从正式路径上的驱动文件读取驱动版本和目标内核，因此不能保存为原版驱动。 |
 | `original.skip_warning` | 不保存时，本次更新失败将没有原版驱动可恢复。 |
@@ -186,7 +186,12 @@ fi
 | `plan.changed` | 主机事实改变；读取 `.params.changed`，生成新计划并重新确认。 |
 | `plan.precheck_failed` / `plan.uncomputable` | 先解决返回的阻断项或不可读事实。 |
 | `task.running` | 已有任务；先跟进它，不再提交。 |
-| `plan.source_invalid.gpu_unsupported` / `plan.source_invalid.branch_unbuildable` | 来源不适用所选显卡/内核；解释参数，改选前重新确认。 |
+| `plan.source_invalid.gpu_unsupported` | `.params.gpus` 中的显卡不支持 `.params.version`，逐卡的 `.usable_from_branch` 为本机可用的最低分支，`.params.conflict` 表示所选显卡互相冲突。解释返回参数，取得重新确认的替代方案。 |
+| `plan.source_invalid.branch_unbuildable` | `.params.version` 无法在本机构建；`.params.reasons` 列出原因键，`.params.from` 为同分支的替代版本或 `null`。解释返回参数，取得重新确认的替代方案。 |
+| `plan.source_invalid.version_not_official` | HTTP 422：NVIDIA 官网没有 `.params.version`。核对版本号后生成新计划并重新确认。 |
+| `plan.source_invalid.version_unconfirmed` | HTTP 409：无法确认 NVIDIA 官网是否有 `.params.version`；`.params.unreadable` 以 `{object: "catalog", reason, raw?}` 列出目录读取失败原因。解决读取失败后生成新计划并重新确认。 |
+| `branch.extra_cflags_removed` | 内核构建脚本不再支持此版本使用的 EXTRA_CFLAGS；选择可构建版本并重新确认计划。 |
+| `branch.fb_create_format_info` | 此版本的 `nvidia-drm` 源码与当前内核头文件不匹配（例如 `fb_create` 多了一个 `drm_format_info` 参数）；选择可构建版本并重新确认计划。 |
 | `SAVE_ORIGINAL_FAILED` | 保存原版失败；核对原因，不自动改成跳过保存。 |
 | `DOWNLOAD_FAILED` / `BUILD_FAILED` / `BUILD_TIMEOUT` | 下载、构建失败或超时；读取嵌套原因与输出，解决后重新确认重试。 |
 | `GPU_IN_USE` / `MODULE_UNLOAD_REFUSED` | 显卡被使用或模块无法卸载；报告实际使用者，停应用另需确认。 |

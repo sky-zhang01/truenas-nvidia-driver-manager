@@ -57,7 +57,7 @@ async function openUploadDialog(page: Page): Promise<Locator> {
 }
 
 function options(page: Page): Promise<string[]> {
-  return page.locator("#version-select option").allTextContents();
+  return page.locator("#version-select option:not([value='other'])").allTextContents();
 }
 
 test("a Pascal host lists its buildable proprietary branches and unspecified 550", async ({ page, request }) => {
@@ -67,29 +67,80 @@ test("a Pascal host lists its buildable proprietary branches and unspecified 550
   await expect(page.locator(".gpu-notes")).toContainText("580");
 });
 
-test("a Kepler host offers exact 470 and discloses its limits before confirmation", async ({ page, request }) => {
-  await openUpdate(page, request, "kepler");
-  expect(await options(page)).toEqual(["470.256.02"]);
-  await expect(page.locator(".gpu-notes")).toContainText("470");
-  await expect(page.locator(".conclusion")).toHaveCount(0);
-  const update = page.getByRole("button", { name: /^Check and continue$|^检查并继续$/ });
-  await expect(update).toBeDisabled();
-  await page.selectOption("#version-select", "470.256.02");
-  await expect(update).toBeEnabled();
-  const planned = page.waitForResponse((response) => response.url().endsWith("/api/plans") && response.request().method() === "POST");
-  await update.click();
-  const plan = await (await planned).json();
-  expect(plan.dialog.confirmation.original).toBe("save_available");
-  expect(plan.dialog.confirmation.buttons).toEqual([
-    { button: "save", enabled: true }, { button: "skip", enabled: true },
-  ]);
-  expect(plan.dialog.confirmation.warnings).toContainEqual({ key: "confirm.community_patch", params: {} });
-  const confirm = page.locator("dialog[open]");
-  await expect(confirm).toContainText(/Debian community compatibility patches|来自 Debian 的社区兼容补丁/);
-  await expect(confirm).toContainText(/IBT enabled|启用 IBT/);
-  await expect(confirm.locator("input[type=checkbox]")).toHaveCount(0);
-  await confirm.getByRole("button", { name: /Back to selection|返回选择/ }).click();
+for (const scenario of ["kepler", "kepler27"]) {
+  test(`a ${scenario} host offers exact 470 and discloses its limits before confirmation`, async ({ page, request }) => {
+    await openUpdate(page, request, scenario);
+    expect(await options(page)).toEqual(["470.256.02"]);
+    await expect(page.locator(".gpu-notes")).toContainText("470");
+    await expect(page.locator(".conclusion")).toHaveCount(0);
+    const update = page.getByRole("button", { name: /^Check and continue$|^检查并继续$/ });
+    await expect(update).toBeDisabled();
+    await page.selectOption("#version-select", "470.256.02");
+    await expect(update).toBeEnabled();
+    const planned = page.waitForResponse((response) => response.url().endsWith("/api/plans") && response.request().method() === "POST");
+    await update.click();
+    const plan = await (await planned).json();
+    expect(plan.dialog.confirmation.original).toBe("save_available");
+    expect(plan.dialog.confirmation.buttons).toEqual([
+      { button: "save", enabled: true }, { button: "skip", enabled: true },
+    ]);
+    expect(plan.dialog.confirmation.warnings).toContainEqual({ key: "confirm.community_patch", params: {} });
+    const confirm = page.locator("dialog[open]");
+    await expect(confirm).toContainText(/Debian community compatibility patches|来自 Debian 的社区兼容补丁/);
+    await expect(confirm).toContainText(/IBT enabled|启用 IBT/);
+    await expect(confirm.locator("input[type=checkbox]")).toHaveCount(0);
+    await confirm.getByRole("button", { name: /Back to selection|返回选择/ }).click();
+  });
+}
+
+test("a Pascal host on TrueNAS 27 excludes branches that cannot build", async ({ page, request }) => {
+  await openUpdate(page, request, "pascal27");
+  expect(await options(page)).toEqual(["580.178.04", "570.211.01", "470.256.02"]);
+  await expect(page.locator(".gpu-notes")).toContainText(/GTX 1080/);
 });
+
+for (const [version, reason] of [
+  ["565.77", "branch.extra_cflags_removed"],
+  ["575.64.05", "branch.fb_create_format_info"],
+] as const) {
+  for (const lang of ["zh", "en"] as const) {
+    test(`directly submitting ${version} on TrueNAS 27 renders the rejection in ${lang}`, async ({ page, request }) => {
+      await openUpdate(page, request, "pascal27");
+      await page.locator("#lang-control").selectOption(lang);
+      // Model a direct submission of a version outside the dropdown. The local
+      // production API still decides whether this exact version can build.
+      await page.route("**/api/plans", async (route) => {
+        const body = route.request().postDataJSON() as { source: { version: string } };
+        body.source.version = version;
+        const response = await route.fetch({ postData: JSON.stringify(body) });
+        await route.fulfill({ response });
+      });
+      await page.selectOption("#version-select", "570.211.01");
+      const planned = page.waitForResponse((response) => response.url().endsWith("/api/plans") && response.request().method() === "POST");
+      await page.getByRole("button", { name: CHECK }).click();
+      const response = await planned;
+      expect(response.ok()).toBeFalsy();
+      const body = await response.json();
+      expect(body.error).toBe("plan.source_invalid.branch_unbuildable");
+      expect(body.params.reasons.map((entry: { key: string }) => entry.key)).toContain(reason);
+      const notice = page.locator(".update-error [role=alert]");
+      await expect(notice).toContainText(lang === "zh"
+        ? `版本 ${version} 无法在本机构建：`
+        : `Version ${version} cannot be built on this host:`);
+      if (reason === "branch.extra_cflags_removed") {
+        await expect(notice).toContainText(lang === "zh"
+          ? "内核的构建脚本已不再支持此版本驱动源码使用的 EXTRA_CFLAGS"
+          : "the kernel's build scripts no longer support the EXTRA_CFLAGS that this version's driver source uses");
+      } else {
+        await expect(notice).toContainText(lang === "zh"
+          ? "此版本的 nvidia-drm 源码与当前内核头文件不匹配（例如 fb_create 多了一个 drm_format_info 参数）"
+          : "this version's nvidia-drm source does not match the current kernel headers (for example, fb_create takes an extra drm_format_info argument)");
+      }
+      await expect(notice).not.toContainText(/开头的官方版本|Official versions starting with/);
+      await expect(page.locator("dialog[open]")).toHaveCount(0);
+    });
+  }
+}
 
 test("two counted GPUs show a checkbox group and an empty list until one is picked", async ({
   page,
@@ -453,13 +504,13 @@ test("an uploaded installer discloses kernel loading before submission", async (
   expect(plan.dialog.source.kind).toBe("upload");
   expect(plan.dialog.confirmation.warnings).toContainEqual({ key: "confirm.upload_trust", params: {} });
   const confirm = page.locator("dialog[open]");
-  await expect(confirm).toContainText("The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. Use an installer downloaded from the NVIDIA website.");
+  await expect(confirm).toContainText("The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures.");
   await confirm.getByRole("button", { name: /Back to selection|返回选择/ }).click();
   await page.locator("#lang-control").selectOption("zh");
   const chineseUpload = page.locator("dialog.upload-dialog[open]");
   await expect(chineseUpload).toBeVisible();
   await chineseUpload.getByRole("button", { name: CHECK }).click();
-  await expect(page.locator("dialog[open]")).toContainText("上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。请使用从 NVIDIA 官网下载的安装包。");
+  await expect(page.locator("dialog[open]")).toContainText("上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。");
 });
 
 test("a double click in the upload dialog sends one plan request", async ({ page, request }) => {

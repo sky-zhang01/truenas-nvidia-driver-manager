@@ -6,6 +6,9 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { expandText } from "../src/dom.js";
+import { ApiError } from "../src/api.js";
+import { renderPlanError } from "../src/views/plan.js";
+import { FakeElement, installDom } from "./dom-shim.js";
 import { MESSAGES, messageKeys } from "../src/messages.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -117,6 +120,8 @@ const REQUIRED: string[] = [
   "build.artifact.deliver_failed",
   "download.checksum_mismatch",
   "branch.nvidia_drm_not_loaded",
+  "branch.extra_cflags_removed",
+  "branch.fb_create_format_info",
   "restore.no_original.not_saved",
   "restore.no_original.checksum_mismatch",
   "restore.no_original.unreadable",
@@ -1770,6 +1775,7 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
     ObjectEntry: struct(gpu, "GpuUserJson"),
     PlanUncomputable: rustJsonKeys(planResponseArm("Uncomputable")),
     PlanChangedParams: jsonKeys("submit_reject_response"),
+    SourceInvalidParams: jsonKeys("source_invalid_response"),
     TaskRequest: struct(web, "TaskRequest"),
     TaskSubmission: jsonKeys("submit_task"),
     TaskDetail: rustJsonKeys(rustLet(fn("task_detail_response"), "body")),
@@ -1992,7 +1998,7 @@ test("the agent guide binds every documented API token to its Rust owner", () =>
     assert.ok(contract.statuses.includes(value[1] as string), `guide outcome missing from contract: ${value[1]}`);
   }
   const reasonSet = new Set(contract.reasons);
-  for (const match of body.matchAll(/`([A-Z]+_[A-Z_]+|(?:ssh|login|auth|plan|task|reason)\.[a-z_.]+)`/g)) {
+  for (const match of body.matchAll(/`([A-Z]+_[A-Z_]+|(?:ssh|login|auth|plan|task|reason|branch)\.[a-z_.]+)`/g)) {
     const key = match[1] as string;
     if (!contract.statuses.includes(key)) assert.ok(reasonSet.has(key), `guide reason missing from contract: ${key}`);
   }
@@ -2072,3 +2078,46 @@ test("Chinese TrueNAS interface guidance uses the translated menu names", () => 
   assert.match(MESSAGES["help.reset_account"]!.zh, /TrueNAS 命令行/);
   assert.match(MESSAGES["extension.missing"]!.zh, /TrueNAS 的应用设置/);
 });
+
+const REJECTION_REASONS = {
+  "branch.extra_cflags_removed": {
+    zh: "内核的构建脚本已不再支持此版本驱动源码使用的 `EXTRA_CFLAGS`",
+    en: "the kernel's build scripts no longer support the `EXTRA_CFLAGS` that this version's driver source uses",
+  },
+  "branch.fb_create_format_info": {
+    zh: "此版本的 `nvidia-drm` 源码与当前内核头文件不匹配（例如 `fb_create` 多了一个 `drm_format_info` 参数）",
+    en: "this version's `nvidia-drm` source does not match the current kernel headers (for example, `fb_create` takes an extra `drm_format_info` argument)",
+  },
+} as const;
+
+const REJECTION_TEMPLATE = {
+  zh: "error|版本 {version} 无法在本机构建：{unbuildable_reason}。",
+  en: "error|Version {version} cannot be built on this host: {unbuildable_reason}.",
+} as const;
+
+test("version-specific rejection copy matches the proposed Chinese and English text", () => {
+  assert.deepEqual(MESSAGES["plan.source_invalid.branch_unbuildable"], REJECTION_TEMPLATE);
+  for (const [key, text] of Object.entries(REJECTION_REASONS)) assert.deepEqual(MESSAGES[key], text);
+  assert.deepEqual(MESSAGES["branch.pci_resize_resource_args"], {
+    zh: "内核的 `pci_resize_resource()` 参数个数与此版本驱动源码中的调用不一致",
+    en: "the number of arguments of the kernel's `pci_resize_resource()` does not match the call in this version's driver source",
+  });
+});
+
+for (const reason of Object.keys(REJECTION_REASONS) as (keyof typeof REJECTION_REASONS)[]) {
+  for (const lang of ["zh", "en"] as const) {
+    test(`a rejected plan renders ${reason} in ${lang}`, () => {
+      installDom();
+      const error = new ApiError(400, "plan.source_invalid.branch_unbuildable", {
+        version: "580.119.02", from: null, reasons: [{ key: reason, params: {} }],
+      }, undefined, null);
+      const box = new FakeElement("div");
+      renderPlanError({ lang } as never, box as never, error, false);
+      const expected = REJECTION_TEMPLATE[lang].slice("error|".length)
+        .replace("{version}", "580.119.02")
+        .replace("{unbuildable_reason}", REJECTION_REASONS[reason][lang].replaceAll("`", ""));
+      assert.equal(box.textContent, (lang === "zh" ? "错误" : "Error") + expected);
+      assert.equal((box.children[0] as FakeElement).getAttribute("role"), "alert");
+    });
+  }
+}

@@ -52,8 +52,8 @@ test("confirmation renders the server's choices and warnings in both languages",
       assert.equal(body.textContent.includes(expandText("confirm.community_patch", {}, lang)), false);
       assert.equal(body.textContent.includes(expandText("original.skip_warning", {}, lang)), false);
       const trustText = lang === "en"
-        ? "The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. Use an installer downloaded from the NVIDIA website."
-        : "上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。请使用从 NVIDIA 官网下载的安装包。";
+        ? "The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures."
+        : "上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。";
       assert.equal(body.textContent.includes(trustText), uploadWarning);
     }
   } finally {

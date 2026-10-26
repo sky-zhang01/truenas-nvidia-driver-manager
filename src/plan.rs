@@ -201,8 +201,16 @@ pub enum SourceInvalid {
     VersionFormat,
     VersionBelow470,
     BranchUnbuildable {
-        branch: u32,
+        version: String,
+        from: Option<String>,
         reasons: Vec<&'static str>,
+    },
+    VersionNotOfficial {
+        version: String,
+    },
+    VersionUnconfirmed {
+        version: String,
+        unreadable: Vec<serde_json::Value>,
     },
     BranchUndecidable {
         unreadable: Vec<Unreadable>,
@@ -211,6 +219,7 @@ pub enum SourceInvalid {
         unreadable: Vec<Unreadable>,
     },
     GpuUnsupported {
+        version: Option<String>,
         gpus: serde_json::Value,
         conflict: bool,
     },
@@ -448,11 +457,12 @@ fn check_branch(
     kernel: &str,
     interfaces: &catalog::KernelInterfaces,
     module_type: Option<KernelModuleType>,
+    loaded: &Reading<Vec<facts::ModuleLine>>,
 ) -> Result<(), SourceInvalid> {
-    let major = version.major();
     match catalog::official_verdict(version, kernel, interfaces, module_type) {
         catalog::BranchVerdict::Unbuildable(reasons) => Err(SourceInvalid::BranchUnbuildable {
-            branch: major,
+            version: version.text().to_string(),
+            from: catalog::branch_range(version, kernel, interfaces, loaded, module_type),
             reasons,
         }),
         catalog::BranchVerdict::Undecidable => Err(SourceInvalid::BranchUndecidable {
@@ -513,6 +523,7 @@ fn prepare_official_source(
     snapshot: &mut Snapshot,
     modules_for_occupancy: &mut Option<Reading<Vec<facts::ModuleLine>>>,
     official_kernel: &mut Option<String>,
+    official_versions: &Result<Vec<facts::Version>, serde_json::Value>,
 ) -> Result<Option<Precheck>, SourceInvalid> {
     if !gpus_request_ok(gpus) {
         return Err(SourceInvalid::RequestInvalid);
@@ -523,7 +534,7 @@ fn prepare_official_source(
     if parsed.major() < MIN_MAJOR_BRANCH {
         return Err(SourceInvalid::VersionBelow470);
     }
-    if version == COMMUNITY_PATCH_VERSION {
+    if parsed.major() == 470 {
         match facts::kernel(h) {
             Reading::Value(kernel) => *official_kernel = Some(kernel),
             Reading::Unknown(reason) => {
@@ -542,21 +553,42 @@ fn prepare_official_source(
     }
     let kernel = official_kernel.as_deref().unwrap_or_default();
     let interfaces = catalog::read_interfaces(h);
-    check_branch(&parsed, kernel, &interfaces, None)?;
+    check_branch(
+        &parsed,
+        kernel,
+        &interfaces,
+        None,
+        &Reading::Unknown(REASON_IO_ERROR),
+    )?;
     let loaded = facts::read_modules(h);
     let reasons = catalog::official_module_reasons(&parsed, kernel, &loaded);
     if !reasons.is_empty() {
         return Err(SourceInvalid::BranchUnbuildable {
-            branch: parsed.major(),
+            version: version.to_string(),
+            from: catalog::branch_range(&parsed, kernel, &interfaces, &loaded, None),
             reasons,
         });
     }
-    *modules_for_occupancy = Some(loaded);
+    *modules_for_occupancy = Some(loaded.clone());
     let host_gpus = read_source_gpus(h)?;
     let selected = check_gpus(gpus, &host_gpus)?;
     let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
     let module_type = catalog::module_type(crate::gpu_table::GPUS, &devices, &parsed);
-    check_branch(&parsed, kernel, &interfaces, module_type)?;
+    check_branch(&parsed, kernel, &interfaces, module_type, &loaded)?;
+    let versions = match official_versions {
+        Ok(versions) => versions,
+        Err(item) => {
+            return Err(SourceInvalid::VersionUnconfirmed {
+                version: version.to_string(),
+                unreadable: vec![item.clone()],
+            })
+        }
+    };
+    if !versions.iter().any(|candidate| candidate.text() == version) {
+        return Err(SourceInvalid::VersionNotOfficial {
+            version: version.to_string(),
+        });
+    }
     if !catalog::drives_all(
         crate::gpu_table::GPUS,
         crate::gpu_table::VERSIONS,
@@ -564,13 +596,43 @@ fn prepare_official_source(
         &parsed,
     ) {
         let conflict = catalog::conflict(crate::gpu_table::GPUS, &devices);
-        let payload = catalog::gpu_unsupported_json(
+        let mut payload = catalog::gpu_unsupported_json(
             crate::gpu_table::GPUS,
             crate::gpu_table::VERSIONS,
             &selected,
             &parsed,
         );
+        let current_kernel = official_kernel
+            .clone()
+            .or_else(|| facts::kernel(h).value().cloned());
+        let candidates = catalog::items(
+            &catalog::branch_latest(versions),
+            &interfaces,
+            &loaded,
+            current_kernel.as_deref(),
+        )
+        .unwrap_or_default();
+        let excluded = catalog::open_unbuildable(
+            &candidates,
+            current_kernel.as_deref().unwrap_or_default(),
+            &interfaces,
+        );
+        let usable = (loaded.is_value() && current_kernel.is_some()).then_some(excluded.as_slice());
+        let listed = catalog::gpu_list(
+            &candidates,
+            &selected,
+            crate::gpu_table::GPUS,
+            crate::gpu_table::VERSIONS,
+            usable,
+        );
+        for gpu in payload["gpus"].as_array_mut().unwrap() {
+            gpu["usable_from_branch"] = json!(listed
+                .iter()
+                .find(|entry| gpu["address"] == entry.gpu.address)
+                .and_then(|entry| entry.usable_from.as_ref().map(facts::Version::major)));
+        }
         return Err(SourceInvalid::GpuUnsupported {
+            version: Some(version.to_string()),
             gpus: payload["gpus"].clone(),
             conflict,
         });
@@ -636,6 +698,7 @@ fn prepare_upload_source(
     let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
     if catalog::conflict(crate::gpu_table::GPUS, &devices) {
         return Err(SourceInvalid::GpuUnsupported {
+            version: None,
             gpus: json!([]),
             conflict: true,
         });
@@ -792,7 +855,11 @@ fn check_occupancy(
 }
 
 /// Check source and host readiness before assembling a confirmation.
-pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), SourceInvalid> {
+pub fn precheck(
+    ctx: &Ctx,
+    req: &SourceRequest,
+    official_versions: &Result<Vec<facts::Version>, serde_json::Value>,
+) -> Result<(Precheck, Snapshot), SourceInvalid> {
     if ctx.setup_problems() {
         return Err(SourceInvalid::SetupBlocked);
     }
@@ -828,6 +895,7 @@ pub fn precheck(ctx: &Ctx, req: &SourceRequest) -> Result<(Precheck, Snapshot), 
                 &mut snapshot,
                 &mut modules_for_occupancy,
                 &mut official_kernel,
+                official_versions,
             )? {
                 return Ok((result, snapshot));
             }

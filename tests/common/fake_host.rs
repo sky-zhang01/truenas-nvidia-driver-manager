@@ -4154,6 +4154,15 @@ pub fn default_host() -> FakeHost {
 /// Prime an **existing** fixture into the healthy default scene, without touching the deployment
 /// claim: two processes can share one sandbox, and the one that owns the reset also owns the claim.
 pub fn prime_default_scene(host: &FakeHost) {
+    host.set_curl(
+        truenas_nvidia_driver_manager::codes::CATALOG_URL,
+        200,
+        b"<a href=\"615.71.09/\">615.71.09</a>\n<a href=\"590.48.01/\">590.48.01</a>\n<a href=\"580.178.04/\">580.178.04</a>\n<a href=\"580.173.02/\">580.173.02</a>\n<a href=\"570.211.01/\">570.211.01</a>\n<a href=\"470.256.02/\">470.256.02</a>\n",
+    );
+    host.put_text(
+        "/usr/src/linux-headers-truenas-production-amd64/scripts/Makefile.lib",
+        "ccflags-y  += $(EXTRA_CFLAGS)\n",
+    );
     default_pci_dir(host);
     host.mkdir("/sys/class/drm");
     host.mkdir("/boot");
@@ -4172,8 +4181,56 @@ pub fn prime_default_scene(host: &FakeHost) {
 
 pub const CANONICAL_PATH_FOR_TESTS: &str = "/usr/share/truenas/sysext-extensions/nvidia.raw";
 
+pub fn prime_kernel_headers(host: &FakeHost, kernel: &str) {
+    let format_info = kernel.starts_with("6.18.");
+    host.put_text(
+        "/usr/src/linux-headers-truenas-production-amd64/scripts/Makefile.lib",
+        if format_info {
+            "# kbuild flags use ccflags-y\n"
+        } else {
+            "ccflags-y  += $(EXTRA_CFLAGS)\n"
+        },
+    );
+    let base = "/usr/src/linux-headers-truenas-production-amd64/include";
+    if kernel.starts_with("6.9") {
+        host.put_text(
+            &format!("{base}/linux/mm.h"),
+            "int follow_pfn(struct vm_area_struct *vma, unsigned long addr, unsigned long *pfn);\n",
+        );
+        host.put_text(
+            &format!("{base}/drm/drm_mode_config.h"),
+            "struct drm_mode_config_funcs { void (*output_poll_changed)(struct drm_device *dev); };\n",
+        );
+    } else {
+        host.put_text(
+            &format!("{base}/linux/mm.h"),
+            "static inline int follow_pfnmap_start(struct follow_pfnmap_args *args);\n",
+        );
+        host.put_text(
+            &format!("{base}/drm/drm_mode_config.h"),
+            "struct drm_mode_config_funcs { void (*atomic_state_free)(void); };\n",
+        );
+    }
+    let drm_path = format!("{base}/drm/drm_mode_config.h");
+    let mut drm = String::from_utf8(host.file(&drm_path).unwrap()).unwrap();
+    drm.push_str(if format_info { "struct drm_framebuffer *(*fb_create)(struct drm_device *dev, struct drm_file *file_priv, const struct drm_format_info *info, const struct drm_mode_fb_cmd2 *mode_cmd);\n" } else { "struct drm_framebuffer *(*fb_create)(struct drm_device *dev, struct drm_file *file_priv, const struct drm_mode_fb_cmd2 *mode_cmd);\n" });
+    host.put_text(&drm_path, &drm);
+    if kernel.starts_with("6.12.105") || kernel.starts_with("6.12.97") || format_info {
+        host.put_text(
+            &format!("{base}/linux/pci.h"),
+            "int pci_resize_resource(struct pci_dev *dev, int resno, int size,\n                        u32 exclude_bars);\n",
+        );
+    } else {
+        host.put_text(
+            &format!("{base}/linux/pci.h"),
+            "int pci_resize_resource(struct pci_dev *dev, int resno, int size);\n",
+        );
+    }
+}
+
 /// Supported host/compiler scenes share the same implementation path.
 pub fn prime_kernel_scene(host: &FakeHost, kernel: &str, truenas: &str, compiler: &str) {
+    prime_kernel_headers(host, kernel);
     // Scene resets must override this response too: the midclt map survives resets.
     let containers = if truenas.starts_with("27.") {
         FakeOutput::stdout("[]")

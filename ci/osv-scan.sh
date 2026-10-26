@@ -3,8 +3,8 @@
 #
 # The calling workflow supplies OSV_SCANNER_VERSION; the binary is verified
 # against the release SHA256SUMS.
-# To accept a finding temporarily, add an osv-scanner.toml to that change and
-# extend the scan command with --config=osv-scanner.toml.
+# Temporarily accepted findings live in the repository's osv-scanner.toml, one entry
+# per advisory with its reason and revisit date.
 set -Eeuo pipefail
 
 : "${OSV_SCANNER_VERSION:?set OSV_SCANNER_VERSION}"
@@ -25,4 +25,5 @@ mkdir "${work}/bin"
 install -m 0755 osv-scanner_linux_amd64 "${work}/bin/osv-scanner"
 
 cd "${repo_root}"
-"${work}/bin/osv-scanner" scan source --lockfile=Cargo.lock --lockfile=web/package-lock.json
+"${work}/bin/osv-scanner" scan source --config=osv-scanner.toml \
+    --lockfile=Cargo.lock --lockfile=web/package-lock.json

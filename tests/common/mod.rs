@@ -460,41 +460,6 @@ impl std::io::Write for SharedBuf {
     }
 }
 
-/// Put the kernel-dependent header declarations into the sandbox.
-pub fn prime_kernel_headers(host: &FakeHost, kernel: &str) {
-    let base = "/usr/src/linux-headers-truenas-production-amd64/include";
-    if kernel.starts_with("6.9") {
-        host.put_text(
-            &format!("{base}/linux/mm.h"),
-            "int follow_pfn(struct vm_area_struct *vma, unsigned long addr, unsigned long *pfn);\n",
-        );
-        host.put_text(
-            &format!("{base}/drm/drm_mode_config.h"),
-            "struct drm_mode_config_funcs { void (*output_poll_changed)(struct drm_device *dev); };\n",
-        );
-    } else {
-        host.put_text(
-            &format!("{base}/linux/mm.h"),
-            "static inline int follow_pfnmap_start(struct follow_pfnmap_args *args);\n",
-        );
-        host.put_text(
-            &format!("{base}/drm/drm_mode_config.h"),
-            "struct drm_mode_config_funcs { void (*atomic_state_free)(void); };\n",
-        );
-    }
-    if kernel.starts_with("6.12.105") || kernel.starts_with("6.12.97") {
-        host.put_text(
-            &format!("{base}/linux/pci.h"),
-            "int pci_resize_resource(struct pci_dev *dev, int resno, int size,\n                        u32 exclude_bars);\n",
-        );
-    } else {
-        host.put_text(
-            &format!("{base}/linux/pci.h"),
-            "int pci_resize_resource(struct pci_dev *dev, int resno, int size);\n",
-        );
-    }
-}
-
 /// A complete build output that passes delivery checks.
 pub fn put_build_output(host: &FakeHost, id: &str, version: &str, artifact: &[u8]) {
     let out = format!("{HOST_DATA_DIR}/manager/tasks/{id}/out");
