@@ -270,7 +270,7 @@ Kepler 显卡（包括部分 GTX 600/700 型号）请选择官方 470.256.02。T
 
 先备份数据目录。使用 `latest` 标签时，打开应用 → 已安装，点你的应用，有新镜像时在应用信息卡片上选 ⋮ → 更新。想换到固定版本，就点编辑，把镜像标签改成版本号后保存。改动应用本身不会改变主机上的 NVIDIA 驱动。如果想换回原版驱动，请先在本地驱动里操作。详情见[部署说明](docs/deploy.zh-CN.md)。删除程序的分步说明还没有写。
 
-YAML 里的镜像标签是 `latest`。想固定在某个版本，可以改成 `0.3.1`：`ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.1`。
+YAML 里的镜像标签是 `latest`。想固定在某个版本，可以改成 `0.3.2`：`ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.2`。
 
 </details>
 
@@ -289,7 +289,7 @@ YAML 里的镜像标签是 `latest`。想固定在某个版本，可以改成 `0
 <summary>可选：验证镜像确实来自本仓库</summary>
 
 ```bash
-gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.1 --repo sky-zhang01/truenas-nvidia-driver-manager
+gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.2 --repo sky-zhang01/truenas-nvidia-driver-manager
 ```
 
 </details>
