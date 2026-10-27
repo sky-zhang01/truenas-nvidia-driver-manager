@@ -192,6 +192,12 @@ fi
 | `plan.source_invalid.version_unconfirmed` | HTTP 409：无法确认 NVIDIA 官网是否有 `.params.version`；`.params.unreadable` 以 `{object: "catalog", reason, raw?}` 列出目录读取失败原因。解决读取失败后生成新计划并重新确认。 |
 | `branch.extra_cflags_removed` | 内核构建脚本不再支持此版本使用的 EXTRA_CFLAGS；选择可构建版本并重新确认计划。 |
 | `branch.fb_create_format_info` | 此版本的 `nvidia-drm` 源码与当前内核头文件不匹配（例如 `fb_create` 多了一个 `drm_format_info` 参数）；选择可构建版本并重新确认计划。 |
+| `branch.follow_pfn_removed` | 内核已移除此版本驱动源码调用的函数 `follow_pfn()`；选择可构建版本并重新确认计划。 |
+| `branch.output_poll_changed_removed` | 内核的 `drm_mode_config_funcs` 已移除此版本驱动源码使用的成员 `output_poll_changed`；选择可构建版本并重新确认计划。 |
+| `branch.pci_resize_resource_args` | 内核的 `pci_resize_resource()` 参数个数与此版本驱动源码中的调用不一致；选择可构建版本并重新确认计划。 |
+| `branch.installer_loads_module` | 此版本的安装程序在构建时要加载内核模块，构建容器不允许；选择可构建版本并重新确认计划。 |
+| `branch.nvidia_not_loaded` | 主机未加载 `nvidia` 模块，此版本的安装程序在构建时要加载它，构建容器不允许；选择可构建版本并重新确认计划。 |
+| `branch.nvidia_drm_not_loaded` | 主机未加载 `nvidia_drm` 模块，此版本的安装程序装完后要加载它，构建容器不允许；选择可构建版本并重新确认计划。 |
 | `SAVE_ORIGINAL_FAILED` | 保存原版失败；核对原因，不自动改成跳过保存。 |
 | `DOWNLOAD_FAILED` / `BUILD_FAILED` / `BUILD_TIMEOUT` | 下载、构建失败或超时；读取嵌套原因与输出，解决后重新确认重试。 |
 | `GPU_IN_USE` / `MODULE_UNLOAD_REFUSED` | 显卡被使用或模块无法卸载；报告实际使用者，停应用另需确认。 |

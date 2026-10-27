@@ -196,6 +196,12 @@ Use `.error.code`, nested reason `.key` and `.params`, and top-level rejection `
 | `plan.source_invalid.version_unconfirmed` | HTTP 409: NVIDIA catalog membership could not be confirmed for `.params.version`; `.params.unreadable` lists the catalog read failure as `{object: "catalog", reason, raw?}`. Resolve the reading failure before creating a newly confirmed plan. |
 | `branch.extra_cflags_removed` | The kernel build scripts no longer support the EXTRA_CFLAGS used by this version. Select a buildable version and reconfirm the plan. |
 | `branch.fb_create_format_info` | This version's `nvidia-drm` source does not match the current kernel headers (for example, `fb_create` takes an extra `drm_format_info` argument). Select a buildable version and reconfirm the plan. |
+| `branch.follow_pfn_removed` | The kernel no longer has the `follow_pfn()` function that this version's driver source calls. Select a buildable version and reconfirm the plan. |
+| `branch.output_poll_changed_removed` | The kernel's `drm_mode_config_funcs` no longer has the `output_poll_changed` member that this version's driver source uses. Select a buildable version and reconfirm the plan. |
+| `branch.pci_resize_resource_args` | The number of arguments of the kernel's `pci_resize_resource()` does not match the call in this version's driver source. Select a buildable version and reconfirm the plan. |
+| `branch.installer_loads_module` | This version's installer loads a kernel module during the build, which the build container does not allow. Select a buildable version and reconfirm the plan. |
+| `branch.nvidia_not_loaded` | The `nvidia` module is not loaded on the host, so this version's installer would load it during the build, which the build container does not allow. Select a buildable version and reconfirm the plan. |
+| `branch.nvidia_drm_not_loaded` | The `nvidia_drm` module is not loaded on the host, so this version's installer would load it after installing, which the build container does not allow. Select a buildable version and reconfirm the plan. |
 | `SAVE_ORIGINAL_FAILED` | Original-driver saving failed. Inspect its reason; do not automatically retry without saving. |
 | `DOWNLOAD_FAILED` / `BUILD_FAILED` / `BUILD_TIMEOUT` | Download/build failed or timed out. Inspect nested reasons and diagnostic output; resolve the cause before a newly confirmed retry. |
 | `GPU_IN_USE` / `MODULE_UNLOAD_REFUSED` | GPU use or a module prevented replacement. Report actual users and obtain permission before stopping apps. |
@@ -458,6 +464,12 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
     "plan.source_invalid.version_unconfirmed",
     "branch.extra_cflags_removed",
     "branch.fb_create_format_info",
+    "branch.follow_pfn_removed",
+    "branch.output_poll_changed_removed",
+    "branch.pci_resize_resource_args",
+    "branch.installer_loads_module",
+    "branch.nvidia_not_loaded",
+    "branch.nvidia_drm_not_loaded",
     "SAVE_ORIGINAL_FAILED",
     "DOWNLOAD_FAILED",
     "BUILD_FAILED",

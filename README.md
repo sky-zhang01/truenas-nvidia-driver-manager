@@ -270,7 +270,7 @@ The manager's image has no shell inside. That is expected. Use the task page for
 
 Back up the data folder first. With the `latest` tag, open Apps → Installed, click your app, and on the Application Info card choose ⋮ → Update when a new image is offered. To move to a fixed version instead, click Edit, change the image tag to the version number, and save. Changing the app does not change the NVIDIA driver on the host. If you want the original driver back, do that in Local drivers first. The [deployment guide](docs/deploy.en.md) has the details. A step-by-step guide for removing the manager is not written yet.
 
-The image tag in the YAML is `latest`. To stay on a fixed version, change it to `0.3.1`: `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.1`.
+The image tag in the YAML is `latest`. To stay on a fixed version, change it to `0.3.2`: `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.2`.
 
 </details>
 
@@ -289,7 +289,7 @@ The image tag in the YAML is `latest`. To stay on a fixed version, change it to 
 <summary>Optional: verify that an image comes from this repository</summary>
 
 ```bash
-gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.1 --repo sky-zhang01/truenas-nvidia-driver-manager
+gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.3.2 --repo sky-zhang01/truenas-nvidia-driver-manager
 ```
 
 </details>
