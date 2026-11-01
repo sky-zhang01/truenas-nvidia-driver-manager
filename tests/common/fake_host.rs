@@ -297,6 +297,8 @@ struct Inner {
     proc_modules_reads: Mutex<u64>,
     /// Called at the start of `Host::wait`, before the fake clock moves.
     on_wait: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// What an `unsquashfs -d` extraction writes for a member, instead of the default text.
+    extracted: Mutex<BTreeMap<String, Vec<u8>>>,
     fail_state_phases: Mutex<BTreeSet<String>>,
     exe: Mutex<Vec<u8>>,
     uname: Mutex<String>,
@@ -339,6 +341,8 @@ struct Inner {
     /// another remover; the listing decides).
     docker_rm_fails_after_removal: Mutex<bool>,
     unsquashfs_fails: Mutex<BTreeSet<String>>,
+    /// The kernel log of this boot that `journalctl -k -b` reads.
+    kernel_journal: Mutex<String>,
     fail_writes: Mutex<Vec<String>>,
     fail_fsync_dirs: Mutex<Vec<String>>,
     fail_rename_suffix: Mutex<Option<String>>,
@@ -640,6 +644,7 @@ impl FakeHost {
                 proc_modules_advances: Mutex::new(Vec::new()),
                 proc_modules_reads: Mutex::new(0),
                 on_wait: Mutex::new(None),
+                extracted: Mutex::new(BTreeMap::new()),
                 fail_state_phases: Mutex::new(BTreeSet::new()),
                 exe: Mutex::new(b"#!/bin/fake-runner".to_vec()),
                 uname: Mutex::new(KERNEL.into()),
@@ -668,6 +673,7 @@ impl FakeHost {
                 docker_rm_fails: Mutex::new(false),
                 docker_rm_fails_after_removal: Mutex::new(false),
                 unsquashfs_fails: Mutex::new(BTreeSet::new()),
+                kernel_journal: Mutex::new(String::new()),
                 fail_writes: Mutex::new(Vec::new()),
                 fail_fsync_dirs: Mutex::new(Vec::new()),
                 fail_rename_suffix: Mutex::new(None),
@@ -1557,6 +1563,15 @@ impl FakeHost {
             .push((nth, by));
     }
 
+    /// Make `unsquashfs -d <dir> <image> <member>` write `bytes` as the extracted `<dir>/<member>`.
+    pub fn set_extracted(&self, path: &str, bytes: &[u8]) {
+        self.inner
+            .extracted
+            .lock()
+            .unwrap()
+            .insert(path.to_string(), bytes.to_vec());
+    }
+
     /// Run `hook` at the start of each `Host::wait`, before the fake clock moves.
     pub fn on_wait(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self.inner.on_wait.lock().unwrap() = Some(Arc::new(hook));
@@ -1865,6 +1880,11 @@ impl FakeHost {
 
     // ---- presets for readers ------------------------------------------
 
+    /// The kernel log of this boot, one message per line, as `journalctl -k -b -o cat` prints it.
+    pub fn set_kernel_journal(&self, text: &str) {
+        *self.inner.kernel_journal.lock().unwrap() = text.to_string();
+    }
+
     pub fn set_listing(&self, path: &str, listing: &str) {
         self.inner
             .listings
@@ -1951,6 +1971,46 @@ impl FakeHost {
             .lock()
             .unwrap()
             .insert(path.to_string(), version.to_string());
+    }
+
+    /// The answer of `modinfo -F <field>` for one module, ahead of the answer for every field.
+    pub fn set_modinfo_field(&self, path: &str, field: &str, value: &str) {
+        self.inner
+            .modinfo
+            .lock()
+            .unwrap()
+            .insert(format!("{path}#{field}"), value.to_string());
+    }
+
+    /// `modinfo -F <field> <path>`: the answer for that field, else the answer for the module.
+    fn modinfo_answer(&self, path: &str, field: Option<&String>) -> Option<String> {
+        let modinfo = self.inner.modinfo.lock().unwrap();
+        let field = field.map_or(String::new(), |f| format!("{path}#{f}"));
+        modinfo.get(&field).or_else(|| modinfo.get(path)).cloned()
+    }
+
+    /// `unsquashfs -d <dir> <image> <member>...`: each member gets the bytes `set_extracted` gave
+    /// it, or a placeholder text.
+    fn unsquashfs_extract(&self, args: &[String]) {
+        let dir = args.first().cloned().unwrap_or_default();
+        // An image with a listing gives only the members it lists, as the real tool does.
+        let listing = args
+            .get(1)
+            .and_then(|image| self.inner.listings.lock().unwrap().get(image).cloned());
+        for member in args.iter().skip(2) {
+            let wanted = format!("squashfs-root/{member}");
+            if listing.as_ref().is_some_and(|l| {
+                !l.lines()
+                    .any(|line| line.split_whitespace().last() == Some(wanted.as_str()))
+            }) {
+                continue;
+            }
+            let target = format!("{dir}/{member}");
+            match self.inner.extracted.lock().unwrap().get(&target).cloned() {
+                Some(bytes) => self.put_file(&target, bytes),
+                None => self.put_text(&target, "fake nvidia.ko"),
+            }
+        }
     }
 
     pub fn set_dpkg(&self, name: &str, fields: &str) {
@@ -2376,6 +2436,47 @@ impl FakeHost {
         Some(p)
     }
 
+    /// `journalctl` over the kernel log set with `set_kernel_journal`, as measured on TrueNAS
+    /// 25.10.7 (systemd 254) and 27.0.0-RC.1 (systemd 257): `--grep` keeps the lines that contain
+    /// one of its `|` alternatives (case-insensitive for a lowercase pattern), `-n` keeps the last
+    /// lines, and when nothing matches it exits 1 and prints `-- No entries --` unless `-q` is
+    /// given or the output mode is `cat`.
+    fn journalctl(&self, cmd: &Cmd) -> FakeOutput {
+        let args = arg_strings(cmd);
+        let value = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+        };
+        let quiet = args.iter().any(|a| a == "-q" || a == "--quiet");
+        let cat = value("-o").as_deref() == Some("cat");
+        let journal = self.inner.kernel_journal.lock().unwrap().clone();
+        let mut lines: Vec<&str> = journal.lines().collect();
+        if let Some(pattern) = value("--grep") {
+            let pattern = pattern.to_lowercase();
+            lines.retain(|line| {
+                let line = line.to_lowercase();
+                pattern.split('|').any(|alt| line.contains(alt))
+            });
+            if lines.is_empty() {
+                let mut out = FakeOutput::code(1);
+                if !quiet && !cat {
+                    out.stdout = b"-- No entries --\n".to_vec();
+                }
+                return out;
+            }
+        }
+        if let Some(n) = value("-n").and_then(|n| n.parse::<usize>().ok()) {
+            lines.drain(..lines.len().saturating_sub(n));
+        }
+        let mut text = lines.join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        FakeOutput::stdout(&text)
+    }
+
     fn builtin(&self, cmd: &Cmd) -> Option<FakeOutput> {
         match cmd.program {
             "systemd-run" => Some(self.systemd_run(cmd)),
@@ -2457,12 +2558,28 @@ impl FakeHost {
                 self.remove_mount(&mount_point);
                 Some(FakeOutput::code(0))
             }
+            "insmod" => {
+                let file = arg_strings(cmd).last().cloned().unwrap_or_default();
+                if !self.exists(&file) {
+                    return Some(FakeOutput::code(1).with_stderr(&format!(
+                        "insmod: ERROR: could not load module {file}: No such file or directory"
+                    )));
+                }
+                self.load_module("gpu_unlock", 0, &[]);
+                Some(FakeOutput::code(0))
+            }
             "modprobe" => {
                 let name = cmd
                     .args
                     .last()
                     .map(|a| a.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                if arg_strings(cmd).first().map(String::as_str) == Some("--show-depends") {
+                    // Lists the dependency chain and loads nothing.
+                    return Some(FakeOutput::stdout(&format!(
+                        "insmod /lib/modules/{KERNEL}/kernel/drivers/video/{name}.ko \n"
+                    )));
+                }
                 if self.inner.modules.lock().unwrap().contains_key(&name) {
                     return Some(FakeOutput::code(0));
                 }
@@ -2557,19 +2674,43 @@ impl FakeHost {
             "unsquashfs" => {
                 let args = arg_strings(cmd);
                 if let Some(pos) = args.iter().position(|a| a == "-d") {
-                    let dir = args.get(pos + 1).cloned().unwrap_or_default();
-                    let member = args.last().cloned().unwrap_or_default();
-                    let target = format!("{dir}/{member}");
-                    self.put_text(&target, "fake nvidia.ko");
+                    self.unsquashfs_extract(&args[pos + 1..]);
                     return Some(FakeOutput::code(0));
                 }
-                let path = args.last().cloned().unwrap_or_default();
+                // The image is the first argument that is not an option; arguments after it
+                // are the members to list.
+                let image = args.iter().position(|a| !a.starts_with('-'));
+                let path = image.map_or_else(
+                    || args.last().cloned().unwrap_or_default(),
+                    |i| args[i].clone(),
+                );
+                let members: Vec<String> = image.map_or(Vec::new(), |i| {
+                    args[i + 1..]
+                        .iter()
+                        .map(|m| format!("squashfs-root/{m}"))
+                        .collect()
+                });
                 if self.inner.unsquashfs_fails.lock().unwrap().contains(&path) {
                     return Some(FakeOutput::code(1).with_stderr("unsquashfs: failed"));
                 }
+                if !members.is_empty() && !self.exists(&path) {
+                    return Some(
+                        FakeOutput::code(1).with_stderr(&format!("Could not open {path}")),
+                    );
+                }
                 let listing = self.inner.listings.lock().unwrap().get(&path).cloned();
                 match listing {
+                    Some(l) if !members.is_empty() => {
+                        Some(FakeOutput::stdout(&member_listing(&l, &members)))
+                    }
                     Some(l) => Some(FakeOutput::stdout(&l)),
+                    // An image nobody described has none of the members asked for.
+                    None if !members.is_empty() && self.exists(&path) => {
+                        Some(FakeOutput::stdout(&member_listing("", &members)))
+                    }
+                    None if !members.is_empty() => {
+                        Some(FakeOutput::code(1).with_stderr(&format!("Could not open {path}")))
+                    }
                     None if path.ends_with("driver.run") => Some(FakeOutput {
                         exit: Exit::Code(1),
                         stdout: Vec::new(),
@@ -2582,7 +2723,7 @@ impl FakeHost {
             "modinfo" => {
                 let args = arg_strings(cmd);
                 let path = args.last().cloned().unwrap_or_default();
-                match self.inner.modinfo.lock().unwrap().get(&path).cloned() {
+                match self.modinfo_answer(&path, args.get(1)) {
                     Some(v) => Some(FakeOutput::stdout(&format!("{v}\n"))),
                     None => Some(
                         FakeOutput::code(1).with_stderr("modinfo: ERROR: could not find module"),
@@ -2716,6 +2857,7 @@ impl FakeHost {
                 Some(FakeOutput::code(0))
             }
             "ldconfig" => Some(FakeOutput::code(0)),
+            "journalctl" => Some(self.journalctl(cmd)),
             "cat" => {
                 let path = cmd
                     .args
@@ -4252,4 +4394,25 @@ pub fn prime_kernel_scene(host: &FakeHost, kernel: &str, truenas: &str, compiler
         "/usr/src/linux-headers-truenas-production-amd64/include/config/auto.conf",
         &format!("CONFIG_CC_VERSION_TEXT={compiler}\n"),
     );
+}
+
+/// What `unsquashfs -lls <image> <member>...` prints: the ancestor directories of each member,
+/// and the member's own line when the image has it.
+fn member_listing(listing: &str, members: &[String]) -> String {
+    let mut out = String::new();
+    for member in members {
+        let parts: Vec<&str> = member.split('/').collect();
+        for end in 2..parts.len() {
+            out.push_str(&format!(
+                "drwxr-xr-x root/root 0 2026-09-28 10:15 {}\n",
+                parts[..end].join("/")
+            ));
+        }
+        for line in listing.lines() {
+            if line.split_whitespace().last() == Some(member.as_str()) {
+                out.push_str(&format!("{line}\n"));
+            }
+        }
+    }
+    out
 }

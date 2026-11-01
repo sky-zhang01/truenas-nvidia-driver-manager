@@ -1600,11 +1600,7 @@ crw-rw-rw- root/root  1, 3 2026-09-28 10:15 squashfs-root/dev/nvidia0\n";
         let listing =
             include_str!("../tests/fixtures/stock-nvidia.raw-580.173.02-unsquashfs-lls.txt");
         let entries = parse_unsquashfs_lls(listing).expect("the stock listing must parse");
-        assert!(
-            entries.len() > 3000,
-            "unexpected entry count {}",
-            entries.len()
-        );
+        assert_eq!(entries.len(), 39);
         let facts = image_facts(&entries);
         assert_eq!(facts.file_version, Reading::Value("580.173.02".into()));
         assert_eq!(

@@ -2,6 +2,17 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
+## 0.4.0
+
+- Add an optional full-speed GPU unlock (gpu-unlock) for GeForce RTX 30, 40 and 20 series cards. It lifts the half-rate limit on FP16, BF16 and TF32 matrix math with FP32 accumulation, using the GPL-2.0-only kernel module of Zagitta/gpu-unlock 2.0.0, vendored unchanged. It is off by default, chosen per update for official downloads and uploads, supported only with driver 610.43.03, and takes effect from the next boot. The RTX 30 series is stable, the RTX 40 and RTX 20 series are experimental, and the RTX 50 series is not supported. The throughput gain has not been measured by this project.
+- Generate the unlock firmware on the host from the NVIDIA 610.43.03 installer the task already uses, check it against 17 fixed SHA-256 values and cache it for later updates; nothing extra is downloaded and the program ships no firmware. An unusable installer fails the task with the driver untouched.
+- Add two task stages for an update with the unlock: "Generating the unlock files" and "Test-loading the unlock program (no card is unlocked)", which loads the module without targets before the driver file is replaced.
+- The success check requires vfio-pci to load before the unlock module and the driver, so GPUs isolated for virtual machines stay on vfio-pci; otherwise the task switches back to the saved original. The success page says whether the next boot will unlock.
+- Home shows a "Full-speed GPU unlock" reading per target card (unlocked, needs a full power-off, the unlock is installed and waiting for the next startup, or not unlocked with the system log line). Local driver rows built with the unlock are marked "· with full-speed unlock".
+- Agent API: `source.gpu_unlock` on plan requests, `gpus[].gpu_unlock` in versions, `rows[].gpu_unlock_targets` in drivers, `gpu_unlock` in home, `notice.unlock` in task details, and the `plan.source_invalid.gpu_unlock_unsupported` refusal.
+- The driver hints on the update page now say which driver a card needs, or the newest one it can use, for example "RTX 5090 needs driver 580 or newer."
+- The documentation and image description now use the current TrueNAS product name.
+
 ## 0.3.2
 
 - Offer official 470.256.02 on TrueNAS 27 as well as TrueNAS 25.10, applying all 54 compatibility patches from Debian tesla-470 packaging 470.256.02-10 at build time. Kepler loading, display and CUDA remain unverified on real hardware.

@@ -523,6 +523,29 @@ pub(super) fn version_change(state: &TaskState) -> bool {
         .unwrap_or(false)
 }
 
+/// A successful update with the unlock says whether the next boot will unlock: the sentence
+/// follows the load-order item of the last update check.
+fn add_unlock_notice(state: &TaskState, mut notice: Value) -> Value {
+    let unlock = state
+        .plan
+        .as_ref()
+        .is_some_and(|p| !p.gpu_unlock_targets.is_empty());
+    let order = state
+        .checks
+        .iter()
+        .rfind(|c| c.pass == crate::task_state::Pass::Update)
+        .and_then(|c| c.load_order.as_ref())
+        .filter(|_| unlock);
+    if let Some(order) = order {
+        notice["unlock"] = json!(if order.gpu_unlock_before_nvidia {
+            "notice.gpu_unlock_installed"
+        } else {
+            "notice.gpu_unlock_not_effective"
+        });
+    }
+    notice
+}
+
 /// The result notification of a finished task.
 pub(super) fn notice_json(state: &TaskState) -> Option<Value> {
     match state.status {
@@ -546,18 +569,19 @@ pub(super) fn notice_json(state: &TaskState) -> Option<Value> {
                 .as_ref()
                 .map(|p| p.version.clone())
                 .unwrap_or_default();
-            if failed.is_empty() {
-                Some(json!({
+            let notice = if failed.is_empty() {
+                json!({
                     "key": "notice.update_complete",
                     "params": {"version": version},
-                }))
+                })
             } else {
-                Some(json!({
+                json!({
                     "key": "notice.update_complete",
                     "variant": "reload_warning",
                     "params": {"version": version, "modules": failed.join(", ")},
-                }))
-            }
+                })
+            };
+            Some(add_unlock_notice(state, notice))
         }
         Status::StockRestored => {
             let restore = state.restore.as_ref()?;

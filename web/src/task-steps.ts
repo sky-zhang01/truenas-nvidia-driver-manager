@@ -2,6 +2,8 @@ const FILE_KEPT = new Set([
   "read_loaded_version",
   "save_original",
   "download",
+  "unlock_firmware",
+  "unlock_preload",
   "build",
 ]);
 
@@ -19,6 +21,16 @@ const MODULES_UNLOADED = new Set([
 export interface StepPlan {
   source?: { kind?: string } | null;
   original?: string | null;
+  unlock?: boolean;
+}
+
+// Before these phases the task has not test-loaded the unlock module.
+const BEFORE_UNLOCK_PRELOAD = new Set(["read_loaded_version", "save_original", "download", "unlock_firmware", "build"]);
+
+// An interrupted update with the unlock may leave the idle module it test-loaded until the next boot;
+// an unknown phase cannot rule that out.
+export function interruptUnlockNote(phase: string | null, unlock: boolean): boolean {
+  return unlock && !BEFORE_UNLOCK_PRELOAD.has(phase ?? "");
 }
 
 // A missing phase cannot establish whether writing started; later phases cannot promise an unchanged
@@ -39,7 +51,10 @@ export function plannedSteps(plan: StepPlan | null, restoring: boolean, correcti
   const steps = ["read_loaded_version"];
   if (plan.original === "save") steps.push("save_original");
   if (kind === "official") steps.push("download");
-  if (kind === "official" || kind === "upload") steps.push("build");
+  const builds = kind === "official" || kind === "upload";
+  if (builds && plan.unlock) steps.push("unlock_firmware");
+  if (builds) steps.push("build");
+  if (plan.unlock) steps.push("unlock_preload");
   steps.push("unload", "write", "refresh", "reload");
   if (correction.update) steps.push("align_modules");
   steps.push("check");

@@ -94,8 +94,8 @@ for (const lang of ["en", "zh"] as const) {
     expect(gpu.usable_from_branch).toBeGreaterThan(0);
     await expect(page.locator(".gpu-notes .notice")).toHaveCount(1);
     await expect(page.locator(".gpu-notes .notice > p")).toHaveText(lang === "zh"
-      ? `${gpu.name} 从 ${gpu.usable_from_branch} 驱动起支持。`
-      : `${gpu.name} is supported from driver ${gpu.usable_from_branch}.`);
+      ? `${gpu.name} 要用 ${gpu.usable_from_branch} 或更新的驱动。`
+      : `${gpu.name} needs driver ${gpu.usable_from_branch} or newer.`);
     await expect(page.locator("#version-select option[value='580.178.04']")).toHaveCount(1);
     await page.selectOption("#version-select", "580.178.04");
     const check = page.getByRole("button", { name: /^(Check and continue|检查并继续)$/ });

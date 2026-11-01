@@ -1007,6 +1007,11 @@ async fn the_plan_module_type_reaches_the_build_argv_and_its_failure() {
 async fn a_task_starting_with_no_driver_modules_records_the_default_targets() {
     let host = FakeHost::new();
     prime_canonical(&host, "580.173.02");
+    // The row's image exists; its record does not, which the write refuses.
+    host.put_file(
+        "/var/lib/nvm/drivers/20260928T101530Z-3f9a0c10-build/nvidia.raw",
+        b"row".to_vec(),
+    );
     let mut state = new_state(
         ID,
         1,

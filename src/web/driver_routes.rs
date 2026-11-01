@@ -55,6 +55,10 @@ fn driver_row_json(
             obj.insert("created_at".into(), json!(record.created_at));
             obj.insert("size".into(), json!(record.size));
             obj.insert("target_kernel".into(), json!(record.target_kernel));
+            obj.insert(
+                "gpu_unlock_targets".into(),
+                json!(record.gpu_unlock_targets),
+            );
             obj.insert("status".into(), json!(status.as_str()));
             obj.insert(
                 "keep".into(),
@@ -74,6 +78,7 @@ fn driver_row_json(
                 "created_at",
                 "size",
                 "target_kernel",
+                "gpu_unlock_targets",
             ] {
                 obj.insert(field.into(), Value::Null);
             }

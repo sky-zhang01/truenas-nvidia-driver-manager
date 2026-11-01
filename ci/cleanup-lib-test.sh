@@ -720,5 +720,52 @@ PY_CHECK
     [ "${FAILURES}" -eq 0 ]
 ) || fail "build dispatcher controls failed"
 
+# nvm_stale_cleanup against a file-backed Docker stub: <kind>s lists ids, row.<id>
+# is the inspect answer (name, created, state, project), rm drops the listing line.
+SS="${WORK}/stale"
+mkdir -p "${SS}/bin"
+cat >"${SS}/bin/docker" <<'STALE_STUB'
+#!/bin/sh
+s="${STALE_STATE:?}"
+kind="$1" op="$2"
+[ "$1" = ps ] && kind=container op=ls
+[ -f "${s}/fail-${op}" ] && exit 9
+case "${op}" in
+    ls) cat "${s}/${kind}" ;;
+    inspect) cat "${s}/row.$5" ;;
+    rm) echo "${kind} $3" >>"${s}/removed"
+        [ -f "${s}/keep" ] || { grep -vx "$3" "${s}/${kind}" >"${s}/t"; mv "${s}/t" "${s}/${kind}"; } ;;
+esac
+STALE_STUB
+chmod +x "${SS}/bin/docker"
+OLD='"2000-01-01T00:00:00Z"' NEW='"2999-01-01T00:00:00Z"'
+stale_run() { # stale_run <flag-file|-> ; sets STALE_RC
+    stale_seed
+    rm -f "${SS}/removed" "${SS}"/fail-* "${SS}/keep"
+    [ "$1" = - ] || touch "${SS}/$1"
+    STALE_RC=0
+    ( . "${LIB}"; PATH="${SS}/bin:${PATH}" STALE_STATE="${SS}" nvm_stale_cleanup ) \
+        >"${SS}/out" 2>&1 || STALE_RC=$?
+}
+stale_seed() {
+    printf '%s\n' c-old c-new c-foreign c-run c-sib c-live >"${SS}/container"
+    echo v-old >"${SS}/volume"; echo n-old >"${SS}/network"
+    echo "/nvmct-old ${OLD} exited" >"${SS}/row.c-old"
+    echo "/nvmct-new ${NEW} exited" >"${SS}/row.c-new"
+    echo "/other-old ${OLD} exited" >"${SS}/row.c-foreign"
+    echo "/nvmct-run ${OLD} running" >"${SS}/row.c-run"
+    echo "/nvmct-sib ${OLD} exited nvmct-p" >"${SS}/row.c-sib"
+    echo "/other-live ${NEW} running nvmct-p" >"${SS}/row.c-live"
+    echo "nvmct-oldvol ${OLD} -" >"${SS}/row.v-old"
+    echo "nvmct-oldnet ${OLD} -" >"${SS}/row.n-old"
+}
+stale_run -
+check 'stale cleanup removes only the old idle nvmct- resources' \
+    test "$(sort "${SS}/removed" | tr '\n' ,)" = 'container c-old,network n-old,volume v-old,'
+stale_run fail-ls
+check 'a failing docker listing fails the cleanup' test "${STALE_RC}" -ne 0
+stale_run keep
+check 'a resource that survives rm fails the cleanup' test "${STALE_RC}" -ne 0
+
 finish_tests "cleanup-lib-test: ${FAILURES} control(s) failed" \
     "cleanup-lib-test: all controls passed"

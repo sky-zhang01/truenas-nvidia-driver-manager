@@ -1132,6 +1132,7 @@ fn correction_core_reload_failure_still_attempts_every_frozen_target_before_f11(
             true,
         ),
         "580.178.04",
+        false,
     );
     assert!(!checked.passed);
     assert!(!checked.version_ok);

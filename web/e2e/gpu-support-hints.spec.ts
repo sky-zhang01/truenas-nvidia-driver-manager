@@ -5,7 +5,7 @@ const GPU = "NVIDIA GeForce RTX 5090";
 const OPEN = { address: "0000:01:00.0", device: "2b85", name: GPU, modules: "open_only", first_branch: 570, usable_from_branch: 580, too_new: [], too_old: ["550.163.01"] };
 const catalog = { items: ["580.178.04", "570.211.01", "550.163.01"].map(version => ({ version })), open_unbuildable: ["570.211.01", "550.163.01"], unreadable: [], gpus: [OPEN] };
 const sentence = (language: string, name: string, branch: number) => language === "zh"
-  ? `${name} 从 ${branch} 驱动起支持。` : `${name} is supported from driver ${branch}.`;
+  ? `${name} 要用 ${branch} 或更新的驱动。` : `${name} needs driver ${branch} or newer.`;
 
 async function open(page: Page, language: string, body: unknown) {
   await setScenario(page.request, "fresh");

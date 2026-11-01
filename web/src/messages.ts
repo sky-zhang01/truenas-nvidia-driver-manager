@@ -787,6 +787,22 @@ export const MESSAGES: Record<string, Message> = {
     "zh": "{target}",
     "en": "{target}",
   },
+  "check.item.vfio_pci_first": {
+    "zh": "虚拟机显卡保护（vfio-pci 把显卡留给虚拟机，要先于驱动启动）",
+    "en": "protection for cards given to a virtual machine (vfio-pci holds those cards and must start before the driver)",
+  },
+  "check.observed.load_order.first": {
+    "zh": "下次开机 vfio-pci 会先启动",
+    "en": "vfio-pci starts first the next time the computer starts",
+  },
+  "check.observed.load_order.not_first": {
+    "zh": "下次开机 vfio-pci 不会先启动",
+    "en": "vfio-pci does not start first the next time the computer starts",
+  },
+  "check.expected.load_order": {
+    "zh": "vfio-pci 先于解锁组件和驱动启动",
+    "en": "vfio-pci starts before the unlock program and the driver",
+  },
   "check.pass": {
     "zh": "通过",
     "en": "passed",
@@ -860,6 +876,26 @@ export const MESSAGES: Record<string, Message> = {
     "zh": "生成模块索引失败",
     "en": "generating the module indexes failed",
   },
+  "build.gpu_unlock_installer_unusable": {
+    "zh": "这个文件不能用来开启解锁",
+    "en": "this file cannot be used to turn on the unlock",
+  },
+  "build.gpu_unlock_firmware_failed": {
+    "zh": "没能准备好解锁文件",
+    "en": "the unlock files could not be prepared",
+  },
+  "build.gpu_unlock_module_build_failed": {
+    "zh": "解锁组件制作失败",
+    "en": "the unlock program could not be built",
+  },
+  "build.gpu_unlock_install_failed": {
+    "zh": "没能把解锁组件、解锁设置和解锁文件装进驱动",
+    "en": "the unlock program, its settings and the unlock files could not be added to the driver",
+  },
+  "build.gpu_unlock_module_rejected": {
+    "zh": "这台电脑拒绝装上解锁组件",
+    "en": "this computer refused to load the unlock program",
+  },
   "build.capture_failed": {
     "zh": "收取安装程序写下的文件失败",
     "en": "collecting the files written by the installer failed",
@@ -920,6 +956,18 @@ export const MESSAGES: Record<string, Message> = {
   "build.artifact.deliver_failed": {
     "zh": "无法把构建出的驱动写入数据目录",
     "en": "the built driver could not be written to the data directory",
+  },
+  "build.artifact.gpu_unlock_module": {
+    "zh": "构建出的驱动里的解锁组件不对：缺失、不止一个、与驱动不配套，或没有列入系统查找组件用的清单",
+    "en": "the unlock program in the built driver is wrong: it is missing, there is more than one, it does not match the driver, or it is not in the list the system uses to find it",
+  },
+  "build.artifact.gpu_unlock_files": {
+    "zh": "构建出的驱动里，解锁设置或解锁文件缺失或不对",
+    "en": "in the built driver, the unlock settings or unlock files are missing or wrong",
+  },
+  "build.artifact.gpu_unlock_unexpected": {
+    "zh": "没开解锁，构建出的驱动里却有解锁文件",
+    "en": "the built driver contains unlock files although the unlock was not requested",
   },
 
   "download.request_failed": {
@@ -1054,9 +1102,17 @@ export const MESSAGES: Record<string, Message> = {
     "zh": "下载",
     "en": "Downloading",
   },
+  "phase.unlock_firmware": {
+    "zh": "生成解锁文件",
+    "en": "Generating the unlock files",
+  },
   "phase.build": {
     "zh": "构建",
     "en": "Building",
+  },
+  "phase.unlock_preload": {
+    "zh": "试着装上解锁组件（不解锁任何显卡）",
+    "en": "Test-loading the unlock program (no card is unlocked)",
   },
   "phase.unload": {
     "zh": "卸载驱动模块",
@@ -1118,6 +1174,10 @@ export const MESSAGES: Record<string, Message> = {
   "home.interrupted.file_kept": {
     "zh": "warning|{time} 开始从 {source} 更新到 {version}，停在 {phase}，{discovered} 发现中断。驱动文件未更换。",
     "en": "warning|The update from {source} to {version} started at {time} and stopped during {phase}; the interruption was discovered at {discovered}. The driver file was not replaced.",
+  },
+  "home.interrupted.unlock_module": {
+    "zh": "系统里可能还留着一个什么都不做的解锁组件。下次开机会消失。",
+    "en": "An unlock program that does nothing may still be loaded. It goes away the next time the computer starts.",
   },
   "home.interrupted.unload": {
     "zh": "warning|{time} 开始从 {source} 更新到 {version}，停在 {phase}，{discovered} 发现中断。驱动文件未更换。驱动模块可能已卸载。请重新选择版本更新，或重启主机后确认显卡应用可用。",
@@ -1186,6 +1246,34 @@ export const MESSAGES: Record<string, Message> = {
   "home.gpus.basis": {
     "zh": "名称按设备 ID 查表，不含子系统标识。",
     "en": "Names come from the device-ID table and do not include a subsystem ID.",
+  },
+  "home.gpu_unlock": {
+    "zh": "显卡全速解锁",
+    "en": "Full-speed GPU unlock",
+  },
+  "home.gpu_unlock.unlocked": {
+    "zh": "{model} 已解锁",
+    "en": "{model}: unlocked",
+  },
+  "home.gpu_unlock.not_cold": {
+    "zh": "{model} 需要断电后重新开机。请先关机，切断电源，再开机。",
+    "en": "{model}: needs a full power-off. Shut the computer down, switch the power off, then turn it on again.",
+  },
+  "home.gpu_unlock.next_boot": {
+    "zh": "{model}：解锁已装好，下次开机生效",
+    "en": "{model}: the unlock is installed. It takes effect the next time the computer starts.",
+  },
+  "home.gpu_unlock.not_unlocked": {
+    "zh": "{model} 没有解锁。系统日志原文：{line}",
+    "en": "{model}: not unlocked. System log: {line}",
+  },
+  "home.gpu_unlock.not_run": {
+    "zh": "{model} 没有解锁。这次开机时，解锁没有运行。",
+    "en": "{model}: not unlocked. The unlock did not run the last time the computer started.",
+  },
+  "home.gpu_unlock.reloaded": {
+    "zh": "这次开机之后，驱动又加载过一次。解锁状态要以下次开机为准。",
+    "en": "The driver was loaded again after this startup. Check the unlock status after the next startup.",
   },
   "home.gpus.unknown": {
     "zh": "无法读取显卡信息。",
@@ -1555,6 +1643,46 @@ export const MESSAGES: Record<string, Message> = {
   "log.build_step.result": {
     "zh": "记录构建结果",
     "en": "recording the build result",
+  },
+  "log.build_step.unlock_module": {
+    "zh": "制作解锁组件",
+    "en": "building the unlock program",
+  },
+  "log.build_step.unlock_install": {
+    "zh": "装入解锁组件、解锁设置和解锁文件",
+    "en": "adding the unlock program, its settings and the unlock files",
+  },
+  "log.unlock_firmware_reused": {
+    "zh": "沿用已有的解锁文件。",
+    "en": "Reused the unlock files that were already prepared.",
+  },
+  "log.unlock_firmware_generated": {
+    "zh": "已生成解锁文件。17 个文件都与固定校验值相符。",
+    "en": "Generated the unlock files. All 17 files match their fixed check values.",
+  },
+  "log.unlock_preloaded": {
+    "zh": "已试装上解锁组件。这次试装不会解锁任何显卡。",
+    "en": "Test-loaded the unlock program. This test does not unlock any card.",
+  },
+  "log.unlock_preload_skipped": {
+    "zh": "解锁组件已经装上，所以这次不再试。",
+    "en": "The unlock program is already loaded, so it was not tried again.",
+  },
+  "log.unlock_preload_failed": {
+    "zh": "换回原版驱动前，没能试装原版里的解锁组件。换回仍会继续：{raw}",
+    "en": "Before switching back to the original driver, its unlock program could not be test-loaded. Switching back still goes ahead: {raw}",
+  },
+  "log.unlock_load_order": {
+    "zh": "下次开机谁先启动：vfio-pci（把显卡留给虚拟机的程序）{vfio}，解锁组件{unlock}。",
+    "en": "Start order at the next boot: vfio-pci (the program that holds cards for virtual machines) {vfio}; the unlock program {unlock}.",
+  },
+  "log.load_order.first": {
+    "zh": "排在驱动之前",
+    "en": "comes before the driver",
+  },
+  "log.load_order.not_first": {
+    "zh": "没有排在驱动之前",
+    "en": "does not come before the driver",
   },
   "gpu.list.loading": {
     "zh": "正在读取显卡使用状态…",
@@ -2440,6 +2568,26 @@ export const MESSAGES: Record<string, Message> = {
     "zh": "此驱动使用 Debian 社区兼容补丁：不支持用户 I/O 内存映射，显示热插拔行为可能不同，启用 IBT 的系统上无法加载。Kepler 上的加载、显示及 CUDA 工作负载尚未验证。",
     "en": "This driver uses Debian community compatibility patches: user I/O memory mappings are unavailable, display hotplug behavior may differ, and it cannot load on systems with IBT enabled. Loading, display, and CUDA workloads on Kepler have not been verified.",
   },
+  "confirm.gpu_unlock": {
+    "zh": "显卡全速解锁：{models}，下次开机生效",
+    "en": "Full-speed GPU unlock: {models}. It takes effect the next time the computer starts.",
+  },
+  "confirm.gpu_unlock_download": {
+    "zh": "开启显卡全速解锁时，要从 NVIDIA 官网下载一个约 340 MB 的文件。第一次大约要几分钟。之后不用再下载。",
+    "en": "Turning on the full-speed GPU unlock downloads a file of about 340 MB from the NVIDIA website. The first time takes a few minutes. It is not downloaded again after that.",
+  },
+  "confirm.gpu_unlock_notice": {
+    "zh": "下次开机才会解锁，而且是在驱动启动之前。解锁组件如果装不上，或者跳过某块显卡，驱动仍会照常启用。某块显卡的解锁如果做到一半失败，那块显卡可能要先关机、切断电源、再开机，才能使用。主页会写明。",
+    "en": "The unlock runs the next time the computer starts, before the driver loads. If the unlock program fails to load, or it skips a card, the driver still loads as usual. If the unlock fails partway on a card, that card may not work until you shut the computer down, switch the power off, and turn it back on. The home page says so.",
+  },
+  "confirm.gpu_unlock_experimental": {
+    "zh": "{series} 系列的解锁仍在试验阶段，可能不稳定。",
+    "en": "The unlock for the {series} series is still experimental and may be unstable.",
+  },
+  "confirm.gpu_unlock_unavailable": {
+    "zh": "{address} 现在不是这台电脑上可解锁的显卡。它可能已经不在这台电脑上，也可能已经交给虚拟机。这块显卡不会解锁。",
+    "en": "{address} is not a card this computer can unlock right now. It may be missing, or it may already have been given to a virtual machine. It will not be unlocked.",
+  },
   "confirm.original.ask": {
     "zh": "没有可用的已保存原版驱动。",
     "en": "No usable saved original driver.",
@@ -2484,13 +2632,33 @@ export const MESSAGES: Record<string, Message> = {
     "zh": "{gpu_name}（{pci_address}）",
     "en": "{gpu_name} ({pci_address})",
   },
+  "update.gpu_unlock": {
+    "zh": "加入显卡全速解锁（gpu-unlock）",
+    "en": "Add the full-speed GPU unlock (gpu-unlock)",
+  },
+  "update.gpu_unlock.range": {
+    "zh": "解锁支持范围：RTX 30 系列稳定；RTX 40 系列、RTX 20 系列实验性；RTX 50 系列不支持。能不能解锁，程序会按你的显卡自动判断。",
+    "en": "Unlock support: the RTX 30 series is stable, the RTX 40 and RTX 20 series are experimental, and the RTX 50 series is not supported. The program decides automatically which of your cards can be unlocked.",
+  },
+  "update.gpu_unlock.none": {
+    "zh": "所选显卡都不支持解锁。",
+    "en": "None of the selected GPUs supports the unlock.",
+  },
+  "update.gpu_unlock.version_unsupported": {
+    "zh": "这个版本暂不支持解锁。想解锁，请选标有「支持解锁」的版本。",
+    "en": "This version does not support the unlock yet. To unlock, choose a version marked \"supports unlock\".",
+  },
+  "update.version.unlock": {
+    "zh": "{version} · 支持解锁",
+    "en": "{version} · supports unlock",
+  },
   "catalog.gpu.not_listed": {
-    "zh": "info|{gpu_name} 最高支持 {branch} 驱动。",
-    "en": "info|{gpu_name} is supported up to driver {branch}.",
+    "zh": "info|{gpu_name} 最高只能用 {branch} 驱动。",
+    "en": "info|{gpu_name} works only with drivers up to {branch}.",
   },
   "catalog.gpu.not_listed.from": {
-    "zh": "info|{gpu_name} 从 {branch} 驱动起支持。",
-    "en": "info|{gpu_name} is supported from driver {branch}.",
+    "zh": "info|{gpu_name} 要用 {branch} 或更新的驱动。",
+    "en": "info|{gpu_name} needs driver {branch} or newer.",
   },
   "catalog.no_usable_version": {
     "zh": "error|没有能驱动所选显卡的版本。",
@@ -2544,6 +2712,10 @@ export const MESSAGES: Record<string, Message> = {
   "drivers.source.original": {
     "zh": "原版",
     "en": "Original",
+  },
+  "drivers.source.unlock": {
+    "zh": "含全速解锁",
+    "en": "with full-speed unlock",
   },
   "drivers.status.in_use": {
     "zh": "在用",
@@ -2786,6 +2958,14 @@ export const MESSAGES: Record<string, Message> = {
     "zh": "info|title|更新完成\nbody|驱动已更新为 {version}，成功检查通过。",
     "en": "info|title|Update complete\nbody|The driver is now {version}. The post-update check passed.",
   },
+  "notice.gpu_unlock_installed": {
+    "zh": "info|显卡全速解锁已装好，下次开机生效。",
+    "en": "info|The full-speed GPU unlock is installed. It takes effect the next time the computer starts.",
+  },
+  "notice.gpu_unlock_not_effective": {
+    "zh": "warning|显卡全速解锁的解锁设置在这台电脑上没有生效。下次开机不会解锁。驱动仍可照常使用。",
+    "en": "warning|The settings for the full-speed GPU unlock did not take effect on this computer. The next time the computer starts, the unlock will not happen. The driver still works as usual.",
+  },
 
   "notice.update_complete.reload_warning": {
     "zh": "warning|title|更新完成，但部分驱动模块未重新加载\nbody|驱动已更新为 {version}，成功检查通过。未重新加载：{modules}。显卡应用可能无法启动。\naction|请重启主机，或再选同一版本更新一次。",
@@ -2961,6 +3141,10 @@ export const MESSAGES: Record<string, Message> = {
     "zh": "error|下列显卡不支持版本 {version}。",
     "en": "error|The following GPUs do not support version {version}.",
   },
+  "plan.source_invalid.gpu_unlock_unsupported": {
+    "zh": "error|所选显卡或这个驱动版本不支持解锁。",
+    "en": "error|The selected GPUs or this driver version do not support the unlock.",
+  },
 
   "catalog.help": {
     "zh": "info|列表为各分支在本机可构建的最新版本。离线或自备文件请用「手动上传文件…」。",
@@ -3048,6 +3232,10 @@ export const MESSAGES: Record<string, Message> = {
   "query.object.gpus": {
     "zh": "本机显卡",
     "en": "Host GPUs",
+  },
+  "query.object.gpu_unlock": {
+    "zh": "显卡全速解锁状态",
+    "en": "Full-speed GPU unlock status",
   },
 
   "help.reset_account": {

@@ -37,7 +37,6 @@ expect 1 "an object followed by NBSP is rejected" "{\"event\":\"x\"}${NBSP}\n"
 expect 1 "an object followed by a CJK space is rejected" '{"event":"x"}。\n'
 
 check 'network lifecycle controls' bash "${SCRIPT_DIR}/network-test.sh"
-check 'stale resource cleanup controls' bash "${SCRIPT_DIR}/stale-cleanup-test.sh"
 
 finish_tests "container controls: ${FAILURES} control group(s) failed" \
     "container controls: all controls passed"

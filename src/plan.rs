@@ -85,11 +85,13 @@ pub enum SourceRequest {
     Official {
         version: String,
         gpus: Vec<String>,
+        gpu_unlock: bool,
     },
     Upload {
         group_id: String,
         version: Option<String>,
         gpus: Vec<String>,
+        gpu_unlock: bool,
     },
     Local {
         row_id: String,
@@ -103,6 +105,8 @@ struct OfficialRequest {
     kind: String,
     version: String,
     gpus: Vec<String>,
+    #[serde(default)]
+    gpu_unlock: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -114,6 +118,8 @@ struct UploadRequest {
     #[serde(default)]
     version: Option<String>,
     gpus: Vec<String>,
+    #[serde(default)]
+    gpu_unlock: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -139,8 +145,8 @@ impl<'de> serde::Deserialize<'de> for SourceRequest {
             .and_then(|k| k.as_str())
             .ok_or_else(|| D::Error::custom("source.kind is required"))?;
         let allowed: &[&str] = match kind {
-            "official" => &["kind", "version", "gpus"],
-            "upload" => &["kind", "group_id", "version", "gpus"],
+            "official" => &["kind", "version", "gpus", "gpu_unlock"],
+            "upload" => &["kind", "group_id", "version", "gpus", "gpu_unlock"],
             "local" => &["kind", "row_id"],
             _ => return Err(D::Error::custom("unknown source.kind")),
         };
@@ -161,6 +167,7 @@ impl<'de> serde::Deserialize<'de> for SourceRequest {
                 Ok(SourceRequest::Official {
                     version: req.version,
                     gpus: req.gpus,
+                    gpu_unlock: req.gpu_unlock,
                 })
             }
             "upload" => {
@@ -174,6 +181,7 @@ impl<'de> serde::Deserialize<'de> for SourceRequest {
                     group_id: req.group_id,
                     version: req.version,
                     gpus: req.gpus,
+                    gpu_unlock: req.gpu_unlock,
                 })
             }
             "local" => {
@@ -239,6 +247,7 @@ pub enum SourceInvalid {
         toolkit_version: String,
     },
     LocalRowMissing,
+    GpuUnlockUnsupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +388,7 @@ pub struct Snapshot {
     pub link: facts::LinkReading,
     pub gpus: Vec<PlanGpu>,
     pub kernel_module_type: Option<KernelModuleType>,
+    pub gpu_unlock_targets: Vec<String>,
     pub upload_group: Option<String>,
     pub local_row: Option<String>,
 }
@@ -514,6 +524,103 @@ fn plan_gpus(selected: &[facts::HostGpu]) -> Vec<PlanGpu> {
             device: format!("{:04x}", g.device),
         })
         .collect()
+}
+
+/// The unlock targets of the plan: for an official or uploaded driver of the supported table that
+/// asks for the unlock, the selected GPUs the unlock supports; for a local row, its recorded
+/// targets. The server computes them; the request carries only the yes/no.
+fn unlock_targets(req: &SourceRequest, snapshot: &Snapshot) -> Result<Vec<String>, SourceInvalid> {
+    let requested = match req {
+        SourceRequest::Official { gpu_unlock, .. } | SourceRequest::Upload { gpu_unlock, .. } => {
+            *gpu_unlock
+        }
+        SourceRequest::Local { .. } => return Ok(snapshot.gpu_unlock_targets.clone()),
+    };
+    if !requested {
+        return Ok(Vec::new());
+    }
+    if !crate::gpu_unlock::DRIVER_VERSIONS.contains(&snapshot.version.as_str()) {
+        return Err(SourceInvalid::GpuUnlockUnsupported);
+    }
+    let targets: Vec<String> = snapshot
+        .gpus
+        .iter()
+        .filter(|g| unlock_series(g).is_some())
+        .map(|g| g.address.clone())
+        .collect();
+    if targets.is_empty() {
+        return Err(SourceInvalid::GpuUnlockUnsupported);
+    }
+    Ok(targets)
+}
+
+fn unlock_series(gpu: &PlanGpu) -> Option<crate::gpu_unlock::cards::Series> {
+    u16::from_str_radix(&gpu.device, 16)
+        .ok()
+        .and_then(crate::gpu_unlock::cards::series)
+}
+
+/// The model name of a GPU, or its address when the GPU table does not know it.
+fn gpu_model(gpu: &PlanGpu) -> &str {
+    u16::from_str_radix(&gpu.device, 16)
+        .ok()
+        .and_then(|d| catalog::entry(crate::gpu_table::GPUS, d))
+        .map_or(gpu.address.as_str(), |e| e.name)
+}
+
+/// The confirmation lines of a plan with the unlock, in their order. A local row is installed
+/// without a build, so it never downloads the installer the firmware comes from; its targets
+/// are looked up among the GPUs counted now, and one that is not there is named by its address.
+/// When the GPUs cannot be read, no target is called missing.
+fn unlock_warnings(
+    h: &dyn Host,
+    data_dir: &std::path::Path,
+    snapshot: &Snapshot,
+) -> Vec<crate::task_state::ReasonValue> {
+    let targets = &snapshot.gpu_unlock_targets;
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let local = matches!(snapshot.source, PlanSource::Local { .. });
+    let (gpus, readable) = if !local {
+        (snapshot.gpus.clone(), true)
+    } else if let Ok(host) = facts::read_gpus(h) {
+        let counted: Vec<facts::HostGpu> = facts::counted(&host).into_iter().cloned().collect();
+        (plan_gpus(&counted), true)
+    } else {
+        (Vec::new(), false)
+    };
+    let found = |address: &String| gpus.iter().find(|g| &g.address == address);
+    let models: Vec<&str> = targets
+        .iter()
+        .map(|a| found(a).map_or(a.as_str(), gpu_model))
+        .collect();
+    let warn = |key: &str, params| crate::task_state::ReasonValue::new(key, params);
+    let mut warnings = vec![warn(
+        "confirm.gpu_unlock",
+        json!({"targets": targets, "models": models}),
+    )];
+    if local {
+        for address in targets.iter().filter(|a| readable && found(a).is_none()) {
+            let params = json!({"address": address});
+            warnings.push(warn("confirm.gpu_unlock_unavailable", params));
+        }
+    } else if crate::runner::unlock_firmware::downloads(h, data_dir, &snapshot.version) {
+        warnings.push(warn("confirm.gpu_unlock_download", json!({})));
+    }
+    warnings.push(warn("confirm.gpu_unlock_notice", json!({})));
+    // One note per experimental series among the targets, in the series' interface order.
+    let experimental: std::collections::BTreeSet<_> = targets
+        .iter()
+        .filter_map(found)
+        .filter_map(unlock_series)
+        .filter(|s| s.maturity() == crate::gpu_unlock::cards::Maturity::Experimental)
+        .collect();
+    for series in experimental {
+        let params = json!({"series": series.label()});
+        warnings.push(warn("confirm.gpu_unlock_experimental", params));
+    }
+    warnings
 }
 
 fn prepare_official_source(
@@ -749,6 +856,7 @@ fn prepare_local_source(
             sha256: record.sha256.clone(),
         };
         snapshot.version = record.version.clone();
+        snapshot.gpu_unlock_targets = record.gpu_unlock_targets.clone();
     }
     Ok(row)
 }
@@ -878,6 +986,7 @@ pub fn precheck(
         link: facts::LinkReading::Missing,
         gpus: Vec::new(),
         kernel_module_type: None,
+        gpu_unlock_targets: Vec::new(),
         upload_group: None,
         local_row: None,
     };
@@ -887,7 +996,7 @@ pub fn precheck(
     let mut official_kernel: Option<String> = None;
 
     match req {
-        SourceRequest::Official { version, gpus } => {
+        SourceRequest::Official { version, gpus, .. } => {
             if let Some(result) = prepare_official_source(
                 h,
                 version,
@@ -904,6 +1013,7 @@ pub fn precheck(
             group_id,
             version,
             gpus,
+            ..
         } => {
             prepare_upload_source(ctx, group_id, version, gpus, &mut snapshot)?;
         }
@@ -913,6 +1023,7 @@ pub fn precheck(
             local_row = Some(row);
         }
     }
+    snapshot.gpu_unlock_targets = unlock_targets(req, &snapshot)?;
 
     let mut failures: Vec<Failure> = Vec::new();
     let reconciled = crate::tasks::reconcile_managed(h, p);
@@ -1029,7 +1140,8 @@ pub fn precheck(
         OriginalChoice::Save
     };
 
-    let dialog = confirmation_dialog(&snapshot, kernel, truenas, original_json);
+    let unlock = unlock_warnings(h, &p.root, &snapshot);
+    let dialog = confirmation_dialog(&snapshot, kernel, truenas, original_json, unlock);
     Ok((Precheck::Ready(dialog), snapshot))
 }
 
@@ -1038,6 +1150,7 @@ fn confirmation_dialog(
     kernel: String,
     truenas: String,
     original_json: serde_json::Value,
+    unlock: Vec<crate::task_state::ReasonValue>,
 ) -> Dialog {
     let original_saved = snapshot.original_saved;
     let save_available = snapshot.save_available;
@@ -1121,6 +1234,7 @@ fn confirmation_dialog(
             json!({}),
         ));
     }
+    warnings.extend(unlock);
     if !original_saved {
         if !save_available {
             warnings.push(crate::task_state::ReasonValue::new(
@@ -1394,6 +1508,7 @@ fn prepare_task(ctx: &Ctx, snapshot: &Snapshot, button: Button) -> Result<String
         build_timeout_minutes: ctx.build_timeout_minutes(),
         gpus: snapshot.gpus.clone(),
         kernel_module_type: snapshot.kernel_module_type,
+        gpu_unlock_targets: snapshot.gpu_unlock_targets.clone(),
     };
     let state = crate::task_state::new_state(
         &task_id,

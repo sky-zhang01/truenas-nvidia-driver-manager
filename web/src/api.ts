@@ -46,6 +46,8 @@ export interface GpuReading {
   device: string;
   name?: string;
   modules: Modules;
+  // Present only for a GPU the unlock supports.
+  gpu_unlock?: "stable" | "experimental";
   last_branch?: number;
   first_branch?: number;
   usable_from_branch?: number;
@@ -64,6 +66,8 @@ export interface VersionsResponse {
   open_unbuildable: string[];
   unreadable: Unreadable[];
   gpus: GpuReading[];
+  // Releases the server can unlock. Absent on an older response, which leaves the choice to the GPU.
+  gpu_unlock_versions?: string[];
 }
 
 export interface HomeLink {
@@ -106,7 +110,20 @@ export interface HomeTaskRecord {
   interrupt_discovered_at: number | null;
   source: PlanDialogSource | null;
   version: string | null;
+  gpu_unlock?: boolean;
 }
+
+export interface GpuUnlockCard {
+  address: string;
+  result: "not_cold" | "unlocked" | "next_boot" | "not_unlocked";
+  line?: string;
+}
+
+// null when the merged image carries no unlock rule.
+export type HomeGpuUnlock =
+  | { value: { cards: GpuUnlockCard[]; reloaded_after_boot: boolean }; unknown?: undefined }
+  | { unknown: ReasonField; value?: undefined }
+  | null;
 
 export interface HomeResponse {
   loaded_version: Reading<string>;
@@ -116,6 +133,7 @@ export interface HomeResponse {
   link: HomeLink;
   original_saved: OriginalSaved;
   gpus: HomeGpus;
+  gpu_unlock?: HomeGpuUnlock;
   latest_task: HomeTaskRecord | { unknown: ReasonField } | null;
   interrupted: HomeTaskRecord | null;
   active_task: ActiveTask | { unknown: ReasonField } | null;
@@ -153,8 +171,8 @@ export interface UploadFileResponse {
 }
 
 export type PlanSource =
-  | { kind: "official"; version: string; gpus: string[] }
-  | { kind: "upload"; group_id: string; version: string; gpus: string[] }
+  | { kind: "official"; version: string; gpus: string[]; gpu_unlock?: boolean }
+  | { kind: "upload"; group_id: string; version: string; gpus: string[]; gpu_unlock?: boolean }
   | { kind: "local"; row_id: string };
 
 export interface PlanDialogSource {
@@ -251,6 +269,7 @@ export interface DriverRow {
   created_at: number | null;
   size: number | null;
   target_kernel: string | null;
+  gpu_unlock_targets: string[] | null;
   status: "in_use" | "available" | "kernel_mismatch" | "UNKNOWN";
   keep: boolean | null;
   can_update: boolean;
@@ -307,6 +326,8 @@ export interface Notice {
   key: string;
   variant?: string;
   params?: Record<string, unknown>;
+  // The unlock sentence of a successful update with the unlock.
+  unlock?: string;
 }
 
 export interface TaskError {
@@ -388,6 +409,14 @@ export interface CheckRecord {
   expected: string;
   version_ok: boolean;
   passed: boolean;
+  load_order?: LoadOrderRecord;
+}
+
+export interface LoadOrderRecord {
+  show_depends: Reading<string>;
+  nvidia_conf: Reading<boolean>;
+  vfio_pci_first: boolean;
+  gpu_unlock_before_nvidia: boolean;
 }
 
 export interface RestoreRecord {

@@ -168,6 +168,27 @@ try {
   // A reserved prefix in a longer or malformed label must not grant an exception.
   const email = /[a-z\d.!#$%&'*+/=?^_`{|}~-]+@([a-z\d][a-z\d._-]*\.[a-z\d_-]+)/gi;
   const processWords = new RegExp('\\b(?:' + ['orches' + 'trator', 'author' + '\\s+seat', 'Authored' + '\\s+by'].join('|') + ')\\b', 'i');
+  // AI-agent traces never reach the public repository: attribution trailers and
+  // generator lines, agent mail identities, and agent instruction files or
+  // directories. Rules are unconditional (no allowlist). The words are assembled
+  // so this checker is not a hit itself; the product's own agent documentation
+  // (prose and install paths such as a skills directory under the home directory)
+  // is text, and only tracked paths named below are refused.
+  const agentTools = ['clau' + 'de', 'co' + 'dex', 'chat' + 'gpt', 'open' + 'ai', 'anthro' + 'pic', 'gem' + 'ini', 'copi' + 'lot', 'gr' + 'ok', 'ai' + 'der', 'cur' + 'sor', 'ki' + 'mi', 'qw' + 'en', 'deep' + 'seek', 'wind' + 'surf', 'de' + 'vin', 'cl' + 'ine', 'anti' + 'gravity'].join('|');
+  const agentText = [
+    new RegExp('\\bco-' + 'authored-by\\s*:', 'i'),
+    new RegExp('\\b(?:generated|created|made|written)\\s+(?:with|by|using|via)\\b[^\\r\\n]{0,80}?\\b(?:' + agentTools + ')\\b', 'i'),
+    new RegExp('@(?:[a-z\\d-]+\\.)*(?:anthro' + 'pic|open' + 'ai)\\.com\\b', 'i'),
+    new RegExp('\\b(?:clau' + 'de|co' + 'dex)(?:-[a-z\\d]+)*@[a-z\\d]', 'i'),
+    new RegExp('\\b(?:clau' + 'de(?:\\s+code)?|co' + 'dex)\\s*<', 'i'),
+  ];
+  const agentFiles = new Set(['clau' + 'de.md', 'agents.md', 'agent.md', 'gem' + 'ini.md', 'co' + 'dex.md', 'gr' + 'ok.md', 'qw' + 'en.md',
+    'copi' + 'lot-instructions.md', '.cur' + 'sorrules', '.cline' + 'rules']);
+  const agentDirs = new Set(['.clau' + 'de', '.agents', '.co' + 'dex', '.cur' + 'sor', '.gem' + 'ini', '.wind' + 'surf', '.cline' + 'rules']);
+  function agentPath(rel, isDirectory) {
+    const parts = rel.toLowerCase().split('/');
+    return parts.some((part, index) => agentDirs.has(part) || index === parts.length - 1 && !isDirectory && agentFiles.has(part));
+  }
   const findings = new Set();
   // Formats that may contain printable bytes still require exact registration.
   // SVG is intentionally absent: vector brand assets remain text-scanned.
@@ -236,6 +257,7 @@ try {
     count++;
     // Private policy values are unconditional, including in filenames and binaries.
     if (forbidden(rel) || forbidden(data.toString('utf8'))) record(rel, 'forbidden');
+    if (agentText.some(rule => rule.test(data.toString('utf8')) || rule.test(rel))) record(rel, 'agent-trace');
     const hash = digest(data), registered = entries.get(rel) || [];
     const exempt = (rule, line) => registered.some(entry => entry.rules.includes(rule) && (line === undefined ? entry.sha256 === hash : entry.line_sha256 === digest(line)));
     let text;
@@ -278,6 +300,7 @@ try {
       if (!prefix && name === '.git') continue;
       const rel = prefix + name, full = path.join(dir, name), stat = fs.lstatSync(full);
       if (forbidden(rel)) record(rel, 'forbidden');
+      if (agentPath(rel, stat.isDirectory())) record(rel, 'agent-file');
       for (const [rule, hit] of Object.entries({...addressChecks(normalized(rel)), ...commonChecks(normalized(rel))})) if (hit) record(rel, rule);
       if (stat.isDirectory()) walk(full, rel + '/');
       else if (stat.isSymbolicLink()) {

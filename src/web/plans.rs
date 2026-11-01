@@ -207,6 +207,11 @@ fn source_invalid_response(e: plan::SourceInvalid) -> Response {
             "plan.source_invalid.local_row_missing",
         )
         .into_response(),
+        S::GpuUnlockUnsupported => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "plan.source_invalid.gpu_unlock_unsupported",
+        )
+        .into_response(),
     }
 }
 

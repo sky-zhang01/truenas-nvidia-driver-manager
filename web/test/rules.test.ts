@@ -742,6 +742,6 @@ test("support notes render the backend lower bound as one sentence", () => {
   assert.equal("missing" in result.notes[0]!, false);
   for (const lang of ["zh", "en"] as const) {
     const plain = expandText("catalog.gpu.not_listed", { gpu_name: "GPU", branch: result.notes[0]!.branch }, lang, "from");
-    assert.equal(plain, lang === "zh" ? "GPU 从 580 驱动起支持。" : "GPU is supported from driver 580.");
+    assert.equal(plain, lang === "zh" ? "GPU 要用 580 或更新的驱动。" : "GPU needs driver 580 or newer.");
   }
 });

@@ -66,6 +66,31 @@ pub fn branch_latest(versions: &[Version]) -> Vec<Version> {
     out
 }
 
+/// Recommended row of each branch, plus any unlock release present in `all` that is not already
+/// that recommendation. The extra row sits immediately after its branch's recommendation.
+pub fn with_unlock_versions(latest: &[Version], all: &[Version]) -> Vec<Version> {
+    let mut out = latest.to_vec();
+    for unlock in crate::gpu_unlock::DRIVER_VERSIONS {
+        if out.iter().any(|version| version.text() == *unlock) {
+            continue;
+        }
+        let Some(version) = all
+            .iter()
+            .find(|version| version.text() == *unlock)
+            .cloned()
+        else {
+            continue;
+        };
+        let at = out
+            .iter()
+            .position(|row| row.major() == version.major())
+            .map(|index| index + 1)
+            .unwrap_or(out.len());
+        out.insert(at, version);
+    }
+    out
+}
+
 /// The fixed community-patched official installer is qualified by the actual
 /// kernel family, not by the TrueNAS release or the header interface probes.
 pub fn community_patch_470(is_official: bool, version: &str, kernel: &str) -> bool {
@@ -1036,6 +1061,9 @@ pub fn gpu_readings_json(list: &[GpuListed]) -> serde_json::Value {
             obj.insert("name".into(), serde_json::json!(e.name));
         }
         obj.insert("modules".into(), serde_json::json!(g.modules.as_str()));
+        if let Some(m) = crate::gpu_unlock::cards::maturity(g.gpu.device) {
+            obj.insert("gpu_unlock".into(), serde_json::json!(m.as_str()));
+        }
         if let Some(b) = g.last_branch {
             obj.insert("last_branch".into(), serde_json::json!(b));
         }

@@ -1017,6 +1017,7 @@ fn interrupted_module_corrections_keep_phase_accounts_and_inputs_without_restart
                     expected: "580.178.04".into(),
                     version_ok: false,
                     passed: false,
+                    load_order: None,
                 });
                 state.restore = Some(Restore {
                     decision: RestoreDecision::Restore,

@@ -588,6 +588,7 @@ async fn cleanup_step_failure_reason_is_an_object() {
             expected: version.to_string(),
             version_ok: true,
             passed: true,
+            load_order: None,
         });
         truenas_nvidia_driver_manager::task_state::write(
             &host,

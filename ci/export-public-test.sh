@@ -148,7 +148,7 @@ export_head_policy() {
     (cd "${REPO}" && bash "${EXPORT}" --source HEAD --output "${WORK}/head-tree" --manifest "${WORK}/head-manifest.json")
 }
 COMMITTED_RULES="$(git -C "${REPO}" ls-tree --name-only "${SOURCE}" -- export/rules)"
-if [ -n "${COMMITTED_RULES}" ] || [ -f "${REPO}/.gitea/workflows/ci.yml" ]; then
+if [ -n "${COMMITTED_RULES}" ] || [ -f "${REPO}/.gitea/workflows/checks.yml" ]; then
     check 'HEAD exports under its committed rules' export_head_policy
 else
     echo 'committed export policy control: private export/rules is not present in the exported tree'

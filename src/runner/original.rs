@@ -201,6 +201,7 @@ pub fn save(ctx: &mut RunCtx) -> Result<(), SaveFailure> {
             truenas_version: truenas,
         }),
         keep: Some(true),
+        gpu_unlock_targets: Vec::new(),
     };
     let record_bytes = match serde_json::to_vec_pretty(&record) {
         Ok(b) => b,
