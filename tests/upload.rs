@@ -340,6 +340,74 @@ async fn upload_confirmation_warns_about_building_and_loading_the_installer() {
 }
 
 #[tokio::test]
+async fn an_upload_with_the_unlock_takes_the_supported_selected_gpus_as_targets() {
+    let (app, cookie) = setup().await;
+    app.host.add_gpu("0000:01:00.0", 0x2504, Some("nvidia"));
+    app.host.add_gpu("0000:02:00.0", 0x2b85, Some("nvidia"));
+    let group = open_group(&app, &cookie).await;
+    fill_group(&app, &cookie, &group, "1.20.1", "610.43.03").await;
+    let (status, body) = post_plan(
+        &app,
+        &cookie,
+        json!({
+            "kind": "upload", "group_id": group, "version": "610.43.03",
+            "gpus": ["0000:01:00.0", "0000:02:00.0"], "gpu_unlock": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let warnings = body["dialog"]["confirmation"]["warnings"]
+        .as_array()
+        .unwrap();
+    let unlock = warnings
+        .iter()
+        .find(|w| w["key"] == "confirm.gpu_unlock")
+        .expect("the unlock line");
+    assert_eq!(unlock["params"]["targets"], json!(["0000:01:00.0"]));
+    let (status, task) = post_task(&app, &cookie, &body["plan_id"], "skip").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{task}");
+    let id = task["task_id"].as_str().unwrap();
+    let state: serde_json::Value = serde_json::from_slice(
+        &app.host
+            .file(&format!("/var/lib/nvm/manager/state/{id}.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(state["plan"]["gpu_unlock_targets"], json!(["0000:01:00.0"]));
+    app.host.wait_for_units(std::time::Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn an_upload_asking_for_the_unlock_without_a_supported_gpu_or_driver_is_refused() {
+    // A GPU of the driver that the unlock does not support, and a supported one with a driver
+    // outside the unlock's table.
+    for (gpu, device, version) in [
+        ("0000:02:00.0", 0x2b85, "610.43.03"),
+        ("0000:01:00.0", 0x2504, "580.178.04"),
+    ] {
+        let (app, cookie) = setup().await;
+        app.host.add_gpu(gpu, device, Some("nvidia"));
+        let group = open_group(&app, &cookie).await;
+        fill_group(&app, &cookie, &group, "1.20.1", version).await;
+        let (status, body) = post_plan(
+            &app,
+            &cookie,
+            json!({
+                "kind": "upload", "group_id": group, "version": version,
+                "gpus": [gpu], "gpu_unlock": true,
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{version}: {body}"
+        );
+        assert_eq!(body["error"], "plan.source_invalid.gpu_unlock_unsupported");
+    }
+}
+
+#[tokio::test]
 async fn upload_planning_requires_a_version_candidate_and_current_group() {
     let (app, cookie) = setup().await;
     let group = open_group(&app, &cookie).await;

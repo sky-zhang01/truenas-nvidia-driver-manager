@@ -2,7 +2,7 @@
 
 [简体中文](deploy.zh-CN.md)
 
-TrueNAS SCALE 25.10.7 and TrueNAS 27.0.0-RC.1 / amd64 are supported and tested; other platforms are untested. The privileged container uses `pid: host` to control the host driver. Read the [security guide](security.en.md), arrange a maintenance window and retain host console access: replacement can interrupt GPU workloads.
+TrueNAS 25.10.7 and TrueNAS 27.0.0-RC.1 / amd64 are supported and tested; other platforms are untested. The privileged container uses `pid: host` to control the host driver. Read the [security guide](security.en.md), arrange a maintenance window and retain host console access: replacement can interrupt GPU workloads.
 
 Enable the NVIDIA driver in TrueNAS before using the manager:
 
@@ -63,6 +63,8 @@ if you lose access.
 Choose an official driver version, upload trusted files, or select a usable local driver.
 Read the generated plan and all warnings, choose whether to save the original, and confirm.
 The manager reports GPU users; stop affected apps yourself only when you are ready to do so.
+
+An official or uploaded driver 610.43.03 update can also add the optional full-speed GPU unlock (gpu-unlock). It is stable on the RTX 30 series and experimental on the RTX 40 and RTX 20 series; the RTX 50 series is not supported. It is off by default, chosen per update, and takes effect from the next boot; see [operations](operations.en.md).
 
 Prefer saving the original driver before the first replacement. Skipping it leaves no automatic
 recovery copy. Automatic restoration is attempted when the post-replacement driver check fails
@@ -174,6 +176,8 @@ build from an uploaded installer requires all of the following:
    an upload asks for confirmation and keeps files already received. With all five ready,
    choose Check and continue. The confirmation window opens only after the check succeeds.
    Back to selection returns to the checklist with the files kept. Once the task starts, its uploaded files cannot be replaced.
+
+   For the optional full-speed GPU unlock, the installer must be `NVIDIA-Linux-x86_64-610.43.03-no-compat32.run`. Upload it as the driver and tick "Add the full-speed GPU unlock (gpu-unlock)"; nothing is downloaded. The unlock firmware is generated on the host from this installer, and the third-party kernel module source is already inside the program. The firmware stage counts toward `NVM_BUILD_TIMEOUT_MINUTES`.
 
    The manager reads the installer header, Linux x86_64 marker and version, reads package names,
    architectures and versions, and runs the installer's own integrity check at build time. It

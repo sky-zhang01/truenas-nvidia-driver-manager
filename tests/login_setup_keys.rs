@@ -89,6 +89,7 @@ fn legitimate_snapshot() -> truenas_nvidia_driver_manager::plan::Snapshot {
         link: truenas_nvidia_driver_manager::facts::LinkReading::Ok,
         gpus: vec![],
         kernel_module_type: None,
+        gpu_unlock_targets: Vec::new(),
         upload_group: None,
         local_row: None,
     }

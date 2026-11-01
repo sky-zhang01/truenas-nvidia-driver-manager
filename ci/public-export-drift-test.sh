@@ -9,7 +9,7 @@ REPO="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 SOURCE="$(git -C "${REPO}" rev-parse --verify HEAD)"
 COMMITTED_RULES="$(git -C "${REPO}" ls-tree --name-only "${SOURCE}" -- export/rules)"
 HAS_PRIVATE_RULES=false
-if [ -n "${COMMITTED_RULES}" ] || [ -f "${REPO}/.gitea/workflows/ci.yml" ]; then
+if [ -n "${COMMITTED_RULES}" ] || [ -f "${REPO}/.gitea/workflows/checks.yml" ]; then
     HAS_PRIVATE_RULES=true
 else
     echo 'successful drift comparison controls: private export/rules is not present in the exported tree'

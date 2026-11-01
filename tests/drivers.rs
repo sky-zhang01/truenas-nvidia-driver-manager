@@ -140,6 +140,39 @@ async fn driver_list_reports_row_statuses() {
 }
 
 #[tokio::test]
+async fn a_row_lists_the_unlock_targets_of_its_record() {
+    let (app, cookie) = setup().await;
+    let (plain, unlocked) = (
+        "20260928T101530Z-3f9a0c11-build",
+        "20260928T101530Z-3f9a0c12-build",
+    );
+    for id in [plain, unlocked] {
+        put_row(
+            &app,
+            id,
+            "official",
+            "610.43.03",
+            &"c".repeat(64),
+            KERNEL,
+            None,
+            None,
+        );
+    }
+    let path = format!("/var/lib/nvm/drivers/{unlocked}/record.json");
+    let text = String::from_utf8(app.host.file(&path).unwrap()).unwrap();
+    let with_targets = text.replacen('}', r#","gpu_unlock_targets":["0000:01:00.0"]}"#, 1);
+    app.host.put_text(&path, &with_targets);
+    let (status, body) = get(&app, "/api/drivers", Some(&cookie)).await;
+    assert_eq!(status, 200, "{body}");
+    let targets = |id: &str| {
+        let rows = body["rows"].as_array().unwrap();
+        rows.iter().find(|r| r["id"] == id).unwrap()["gpu_unlock_targets"].clone()
+    };
+    assert_eq!(targets(plain), serde_json::json!([]));
+    assert_eq!(targets(unlocked), serde_json::json!(["0000:01:00.0"]));
+}
+
+#[tokio::test]
 async fn driver_deletion_refuses_in_use_and_kept_rows_together() {
     let (app, cookie) = setup().await;
     let canonical_sha = sha256_hex(b"driver image");

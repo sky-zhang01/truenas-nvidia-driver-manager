@@ -732,7 +732,8 @@ fn download_package(
 }
 
 /// Write the embedded installer and the package list into the task's `in`
-/// directory: the container entrypoint installs exactly what the list names.
+/// directory: the container entrypoint installs exactly what the list names. A task with the
+/// tensor unlock also gets the vendored upstream files and its rule.
 fn write_installer(ctx: &RunCtx, env: &BuildEnv) -> Result<(), BuildFailure> {
     let in_dir = ctx.task_dir().join("in");
     ctx.host.create_dir(&in_dir, 0o755).map_err(|error| {
@@ -758,6 +759,19 @@ fn write_installer(ctx: &RunCtx, env: &BuildEnv) -> Result<(), BuildFailure> {
                 )
             },
         )?;
+    }
+    let plan = ctx.state.plan.as_ref();
+    let targets = plan.map_or(&[][..], |p| p.gpu_unlock_targets.as_slice());
+    if !targets.is_empty() {
+        crate::gpu_unlock::kit::write_kit(ctx.host.as_ref(), &in_dir.join("gpu-unlock"), targets)
+            .map_err(|error| {
+            BuildFailure::new(
+                ErrorCode::BuildFailed,
+                BUILD_DOCKER_RUN_FAILED,
+                json!({}),
+                Some(format!("cannot write the unlock files: {error}")),
+            )
+        })?;
     }
     Ok(())
 }

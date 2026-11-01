@@ -78,9 +78,11 @@ function asStepPlan(plan: TaskDetail["plan"]): StepPlan | null {
     if (typeof value === "string") kind = value;
   }
   const original = plan["original"];
+  const targets = plan["gpu_unlock_targets"];
   return {
     source: kind ? { kind } : null,
     original: typeof original === "string" ? original : null,
+    unlock: Array.isArray(targets) && targets.length > 0,
   };
 }
 
@@ -276,6 +278,11 @@ function logReasonKey(prefix: string, key: unknown): key is string {
   return typeof key === "string" && key.startsWith(prefix) && Object.hasOwn(MESSAGES, key);
 }
 
+function loadOrderPosition(first: unknown): unknown {
+  if (typeof first !== "boolean") return "UNKNOWN";
+  return { key: first ? "log.load_order.first" : "log.load_order.not_first", params: {} };
+}
+
 function gpuUserType(kind: unknown): unknown {
   return kind === "docker" || kind === "incus"
     ? { key: queryObjectKey(kind), params: {} }
@@ -303,6 +310,10 @@ export function logParams(key: string, payload: unknown): Params {
       break;
     case "log.finished":
       params["status"] = logKey("status.", p["status"]);
+      break;
+    case "log.unlock_load_order":
+      params["vfio"] = loadOrderPosition(p["vfio_pci_first"]);
+      params["unlock"] = loadOrderPosition(p["gpu_unlock_before_nvidia"]);
       break;
     case "log.build_step":
 
@@ -713,6 +724,8 @@ function renderTaskNotice(app: App, noticeArea: HTMLElement, detail: TaskDetail,
         ...(gpuListNotice ? { omitSegments: ["list", "note"] as const } : {}),
       }),
     );
+    const unlock = detail.notice.unlock;
+    if (unlock !== undefined && Object.hasOwn(MESSAGES, unlock)) noticeArea.append(renderNotice(unlock, {}, lang));
     if (gpuListNotice && detail.gpu_users) {
       noticeArea.append(gpuUsersNode({
         ...detail.gpu_users, state: unreadable ? "unreadable" : "busy",

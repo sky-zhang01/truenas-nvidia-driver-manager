@@ -35,6 +35,7 @@ import { closeDialog, openDialog, makeDialog } from "../dialog.js";
 import { armUpdateCheckStatus, openCheckDialog, openConfirmDialog, renderPlanError } from "./plan.js";
 import { runPlanFlow } from "../plan-flow.js";
 import { guardSignedIn } from "../session-view.js";
+import { publishUploadUnlock, unlockChoiceNode, versionOptionText, type UnlockChoice } from "../gpu-unlock.js";
 import { uploadContinueReason } from "../upload-continue.js";
 
 // A failed login-status read cannot authorize writes using an earlier result.
@@ -148,6 +149,7 @@ export function renderUpdate(app: App, container: HTMLElement): void {
     let gpus = countedGpus(versions);
     const selected = new Set<string>();
     if (gpus.length === 1 && gpus[0]) selected.add(gpus[0].address);
+    const unlock: UnlockChoice = { on: false };
     let chosen: string | null = null;
     let otherVersion = false;
     let enteredVersion = "";
@@ -203,7 +205,7 @@ export function renderUpdate(app: App, container: HTMLElement): void {
         [...selected],
       );
       for (const v of filtered.options) {
-        select.append(el("option", { value: v, text: v }));
+        select.append(el("option", { value: v, text: versionOptionText(v, versions.gpu_unlock_versions, lang) }));
       }
       const helpKey = catalogHelpKey(filtered, versions.unreadable ?? []);
       const hasOther = helpKey === "catalog.help";
@@ -259,7 +261,14 @@ export function renderUpdate(app: App, container: HTMLElement): void {
       refreshButton();
     };
 
+    const mountUnlock = (): void => {
+      selectArea.querySelector("#gpu-unlock-area")?.remove();
+      if (gpus.length === 0) return;
+      selectArea.append(unlockChoiceNode(lang, selectedGpus(), unlock, "", undefined, versions.gpu_unlock_versions, chosen));
+    };
+
     const refreshButton = (): void => {
+      mountUnlock();
       const filtered = filterVersions(
         versions.items.map((i) => i.version),
         versions.open_unbuildable,
@@ -390,12 +399,12 @@ export function renderUpdate(app: App, container: HTMLElement): void {
       });
     };
     updateBtn.addEventListener("click", () => {
-      if (chosen !== null) runPlan({ kind: "official", version: chosen, gpus: [...selected] });
+      if (chosen !== null) runPlan({ kind: "official", version: chosen, gpus: [...selected], gpu_unlock: unlock.on });
     });
 
     uploadBtn.addEventListener("click", () => {
       if (loginReadFailed(app)) return;
-      openUploadDialog(app, versions, selected, uploadBtn, () => {
+      openUploadDialog(app, versions, selected, unlock, uploadBtn, () => {
         rebuild();
       }, chosen);
     });
@@ -413,10 +422,18 @@ interface UploadState {
 
 const uploadManualVersion: { value: string | null } = { value: null };
 
+// The file's detected release wins. Before a file is accepted, the download-link release is the
+// selection the unlock box follows.
+function uploadInstallVersion(fileVersion: string | null, downloadVersion: string): string | null {
+  if (fileVersion) return fileVersion;
+  return versionFormatOk(downloadVersion) ? downloadVersion : null;
+}
+
 function openUploadDialog(
   app: App,
   versions: VersionsResponse,
   selected: Set<string>,
+  unlock: UnlockChoice,
   trigger: HTMLElement,
   onSelectionChange: () => void,
   initialDownloadVersion: string | null,
@@ -430,6 +447,7 @@ function openUploadDialog(
   let toolkitVersion: string | null = null;
   let toolkitFallback = false;
   let downloadVersion = initialDownloadVersion ?? "";
+  const uploadUnlock: UnlockChoice = { on: unlock.on };
   let downloadOther = downloadVersion !== "" && !versions.items.some((v) => v.version === downloadVersion);
   let uploadAbort: AbortController | null = null;
   let batchIndex = 0;
@@ -447,6 +465,7 @@ function openUploadDialog(
   const footer = el("footer", { class: "upload-footer" });
   const lead = el("p", { class: "hint" });
   const gpuArea = el("div", { class: "gpu-area" });
+  const unlockArea = el("div", { class: "unlock-area" });
   const conclusionBox = el("div");
   const versionControl = el("div", { class: "upload-download-version" });
   const drop = el("div", { class: "upload-drop" });
@@ -484,7 +503,7 @@ function openUploadDialog(
   actions.append(closeBtn, updateBtn);
   buttons.append(restartBtn, actions);
   footer.append(errorBox, counter, live, reason, cancelConfirm, buttons);
-  body.append(lead, gpuArea, conclusionBox, versionControl, drop, extension, progressBox, summaryBox, unusedBox, how);
+  body.append(lead, gpuArea, unlockArea, conclusionBox, versionControl, drop, extension, progressBox, summaryBox, unusedBox, how);
   dlg.append(x, body, footer);
   const text = (key: string, params: Params = {}): string => expandText(key, params, lang);
   const selectedGpus = (): GpuReading[] => gpus.filter((g) => selected.has(g.address));
@@ -538,6 +557,14 @@ function openUploadDialog(
     clear(gpuArea); clear(conclusionBox);
     const group = gpuSelection(app, gpus, selected, () => { rebuildGpu(); refreshFooter(); onSelectionChange(); }, "upload-");
     if (group) gpuArea.append(group);
+    clear(unlockArea);
+    if (gpus.length > 0) {
+      unlockArea.append(unlockChoiceNode(
+        lang, selectedGpus(), uploadUnlock, "upload-",
+        () => publishUploadUnlock(uploadUnlock, unlock, onSelectionChange),
+        versions.gpu_unlock_versions, uploadInstallVersion(state.version, downloadVersion),
+      ));
+    }
     if (conflict(selectedGpus())) conclusionBox.append(renderNotice("catalog.no_usable_version", {}, lang, { role: "none", class: "conclusion" }));
     if (active) document.getElementById(active)?.focus();
   };
@@ -560,12 +587,12 @@ function openUploadDialog(
       const invalid = input.value !== "" && !versionFormatOk(input.value);
       input.setAttribute("aria-invalid", String(invalid));
       hint.textContent = text("upload.version.link_hint") + (invalid ? ` ${text("upload.version.invalid")}` : "");
-      rebuildLinks(); rebuildMismatch();
+      rebuildLinks(); rebuildMismatch(); rebuildGpu(); onSelectionChange();
     };
     if (versions.items.length > 0 && (versions.unreadable ?? []).length === 0) {
       const select = el("select", { id: "upload-link-version" });
       select.append(el("option", { value: "", text: text("upload.version.placeholder") }));
-      for (const v of versions.items) select.append(el("option", { value: v.version, text: v.version }));
+      for (const v of versions.items) select.append(el("option", { value: v.version, text: versionOptionText(v.version, versions.gpu_unlock_versions, lang) }));
       select.append(el("option", { value: "other", text: text("catalog.other_version") }));
       select.value = downloadOther ? "other" : downloadVersion;
       select.setAttribute("aria-describedby", hint.id);
@@ -711,7 +738,7 @@ function openUploadDialog(
       const retry = el("button", { type: "button", class: "upload-read-retry", text: text("upload.read_retry") });
       retry.addEventListener("click", () => { loading = true; clear(errorBox); refreshFooter(); void loadGroup(); });
       errorBox.append(retry);
-    } finally { if (gen === state.readGen && dlg.isConnected) { loading = false; rebuildSummary(); } }
+    } finally { if (gen === state.readGen && dlg.isConnected) { loading = false; rebuildSummary(); rebuildGpu(); onSelectionChange(); } }
   };
   const reject = (file: File, key: string, params: Params, slot: string | null): void => {
     const old = rejections.findIndex((r) => r.file === file.name); if (old >= 0) rejections.splice(old, 1);
@@ -810,7 +837,7 @@ function openUploadDialog(
     body.style.maxHeight = `${body.getBoundingClientRect().height}px`;
     const stop = armUpdateCheckStatus(updateBtn, lang, app, undefined, false, body);
     void runPlanFlow({
-      source: { kind: "upload", group_id: state.group.group_id, version: state.version, gpus: [...selected] },
+      source: { kind: "upload", group_id: state.group.group_id, version: state.version, gpus: [...selected], gpu_unlock: uploadUnlock.on },
       owns: () => dlg.isConnected,
       orphanedReady: (planId) => { void cancelPlan(planId).catch(() => {}); },
       ready: (res) => {

@@ -304,6 +304,15 @@ pub const BUILD_COMMUNITY_PATCH_FAILED: &str = "community_patch_failed";
 pub const BUILD_KERNEL_MODULE_BUILD_FAILED: &str = "kernel_module_build_failed";
 pub const BUILD_KERNEL_MODULE_MISSING: &str = "kernel_module_missing";
 pub const BUILD_KERNEL_MODULE_INSTALL_FAILED: &str = "kernel_module_install_failed";
+pub const BUILD_GPU_UNLOCK_MODULE_BUILD_FAILED: &str = "gpu_unlock_module_build_failed";
+pub const BUILD_GPU_UNLOCK_INSTALL_FAILED: &str = "gpu_unlock_install_failed";
+
+// The firmware stage of an update with the unlock: the installer does not give the pinned
+// firmware, or the files cannot be written below the data directory.
+pub const GPU_UNLOCK_INSTALLER_UNUSABLE: &str = "gpu_unlock_installer_unusable";
+pub const GPU_UNLOCK_FIRMWARE_FAILED: &str = "gpu_unlock_firmware_failed";
+// The kernel refused the unlock module in the trial load.
+pub const GPU_UNLOCK_MODULE_REJECTED: &str = "gpu_unlock_module_rejected";
 
 pub const BUILD_DOCKER_RUN_FAILED: &str = "docker_run_failed";
 pub const BUILD_CONTAINER_EXIT: &str = "container_exit";
@@ -315,6 +324,11 @@ pub const BUILD_ARTIFACT_VERSION_UNREADABLE: &str = "artifact.version_unreadable
 pub const BUILD_ARTIFACT_TOOL_MISSING: &str = "artifact.tool_missing";
 pub const BUILD_ARTIFACT_UNREADABLE: &str = "artifact.unreadable";
 pub const BUILD_ARTIFACT_DELIVER_FAILED: &str = "artifact.deliver_failed";
+// The unlock files of a built image: the module that cannot load, the rule or the firmware,
+// and unlock files in an image built without it.
+pub const BUILD_ARTIFACT_GPU_UNLOCK_MODULE: &str = "artifact.gpu_unlock_module";
+pub const BUILD_ARTIFACT_GPU_UNLOCK_FILES: &str = "artifact.gpu_unlock_files";
+pub const BUILD_ARTIFACT_GPU_UNLOCK_UNEXPECTED: &str = "artifact.gpu_unlock_unexpected";
 
 pub const SUBMIT_RUNNER_COPY_FAILED: &str = "submit.runner_copy_failed";
 pub const SUBMIT_STATE_UNWRITABLE: &str = "submit.state_unwritable";
@@ -322,15 +336,17 @@ pub const SUBMIT_TASK_DIR_FAILED: &str = "submit.task_dir_failed";
 pub const SUBMIT_UNIT_NOT_CREATED: &str = "submit.unit_not_created";
 pub const SUBMIT_EXEC_FAILED: &str = "submit.exec_failed";
 
-pub const BUILD_STEP_NAMES: [&str; 14] = [
+pub const BUILD_STEP_NAMES: [&str; 16] = [
     "check",
     "modules",
     "compiler",
+    "unlock_module",
     "probe",
     "community_patch",
     "install",
     "install_userspace",
     "install_kernel_module",
+    "unlock_install",
     "depmod",
     "capture",
     "toolkit",
@@ -359,6 +375,12 @@ pub enum LogKey {
     BuildInstallMode,
     BuildFlagUnsupported,
     BuildTimeout,
+    UnlockFirmwareReused,
+    UnlockFirmwareGenerated,
+    UnlockPreloaded,
+    UnlockPreloadSkipped,
+    UnlockPreloadFailed,
+    UnlockLoadOrder,
     ArtifactChecked,
     ArtifactCheckFailed,
     RowCreated,
@@ -408,6 +430,12 @@ impl LogKey {
             LogKey::BuildInstallMode => "log.build_install_mode",
             LogKey::BuildFlagUnsupported => "log.build_flag_unsupported",
             LogKey::BuildTimeout => "log.build_timeout",
+            LogKey::UnlockFirmwareReused => "log.unlock_firmware_reused",
+            LogKey::UnlockFirmwareGenerated => "log.unlock_firmware_generated",
+            LogKey::UnlockPreloaded => "log.unlock_preloaded",
+            LogKey::UnlockPreloadSkipped => "log.unlock_preload_skipped",
+            LogKey::UnlockPreloadFailed => "log.unlock_preload_failed",
+            LogKey::UnlockLoadOrder => "log.unlock_load_order",
             LogKey::ArtifactChecked => "log.artifact_checked",
             LogKey::ArtifactCheckFailed => "log.artifact_check_failed",
             LogKey::RowCreated => "log.row_created",

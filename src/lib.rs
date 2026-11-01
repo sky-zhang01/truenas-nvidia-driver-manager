@@ -11,6 +11,7 @@ pub mod codes;
 pub mod drivers;
 pub mod facts;
 pub mod gpu_table;
+pub mod gpu_unlock;
 pub mod gpu_users;
 pub mod host;
 pub mod log;

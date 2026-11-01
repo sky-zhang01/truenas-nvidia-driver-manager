@@ -44,7 +44,9 @@ pub enum Phase {
     ReadLoadedVersion,
     SaveOriginal,
     Download,
+    UnlockFirmware,
     Build,
+    UnlockPreload,
     Unload,
     Write,
     Refresh,
@@ -66,7 +68,9 @@ impl Phase {
             Phase::ReadLoadedVersion => "read_loaded_version",
             Phase::SaveOriginal => "save_original",
             Phase::Download => "download",
+            Phase::UnlockFirmware => "unlock_firmware",
             Phase::Build => "build",
+            Phase::UnlockPreload => "unlock_preload",
             Phase::Unload => "unload",
             Phase::Write => "write",
             Phase::Refresh => "refresh",
@@ -88,7 +92,9 @@ impl Phase {
             "read_loaded_version" => Phase::ReadLoadedVersion,
             "save_original" => Phase::SaveOriginal,
             "download" => Phase::Download,
+            "unlock_firmware" => Phase::UnlockFirmware,
             "build" => Phase::Build,
+            "unlock_preload" => Phase::UnlockPreload,
             "unload" => Phase::Unload,
             "write" => Phase::Write,
             "refresh" => Phase::Refresh,
@@ -248,6 +254,9 @@ pub struct Plan {
     pub gpus: Vec<PlanGpu>,
     #[serde(default)]
     pub kernel_module_type: Option<KernelModuleType>,
+    /// The PCI addresses the tensor unlock is applied to; non-empty means the update carries it.
+    #[serde(default)]
+    pub gpu_unlock_targets: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,6 +420,18 @@ pub struct CheckRecord {
     pub expected: String,
     pub version_ok: bool,
     pub passed: bool,
+    /// The load-order item of an update with the unlock rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_order: Option<LoadOrderRecord>,
+}
+
+/// What `modprobe --show-depends nvidia` and the isolation file say about the next boot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadOrderRecord {
+    pub show_depends: ReadingJson<String>,
+    pub nvidia_conf: ReadingJson<bool>,
+    pub vfio_pci_first: bool,
+    pub gpu_unlock_before_nvidia: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -591,6 +612,22 @@ impl TaskState {
             waiting_gpu: None,
         }
     }
+
+    /// The load-order item belongs to an update check, and a check that failed it has not passed.
+    fn load_orders_ok(&self) -> Result<(), String> {
+        for check in &self.checks {
+            match &check.load_order {
+                Some(_) if check.pass == Pass::Restore => {
+                    return Err("restore check with a load order".into());
+                }
+                Some(order) if !order.vfio_pci_first && check.passed => {
+                    return Err("passed check without vfio-pci first".into());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Serialization form of the reload target set.
@@ -654,8 +691,18 @@ fn dataset_ok(s: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '/' | ' '))
 }
 
+/// The targets go into the modprobe rule verbatim, so a state file cannot carry a value that is
+/// not an address, a repeat, or an empty list.
+fn validate_unlock_targets(targets: &[String]) -> Result<(), String> {
+    if targets.is_empty() || crate::gpu_unlock::targets_ok(targets) {
+        return Ok(());
+    }
+    Err("bad unlock targets".into())
+}
+
 impl Validate for Plan {
     fn validate(&self) -> Result<(), String> {
+        validate_unlock_targets(&self.gpu_unlock_targets)?;
         if crate::facts::parse_version(&self.version).is_none() {
             return Err("bad version".into());
         }
@@ -871,6 +918,7 @@ impl Validate for TaskState {
                 }
             }
         }
+        self.load_orders_ok()?;
         // SUCCEEDED and STOCK_RESTORED must carry both check readings.
         match self.status {
             Status::Succeeded => {
@@ -1124,6 +1172,7 @@ mod tests {
                 device: "2b85".into(),
             }],
             kernel_module_type: Some(KernelModuleType::Open),
+            gpu_unlock_targets: Vec::new(),
         }
     }
 
@@ -1138,6 +1187,7 @@ mod tests {
             expected: task.to_string(),
             version_ok: true,
             passed: true,
+            load_order: None,
         }
     }
 
@@ -1385,6 +1435,83 @@ mod tests {
         assert!(st.validate().is_err());
     }
 
+    fn order(vfio_pci_first: bool) -> LoadOrderRecord {
+        LoadOrderRecord {
+            show_depends: ReadingJson::value("insmod /m/nvidia.ko\n".to_string()),
+            nvidia_conf: ReadingJson::value(false),
+            vfio_pci_first,
+            gpu_unlock_before_nvidia: false,
+        }
+    }
+
+    #[test]
+    fn a_load_order_belongs_to_an_update_check_that_did_not_fail_it() {
+        let mut st = new_state("20260928T101530Z-3f9a0c12", 1, sample_plan(), Phase::Check);
+        let mut check = passing_check(Pass::Update, "580.178.04");
+        check.load_order = Some(order(true));
+        st.checks.push(check.clone());
+        assert!(st.validate().is_ok());
+        let parsed: TaskState = serde_json::from_value(serde_json::to_value(&st).unwrap()).unwrap();
+        assert_eq!(parsed.checks[0].load_order, Some(order(true)));
+        // A check that failed the item has not passed.
+        st.checks[0].load_order = Some(order(false));
+        assert!(st.validate().is_err());
+        st.checks[0].passed = false;
+        assert!(st.validate().is_ok());
+        // A restore check does not carry the item.
+        let mut restore = passing_check(Pass::Restore, "580.173.02");
+        restore.load_order = Some(order(true));
+        st.checks = vec![restore];
+        assert!(st.validate().is_err());
+    }
+
+    #[test]
+    fn a_state_file_without_a_load_order_still_reads() {
+        let mut st = new_state("20260928T101530Z-3f9a0c12", 1, sample_plan(), Phase::Check);
+        st.checks.push(passing_check(Pass::Update, "580.178.04"));
+        let mut value = serde_json::to_value(&st).unwrap();
+        assert!(value["checks"][0].get("load_order").is_none());
+        value["checks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("load_order");
+        let parsed: TaskState = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.checks[0].load_order, None);
+    }
+
+    #[test]
+    fn the_unlock_targets_of_a_plan_are_checked_and_default_to_none() {
+        let mut st = new_state("20260928T101530Z-3f9a0c12", 1, sample_plan(), Phase::Build);
+        assert!(st.plan.as_ref().unwrap().gpu_unlock_targets.is_empty());
+        assert!(st.validate().is_ok());
+        let good = vec!["0000:01:00.0".to_string(), "0000:02:00.0".to_string()];
+        st.plan.as_mut().unwrap().gpu_unlock_targets = good.clone();
+        assert!(st.validate().is_ok());
+        for bad in [
+            vec!["0000:01:00.0".to_string(), "0000:01:00.0".to_string()],
+            vec!["all".to_string()],
+            vec!["".to_string()],
+            vec!["0000:01:00.0,0000:02:00.0".to_string()],
+            vec!["0000:01:00.0\nsoftdep nvidia pre: x".to_string()],
+        ] {
+            st.plan.as_mut().unwrap().gpu_unlock_targets = bad;
+            assert!(st.validate().is_err());
+        }
+        // A state file written before the field existed has none.
+        let mut value = serde_json::to_value(sample_plan()).unwrap();
+        value.as_object_mut().unwrap().remove("gpu_unlock_targets");
+        let plan: Plan = serde_json::from_value(value).unwrap();
+        assert!(plan.gpu_unlock_targets.is_empty());
+    }
+
+    #[test]
+    fn the_firmware_phase_round_trips_through_its_name() {
+        assert_eq!(Phase::UnlockFirmware.as_str(), "unlock_firmware");
+        assert_eq!(Phase::parse("unlock_firmware"), Some(Phase::UnlockFirmware));
+        assert_eq!(Phase::UnlockPreload.as_str(), "unlock_preload");
+        assert_eq!(Phase::parse("unlock_preload"), Some(Phase::UnlockPreload));
+    }
+
     #[test]
     fn signal_reasons_in_four_state_fields_survive_write_and_read() {
         let tmp = TestDir::new("signal-state");
@@ -1440,6 +1567,7 @@ mod tests {
             expected: "580.178.04".into(),
             version_ok: false,
             passed: false,
+            load_order: None,
         });
         assert_readback(&st);
         st.error = Some(ErrorRecord::new(

@@ -11,7 +11,7 @@ const placeholders = (text: string): string[] => [...new Set([...text.matchAll(/
 const segments = (text: string): string[] => text.split("\n").map((line) => line.match(/^(?:(?:info|warning|error)\|)?(?:(?:title|body|action|list|note)\|)?/)?.[0] ?? "");
 
 test("the approved catalog has every retained key and no deleted or merged aliases", () => {
-  assert.equal(Object.keys(contract).length, 775);
+  assert.equal(Object.keys(contract).length, 822);
   assert.deepEqual(messageKeys(), Object.keys(contract).sort());
 });
 

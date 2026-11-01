@@ -4,9 +4,14 @@ use serde_json::json;
 
 use crate::codes::*;
 use crate::facts::{self, Reading};
+use crate::gpu_unlock::resolve;
 use crate::host::Exit;
+use crate::host::{At, Cmd};
 use crate::runner::RunCtx;
-use crate::task_state::{CheckRecord, Pass, ReadingJson, ReasonValue};
+use crate::task_state::{CheckRecord, LoadOrderRecord, Pass, ReadingJson, ReasonValue};
+
+/// The TrueNAS file that isolates GPUs for virtual machines when the list is not empty.
+const NVIDIA_CONF_PATH: &str = "/etc/modprobe.d/nvidia.conf";
 
 pub type RefreshReadings = (
     Reading<u64>,
@@ -170,14 +175,51 @@ fn since_json(reading: &Reading<u64>, reason: &Option<ReasonValue>) -> ReadingJs
     }
 }
 
-/// Run both items of the check and return one record. `since_*_reason` carry the
-/// command-failure reason when the corresponding merge-time reading came from a failed
-/// command.
+/// The load order the next boot will use: what `modprobe --show-depends nvidia` lists with the
+/// merged rules, and whether the host isolates GPUs.
+fn load_order(ctx: &RunCtx) -> LoadOrderRecord {
+    let cmd = Cmd::new(At::Host, "modprobe", HOST_CMD_TIMEOUT).args(["--show-depends", "nvidia"]);
+    let out = ctx.cmd(&cmd);
+    let listed = out.exit.ok();
+    let show_depends = if listed {
+        ReadingJson::value(super::tail_lines(&out.stdout))
+    } else {
+        ReadingJson::Unknown {
+            unknown: command_reason(HOST_CMD_TIMEOUT, &out),
+        }
+    };
+    let steps = resolve::parse(&out.stdout_text()).filter(|_| listed);
+    let nvidia_conf = match ctx.host.read(std::path::Path::new(NVIDIA_CONF_PATH)) {
+        Ok(_) => ReadingJson::value(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ReadingJson::value(false),
+        Err(e) => ReadingJson::unknown(crate::log::io_reason_key(&e)),
+    };
+    let targets = ctx
+        .state
+        .plan
+        .as_ref()
+        .map_or(Vec::new(), |p| p.gpu_unlock_targets.clone());
+    let judged = resolve::judge(steps.as_deref(), nvidia_conf.as_value().copied(), &targets);
+    let record = LoadOrderRecord {
+        show_depends,
+        nvidia_conf,
+        vfio_pci_first: judged.vfio_pci_first,
+        gpu_unlock_before_nvidia: judged.gpu_unlock_before_nvidia,
+    };
+    ctx.log(LogKey::UnlockLoadOrder, json!(record));
+    record
+}
+
+/// Run the items of the check and return one record; an update whose image carries the
+/// unlock rule has the load-order item too, and `vfio-pci` coming first is part of passing.
+/// `since_*_reason` carry the command-failure reason when the corresponding merge-time
+/// reading came from a failed command.
 pub fn check(
     ctx: &mut RunCtx,
     pass: Pass,
     readings: RefreshReadings,
     expected: &str,
+    unlock_rule: bool,
 ) -> CheckRecord {
     let (since_before, since_after, since_before_reason, since_after_reason, unmerge_confirmed) =
         readings;
@@ -190,6 +232,7 @@ pub fn check(
     ctx.state.nvidia_smi_gpus = Some(nvidia_smi_gpus(ctx));
     let version_ok = smi.value().map(|v| v == expected).unwrap_or(false)
         && proc.value().map(|v| v == expected).unwrap_or(false);
+    let order = unlock_rule.then(|| load_order(ctx));
     let record = CheckRecord {
         pass,
         since_before: since_json(&since_before, &since_before_reason),
@@ -199,7 +242,8 @@ pub fn check(
         proc_version: reading_json(&proc, &None),
         expected: expected.to_string(),
         version_ok,
-        passed: refresh_ok && version_ok,
+        passed: refresh_ok && version_ok && order.as_ref().is_none_or(|o| o.vfio_pci_first),
+        load_order: order,
     };
     // One line per check item, each carrying the readings its `check.reason` sentence needs.
     // The `pass` is visible from the surrounding lines and is not part of either line.

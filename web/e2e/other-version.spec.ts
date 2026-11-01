@@ -53,8 +53,8 @@ for (const language of ["zh", "en"] as const) {
     await expect(page.locator("#version-select option[value=other]")).toHaveCount(0);
     await expect(page.locator("#catalog-describe > p.hint")).toHaveCount(0);
     await expect(page.locator(".gpu-notes .notice > p")).toHaveText(language === "zh"
-      ? ["NVIDIA GeForce GTX 1080 最高支持 580 驱动。", "NVIDIA GeForce RTX 5090 从 580 驱动起支持。"]
-      : ["NVIDIA GeForce GTX 1080 is supported up to driver 580.", "NVIDIA GeForce RTX 5090 is supported from driver 580."]);
+      ? ["NVIDIA GeForce GTX 1080 最高只能用 580 驱动。", "NVIDIA GeForce RTX 5090 要用 580 或更新的驱动。"]
+      : ["NVIDIA GeForce GTX 1080 works only with drivers up to 580.", "NVIDIA GeForce RTX 5090 needs driver 580 or newer."]);
     await expect(page.locator(".conclusion > p")).toHaveText(language === "zh"
       ? "没有能驱动所选显卡的版本。" : "No version can drive the selected GPUs.");
   });
@@ -120,8 +120,8 @@ for (const language of ["zh", "en"] as const) {
       ? "下列显卡不支持版本 590.48.01。"
       : "The following GPUs do not support version 590.48.01.");
     await expect(error).toContainText(language === "zh"
-      ? "NVIDIA GeForce GTX 1080 最高支持 580 驱动。"
-      : "NVIDIA GeForce GTX 1080 is supported up to driver 580.");
+      ? "NVIDIA GeForce GTX 1080 最高只能用 580 驱动。"
+      : "NVIDIA GeForce GTX 1080 works only with drivers up to 580.");
   });
 
   test(`an official version below 470 shows the version floor in ${language}`, async ({ page }) => {

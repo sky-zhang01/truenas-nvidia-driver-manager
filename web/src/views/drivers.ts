@@ -27,15 +27,15 @@ import { guardSignedIn } from "../session-view.js";
 
 function sourceText(app: App, row: DriverRow): string {
   const lang = app.lang;
-  if (row.kind === "upload") {
-    return expandText("drivers.source.upload", { fingerprint: row.fingerprint ?? "" }, lang);
-  }
   if (row.kind === null) {
     // Unreadable records have no confirmed kind; never invent an original-driver source.
     return expandText("status.UNKNOWN", {}, lang);
   }
-  const key = `drivers.source.${row.kind}`;
-  return expandText(key, {}, lang);
+  const source = row.kind === "upload"
+    ? expandText("drivers.source.upload", { fingerprint: row.fingerprint ?? "" }, lang)
+    : expandText(`drivers.source.${row.kind}`, {}, lang);
+  const unlock = (row.gpu_unlock_targets ?? []).length > 0;
+  return unlock ? `${source} · ${expandText("drivers.source.unlock", {}, lang)}` : source;
 }
 
 function statusKey(status: string): string {

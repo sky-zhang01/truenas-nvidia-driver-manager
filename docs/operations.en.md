@@ -139,6 +139,7 @@ backup if you need to return to that release.
   records (including the saved original driver file).
 - `<data-dir>/manager/build-kit-cache/` holds the verified build packages (about 88 MiB). It can be
   deleted at any time; the next build downloads those packages again.
+- `<data-dir>/manager/gpu-unlock/firmware/` holds the verified unlock firmware (about 114 MB) once an update with the unlock has run. It can be deleted at any time; the next update with the unlock generates it again from the installer.
 - To restore, put the whole data directory back in place and start the app with the same compose
   file. The credentials file decides the account and password in use; restore it too and you do not
   have to rebuild the account.
@@ -183,6 +184,52 @@ readings are recorded separately from the first round. The normal post-update ch
 the result: an unsuccessful update can restore the saved original once; an unsuccessful restore
 ends with a restore-check failure.
 
+## Full-speed GPU unlock (gpu-unlock)
+
+This optional feature lifts the half-rate limit GeForce cards put on FP16, BF16 and TF32 tensor math with FP32 accumulation. It uses the GPL-2.0-only kernel module of Zagitta/gpu-unlock 2.0.0, vendored unchanged in `third_party/gpu-unlock/` (see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)). The throughput gain can be measured only on real cards, and this project has not measured it. The feature is off by default.
+
+**Choosing it.** The choice is made per update, for an official download or uploaded files: on Update driver tick "Add the full-speed GPU unlock (gpu-unlock)" under the version list (the manual-upload window has the same box). It takes effect from the next boot.
+
+- Only driver release 610.43.03 supports it.
+- Support is shown by series (chip codes in parentheses): RTX 30 (GA10x) is stable; RTX 40 (AD10x) and RTX 20 (TU10x) are experimental; RTX 50 (GB20x) is not supported. The Update page and the manual-upload window show this as one line under the box. The manager reads each card's PCI device ID (its hardware identifier) and unlocks the ticked cards that support it, so you do not need to look up your model. When none of the ticked GPUs is supported, the box cannot be ticked. The confirmation window warns once for each experimental series among the cards being unlocked, for example "The unlock for the RTX 40 series is still experimental and may be unstable."
+- Asking for the unlock with another driver version, or with no supported GPU (through the API), is refused with `plan.source_invalid.gpu_unlock_unsupported` (HTTP 422): "The selected GPUs or this driver version do not support the unlock."
+- A local driver row follows its own record: it keeps the unlock it was built with. If one of its targets is not a counted GPU now, the confirmation window says that GPU will not be unlocked.
+
+**Targets.** The targets are the ticked GPUs that support the unlock. They are written as PCI addresses into the image's rule (`options gpu_unlock targets=…`); the page shows models, not addresses. A GPU isolated for a virtual machine is never a target. If you move a card to another slot, its address changes, it is no longer a target, and Home shows it as not unlocked; build again.
+
+**What the image gains.** The image carries `usr/lib/modules/<kernel>/extra/gpu_unlock.ko`, the module indexes from depmod, `usr/lib/modprobe.d/gpu-unlock.conf` (the rule `softdep nvidia pre: vfio-pci gpu_unlock` and the `options gpu_unlock targets=…` line), 16 firmware files under `usr/lib/firmware/gpu-unlock/610.43.03/`, and licenses under `usr/share/licenses/gpu-unlock*/`. The 16 firmware files total about 114 MB uncompressed (113,940,488 bytes). The size increase of the compressed `nvidia.raw` has not been measured yet; it will be measured in the first-layer VM test and is not stated here.
+
+**Firmware.** The program does not ship firmware. It generates the files on the host, in process, from the NVIDIA 610.43.03 installer. With the current table an unlock update always installs 610.43.03, so the task uses its own installer (downloaded or uploaded) and downloads nothing extra. The output is checked against 17 fixed SHA-256 values (16 firmware files and NVIDIA-LICENSE) and cached in `<data-directory>/manager/gpu-unlock/firmware/610.43.03/`; later updates reuse it. If the file cannot give the fixed files, the task fails with `gpu_unlock_installer_unusable` ("this file cannot be used to turn on the unlock") and the driver is untouched. The firmware stage counts toward `NVM_BUILD_TIMEOUT_MINUTES`.
+
+**Offline hosts.** Download `NVIDIA-Linux-x86_64-610.43.03-no-compat32.run` on a connected computer, upload it as the driver in the manual-upload window, and tick the unlock box. Nothing is downloaded. The other offline inputs are the same as for any upload (see the [deployment guide](deploy.en.md)).
+
+**Task stages.** An update with the unlock has two more stages:
+
+- "Generating the unlock files" runs before the build. A local driver row is not built, so it has no such stage.
+- "Test-loading the unlock program (no card is unlocked)" runs after the build and before the driver file is replaced; for a local row, before the modules are unloaded. It loads the module with `insmod` and no targets, so it unlocks no GPU. If the kernel refuses the module, the task ends with `gpu_unlock_module_rejected` ("this computer refused to load the unlock program") and the driver is untouched. If the module is already loaded, the test load is skipped.
+
+The other unlock failures — `gpu_unlock_firmware_failed` ("the unlock files could not be prepared"), `gpu_unlock_module_build_failed` ("the unlock program could not be built") and `gpu_unlock_install_failed` ("the unlock program, its settings and the unlock files could not be added to the driver") — also happen before the driver file is replaced. If the task stops after the test load, an unlock program that does nothing may still be loaded. It goes away the next time the computer starts; it unlocks nothing.
+
+**Success check.** For an update whose image has the rule, the post-update check adds an item, "protection for cards given to a virtual machine (vfio-pci holds those cards and must start before the driver)": vfio-pci must load before gpu_unlock and nvidia. If it does not, the check fails and the task switches back to the saved original automatically (`STOCK_RESTORED`). Whether gpu_unlock loads before nvidia is only recorded. If it does not, the success page says "The settings for the full-speed GPU unlock did not take effect on this computer. The next time the computer starts, the unlock will not happen. The driver still works as usual." Otherwise it says "The full-speed GPU unlock is installed. It takes effect the next time the computer starts."
+
+**Home page reading.** When the merged image carries the rule, Home shows a "Full-speed GPU unlock" reading with one line per target card. The reading is read-only and never triggers anything.
+
+- "<model>: unlocked".
+- "<model>: needs a full power-off. Shut the computer down, switch the power off, then turn it on again.".
+- "<model>: the unlock is installed. It takes effect the next time the computer starts.".
+- "<model>: not unlocked. System log: <kernel log line>", or "<model>: not unlocked. The unlock did not run the last time the computer started." when there is no line.
+
+After a driver reload since the boot, a note adds "The driver was loaded again after this startup. Check the unlock status after the next startup." A restart from the TrueNAS UI may not power the GPU off, so a card can report "needs a full power-off". Shut the host down, cut power, and boot again.
+
+**Isolated GPUs.** The image's rule keeps vfio-pci first, so GPUs isolated for virtual machines stay on vfio-pci.
+
+**Removing the unlock.** Update to any driver without it: an official version without the box ticked, a local row built without the unlock, or the saved original. Local driver rows built with the unlock show "· with full-speed unlock" in the Source column.
+
+**Limits.**
+
+- Turning the NVIDIA driver switch off and on in the TrueNAS settings puts TrueNAS's own `nvidia.raw` back at the permanent path. The unlock is gone until you update with it again.
+- The module is unsigned, like the program's `nvidia.ko`. With enforced module signatures neither loads.
+
 ## Interrupted tasks
 
 A replacement runs in a host systemd unit and can survive an app-container restart. If the host
@@ -201,6 +248,7 @@ means, and the task page's details give that step and the task id.
 - Stopped during either module alignment stage: the driver file has already been written.
   Modules may be unloaded without having been loaded again. Reconciliation keeps the stage and
   its separate attempt records; it does not resume the task or start another update automatically.
+- Stopped after the test load of an update with the unlock: an unlock program that does nothing may still be loaded. It goes away the next time the computer starts, and the home page says so. It unlocks nothing.
 - What to do: check the loaded driver version on the home page and the check records in the task
   details to see the host's current state, then choose a version and update again. If modules did not
   come back and applications cannot use the GPU, check the current image and arrange a maintenance

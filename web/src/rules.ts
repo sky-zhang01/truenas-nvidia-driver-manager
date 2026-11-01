@@ -1,4 +1,4 @@
-import type { CheckRecord, GpuReading, ReasonField, TaskDetail, Unreadable, Reading } from "./api.js";
+import type { CheckRecord, GpuReading, LoadOrderRecord, ReasonField, TaskDetail, Unreadable, Reading } from "./api.js";
 import { isUnknown } from "./api.js";
 import { expandText, formatDate, formatDateMicros, type Params, type ReasonLike } from "./dom.js";
 import type { Lang } from "./messages.js";
@@ -216,6 +216,11 @@ const BUILD_PLAIN: readonly string[] = [
   "depmod_failed",
   "docker_run_failed",
   "container_exit",
+  "gpu_unlock_installer_unusable",
+  "gpu_unlock_firmware_failed",
+  "gpu_unlock_module_build_failed",
+  "gpu_unlock_install_failed",
+  "gpu_unlock_module_rejected",
 ];
 
 const BUILD_SAME_TEXT: Record<string, string> = {
@@ -369,15 +374,30 @@ function versionParams(rec: CheckRecord): CheckParams {
   };
 }
 
+// The passthrough item of an update with the unlock rule: vfio-pci must load before the driver.
+function loadOrderParams(order: LoadOrderRecord): CheckParams {
+  const observed = !("value" in order.show_depends)
+    ? "check.observed.status_unreadable"
+    : order.vfio_pci_first ? "check.observed.load_order.first" : "check.observed.load_order.not_first";
+  return {
+    check_item: { key: "check.item.vfio_pci_first", params: {} },
+    observed: { key: observed, params: {} },
+    expected: { key: "check.expected.load_order", params: {} },
+  };
+}
+
 // Include passing items too so successful task details show their actual readings.
 export function checkItems(rec: CheckRecord): CheckParams[] {
-  return [refreshParams(rec), versionParams(rec)];
+  const out = [refreshParams(rec), versionParams(rec)];
+  if (rec.load_order) out.push(loadOrderParams(rec.load_order));
+  return out;
 }
 
 export function checkFailureItems(rec: CheckRecord): CheckParams[] {
   const out: CheckParams[] = [];
   if (!rec.refresh_ok) out.push(refreshParams(rec));
   if (!rec.version_ok) out.push(versionParams(rec));
+  if (rec.load_order && !rec.load_order.vfio_pci_first) out.push(loadOrderParams(rec.load_order));
   return out;
 }
 

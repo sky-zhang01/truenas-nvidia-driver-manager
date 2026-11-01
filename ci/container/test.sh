@@ -90,7 +90,7 @@ trap 'exit 143' TERM
 nvm_cleanup_track "helpers:${RUN_ID}"
 
 # Only old, inactive resources in this test namespace are eligible for removal.
-python3 "${SCRIPT_DIR}/stale-cleanup.py"
+nvm_stale_cleanup
 docker run --rm --name "nvmct-${RUN_ID}-curl-version" \
     --entrypoint curl "${CURL_IMAGE}" --version >/dev/null
 

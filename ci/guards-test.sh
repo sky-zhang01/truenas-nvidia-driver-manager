@@ -149,9 +149,9 @@ expect 1 'option-like tracked filename cannot suppress the scan' '--exclude=*:2:
 
 new_repo
 mkdir -p "${REPO}/.gitea/workflows"
-printf 'safe\n%s\n' "${pool_root}/probe/file" >"${REPO}/.gitea/workflows/ci.yml"
-git -C "${REPO}" add -- .gitea/workflows/ci.yml
-expect 1 'the workflow itself is scanned for pool paths' '.gitea/workflows/ci.yml:2:'
+printf 'safe\n%s\n' "${pool_root}/probe/file" >"${REPO}/.gitea/workflows/checks.yml"
+git -C "${REPO}" add -- .gitea/workflows/checks.yml
+expect 1 'the workflow itself is scanned for pool paths' '.gitea/workflows/checks.yml:2:'
 
 for script in ci/guards.sh ci/guards-test.sh; do
     new_repo
@@ -225,9 +225,22 @@ const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
 const imageVersions = [...dockerfile.matchAll(/^FROM node:([0-9]+)(?:[.:-][^ \n]+)?(?:@[^ \n]+)? AS web[ \t]*$/gm)];
 assert.equal(imageVersions.length, 1, 'Dockerfile must pin one Node web build stage');
 assert.equal(githubVersion.split('.')[0], imageVersions[0][1], 'GitHub Node and Dockerfile Node major versions must match');
-if (fs.existsSync(path.join(root, '.gitea/workflows/ci.yml'))) {
-    const giteaVersion = workflowVersion('.gitea/workflows/ci.yml', 'NODE_BOOTSTRAP_VERSION');
-    assert.equal(githubVersion, giteaVersion, 'GitHub and Gitea Node versions must match');
+if (fs.existsSync(path.join(root, '.gitea/workflows/checks.yml'))) {
+    const managers = JSON.parse(fs.readFileSync(path.join(root, 'renovate.json'), 'utf8')).customManagers;
+    for (const manager of managers) {
+        const patterns = manager.managerFilePatterns.map(value => new RegExp(value.slice(1, -1)));
+        const matches = new RegExp(manager.matchStrings[0].replace('(?<currentValue>', '('));
+        for (const file of ['checks.yml', 'release-tags.yml', 'scheduled.yml']) {
+            const name = '.gitea/workflows/' + file;
+            assert(patterns.some(pattern => pattern.test(name)), `${name} must receive pinned tool updates`);
+            assert(matches.test(fs.readFileSync(path.join(root, name), 'utf8')), `${name} must expose its pinned tool version`);
+        }
+    }
+    for (const file of ['checks.yml', 'release-tags.yml', 'scheduled.yml', 'gpu-unlock.yml']) {
+        const name = '.gitea/workflows/' + file;
+        const giteaVersion = workflowVersion(name, 'NODE_BOOTSTRAP_VERSION');
+        assert.equal(githubVersion, giteaVersion, `${name} and GitHub Node versions must match`);
+    }
 } else {
     console.log('SKIP: private workflow comparison; public exports exclude .gitea/');
 }

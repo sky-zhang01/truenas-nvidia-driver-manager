@@ -52,7 +52,7 @@ fn build_failure(reason: &str, params: Value, raw: Option<String>) -> BuildFailu
 }
 
 /// Record the pre-delivery failure log and build the failure.
-fn check_failure(
+pub(crate) fn check_failure(
     ctx: &RunCtx,
     key: &'static str,
     params: Value,
@@ -115,7 +115,7 @@ fn bounded_digits(rest: &str) -> bool {
 }
 
 fn fail_reason_ok(reason: &str) -> bool {
-    const PLAIN: [&str; 12] = [
+    const PLAIN: [&str; 14] = [
         BUILD_RUN_CHECK_FAILED,
         BUILD_MODULES_COPY_FAILED,
         BUILD_KERNEL_GCC_UNKNOWN,
@@ -128,6 +128,8 @@ fn fail_reason_ok(reason: &str) -> bool {
         BUILD_DEPMOD_FAILED,
         BUILD_CAPTURE_EMPTY,
         BUILD_STAGE_COPY_FAILED,
+        BUILD_GPU_UNLOCK_MODULE_BUILD_FAILED,
+        BUILD_GPU_UNLOCK_INSTALL_FAILED,
     ];
     if PLAIN.contains(&reason) {
         return true;
@@ -233,93 +235,107 @@ pub fn classify(
     }
 }
 
-/// The argv of with the pinned build environment of the official image instead of the program
-/// image, the read-only offline package folder, and the embedded installer as the entrypoint
-/// (it installs the closure and then runs the build script from the task's `in` directory).
-pub fn docker_run_argv(
-    id: &str,
-    kernel: &str,
-    host_data_dir: &std::path::Path,
-    image_id: &str,
-    module_type: Option<crate::catalog::KernelModuleType>,
-    community_patch: bool,
-    compiler: &str,
-) -> Vec<OsString> {
-    let task_dir = host_data_dir.join("manager").join("tasks").join(id);
-    let mut argv: Vec<OsString> = vec![
-        "run".into(),
-        "--rm".into(),
-        format!("--name={}", crate::tasks::build_container_name(id)).into(),
-        "--pull".into(),
-        "never".into(),
-        "--runtime".into(),
-        "runc".into(),
-        "--network".into(),
-        "none".into(),
+/// What one build container is started with.
+pub struct BuildRun<'a> {
+    pub id: &'a str,
+    pub kernel: &'a str,
+    pub host_data_dir: &'a std::path::Path,
+    pub image_id: &'a str,
+    pub module_type: Option<crate::catalog::KernelModuleType>,
+    pub community_patch: bool,
+    pub gpu_unlock: bool,
+    pub compiler: &'a str,
+}
+
+/// The argv of the build container: the pinned build environment of the official image instead
+/// of the program image, and the embedded installer as the entrypoint (it installs the closure
+/// and then runs the build script from the task's `in` directory).
+pub fn docker_run_argv(run: &BuildRun) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = [
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--runtime",
+        "runc",
+        "--network",
+        "none",
         // The build environment is amd64; naming the platform keeps a host or
         // an image store that could pick another one from picking it.
-        "--platform".into(),
-        crate::build_kit::BUILD_ENV_PLATFORM.into(),
-        "--cap-drop".into(),
-        "ALL".into(),
-        "--security-opt".into(),
-        "no-new-privileges".into(),
-        "--env".into(),
-        "TAR_OPTIONS=--no-same-owner".into(),
-        "--env".into(),
-        "LC_ALL=C".into(),
-        "--env".into(),
-        format!("NVM_BUILD_COMPILER={compiler}").into(),
+        "--platform",
+        crate::build_kit::BUILD_ENV_PLATFORM,
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--entrypoint",
+        "/bin/bash",
+    ]
+    .map(OsString::from)
+    .to_vec();
+    argv.push(format!("--name={}", crate::tasks::build_container_name(run.id)).into());
+    for value in build_env_vars(run) {
+        argv.extend(["--env".into(), value.into()]);
+    }
+    for value in build_mounts(run) {
+        argv.extend(["--mount".into(), value.into()]);
+    }
+    argv.extend([run.image_id, build_env::INSTALL_KIT_PATH].map(OsString::from));
+    argv
+}
+
+/// The environment of the build container. The installer reads the two `/in` paths from it, so
+/// the program's constants stay their single source.
+fn build_env_vars(run: &BuildRun) -> Vec<String> {
+    let mut env = vec![
+        "TAR_OPTIONS=--no-same-owner".to_string(),
+        "LC_ALL=C".to_string(),
+        format!("NVM_BUILD_COMPILER={}", run.compiler),
+        format!("NVM_BUILD_KIT_LIST={}", build_env::KIT_LIST_PATH),
+        format!("NVM_BUILD_SCRIPT={}", build_env::BUILD_SCRIPT_PATH),
     ];
-    if let Some(t) = module_type {
-        argv.push("--env".into());
-        argv.push(format!("NVM_KERNEL_MODULE_TYPE={}", t.as_str()).into());
+    if let Some(t) = run.module_type {
+        env.push(format!("NVM_KERNEL_MODULE_TYPE={}", t.as_str()));
     }
-    if community_patch {
-        argv.push("--env".into());
-        argv.push(format!("NVM_COMMUNITY_PATCH={COMMUNITY_PATCH_VERSION}").into());
+    if run.community_patch {
+        env.push(format!("NVM_COMMUNITY_PATCH={COMMUNITY_PATCH_VERSION}"));
     }
-    argv.push("--entrypoint".into());
-    argv.push("/bin/bash".into());
-    // The installer reads both paths from the environment so the program's
-    // constants stay the single source of them.
-    argv.push("--env".into());
-    argv.push(format!("NVM_BUILD_KIT_LIST={}", build_env::KIT_LIST_PATH).into());
-    argv.push("--env".into());
-    argv.push(format!("NVM_BUILD_SCRIPT={}", build_env::BUILD_SCRIPT_PATH).into());
-    argv.push("--mount".into());
-    argv.push(
-        format!("type=bind,src={KERNEL_HEADERS_PATH},dst={KERNEL_HEADERS_PATH},readonly").into(),
-    );
-    argv.push("--mount".into());
-    argv.push(
-        format!("type=bind,src=/usr/lib/modules/{kernel},dst=/host/modules/{kernel},readonly")
-            .into(),
-    );
-    argv.push("--mount".into());
-    argv.push(
+    if run.gpu_unlock {
+        env.push("NVM_GPU_UNLOCK=1".to_string());
+    }
+    env
+}
+
+/// The mounts of the build container: the host's kernel headers and modules, the task's `in`
+/// and `out`, the offline package folder (the runner creates it before the build, so the daemon
+/// never has to) and, with the unlock, the verified firmware the build script copies into the
+/// image.
+fn build_mounts(run: &BuildRun) -> Vec<String> {
+    let (data, kernel) = (run.host_data_dir, run.kernel);
+    let task_dir = data.join("manager").join("tasks").join(run.id);
+    let mut mounts = vec![
+        format!("type=bind,src={KERNEL_HEADERS_PATH},dst={KERNEL_HEADERS_PATH},readonly"),
+        format!("type=bind,src=/usr/lib/modules/{kernel},dst=/host/modules/{kernel},readonly"),
         format!(
             "type=bind,src={},dst=/in,readonly",
             task_dir.join("in").display()
-        )
-        .into(),
-    );
-    argv.push("--mount".into());
-    argv.push(format!("type=bind,src={},dst=/out", task_dir.join("out").display()).into());
-    // The offline package folder of the data directory; the runner creates it
-    // before the build, so the daemon never has to.
-    argv.push("--mount".into());
-    argv.push(
+        ),
+        format!("type=bind,src={},dst=/out", task_dir.join("out").display()),
         format!(
             "type=bind,src={},dst={},readonly",
-            build_env::offline_dir(host_data_dir).display(),
+            build_env::offline_dir(data).display(),
             build_env::OFFLINE_KIT_MOUNT
-        )
-        .into(),
-    );
-    argv.push(image_id.into());
-    argv.push(build_env::INSTALL_KIT_PATH.into());
-    argv
+        ),
+    ];
+    if run.gpu_unlock {
+        let firmware = crate::runner::unlock_firmware::firmware_dir(data);
+        let mount = format!(
+            "type=bind,src={},dst=/gpu-unlock-firmware,readonly",
+            firmware.display()
+        );
+        mounts.push(mount);
+    }
+    mounts
 }
 
 struct DockerWatch<'a> {
@@ -386,6 +402,7 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), Bui
         &plan.version,
         &plan.kernel,
     );
+    let gpu_unlock = !plan.gpu_unlock_targets.is_empty();
     let planned_kernel = plan.kernel.clone();
     let id = ctx.id.clone();
     let data_dir = ctx.paths.root.clone();
@@ -410,15 +427,16 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), Bui
     }
     let out_dir = ctx.task_dir().join("out");
     let _ = ctx.host.create_dir(&out_dir, 0o755);
-    let argv = docker_run_argv(
-        &id,
-        &kernel,
-        &data_dir,
-        &image_id,
+    let argv = docker_run_argv(&BuildRun {
+        id: &id,
+        kernel: &kernel,
+        host_data_dir: &data_dir,
+        image_id: &image_id,
         module_type,
         community_patch,
+        gpu_unlock,
         compiler,
-    );
+    });
     let deadline = ctx
         .build_deadline
         .unwrap_or_else(|| ctx.host.now() + Duration::from_secs(1800));
@@ -486,6 +504,10 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), Bui
         }
     }
     let artifact = check_artifact(ctx, &kernel)?;
+    crate::gpu_unlock::artifact::check_gpu_unlock(ctx, &kernel, &artifact)?;
+    if gpu_unlock {
+        crate::runner::unlock_preload::after_build(ctx, &kernel)?;
+    }
     deliver(ctx, &artifact)?;
     Ok(())
 }
@@ -496,6 +518,9 @@ pub struct Artifact {
     pub size: u64,
     pub version: String,
     pub target_kernel: String,
+    /// The image listing and the extracted `nvidia.ko`, for the unlock check that follows.
+    pub entries: Vec<ImageEntry>,
+    pub nvidia_ko: std::path::PathBuf,
 }
 
 /// The `result.txt` of exactly two lines, `ARTIFACT_SHA256=<64 lowercase hex>` and
@@ -828,6 +853,8 @@ pub fn check_artifact(ctx: &mut RunCtx, kernel: &str) -> Result<Artifact, BuildF
         size: copied.size,
         version: plan_version,
         target_kernel: built_kernel,
+        entries,
+        nvidia_ko: ko_file,
     })
 }
 
@@ -882,6 +909,7 @@ pub fn deliver(ctx: &mut RunCtx, artifact: &Artifact) -> Result<String, BuildFai
         fingerprint,
         original_of: None,
         keep: None,
+        gpu_unlock_targets: plan.gpu_unlock_targets.clone(),
     };
     let bytes = match serde_json::to_vec_pretty(&record) {
         Ok(b) => b,
@@ -962,15 +990,17 @@ mod tests {
 
     #[test]
     fn docker_argv_matches_design() {
-        let argv = docker_run_argv(
-            "20260928T101530Z-3f9a0c12",
-            "6.12.105-production+truenas",
-            std::path::Path::new("/mnt/<pool>/data"),
-            &format!("sha256:{}", "a".repeat(64)),
-            Some(crate::catalog::KernelModuleType::Open),
-            false,
-            "gcc-12",
-        );
+        let image = format!("sha256:{}", "a".repeat(64));
+        let argv = docker_run_argv(&BuildRun {
+            id: "20260928T101530Z-3f9a0c12",
+            kernel: "6.12.105-production+truenas",
+            host_data_dir: std::path::Path::new("/mnt/<pool>/data"),
+            image_id: &image,
+            module_type: Some(crate::catalog::KernelModuleType::Open),
+            community_patch: false,
+            gpu_unlock: false,
+            compiler: "gcc-12",
+        });
         let text: Vec<String> = argv
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1005,15 +1035,16 @@ mod tests {
             &"type=bind,src=/mnt/<pool>/data/manager/tasks/20260928T101530Z-3f9a0c12/out,dst=/out"
                 .to_string()
         ));
-        let no_type = docker_run_argv(
-            "20260928T101530Z-3f9a0c12",
-            "k",
-            std::path::Path::new("/d"),
-            "sha256:x",
-            None,
-            true,
-            "gcc-14",
-        );
+        let no_type = docker_run_argv(&BuildRun {
+            id: "20260928T101530Z-3f9a0c12",
+            kernel: "k",
+            host_data_dir: std::path::Path::new("/d"),
+            image_id: "sha256:x",
+            module_type: None,
+            community_patch: true,
+            gpu_unlock: true,
+            compiler: "gcc-14",
+        });
         let text: Vec<String> = no_type
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1023,6 +1054,44 @@ mod tests {
             .any(|a| a.starts_with("NVM_KERNEL_MODULE_TYPE=")));
         assert!(text.contains(&"NVM_COMMUNITY_PATCH=470.256.02".to_string()));
         assert!(text.contains(&"NVM_BUILD_COMPILER=gcc-14".into()));
+        // The unlock adds one variable and one read-only mount of the verified firmware.
+        assert!(text.contains(&"NVM_GPU_UNLOCK=1".to_string()));
+        assert!(text.contains(
+            &"type=bind,src=/d/manager/gpu-unlock/firmware/610.43.03,dst=/gpu-unlock-firmware,readonly"
+                .to_string()
+        ));
+        assert!(!argv
+            .iter()
+            .any(|a| a.to_string_lossy().contains("gpu-unlock")));
+    }
+
+    #[test]
+    fn the_unlock_steps_and_failures_are_machine_lines() {
+        for step in ["unlock_module", "unlock_install"] {
+            assert_eq!(
+                parse_machine_line(format!("NVM:STEP:{step}").as_bytes()),
+                Some(MachineLine::Step(step.into()))
+            );
+        }
+        for reason in [
+            BUILD_GPU_UNLOCK_MODULE_BUILD_FAILED,
+            BUILD_GPU_UNLOCK_INSTALL_FAILED,
+        ] {
+            assert_eq!(
+                parse_machine_line(format!("NVM:FAIL:{reason}").as_bytes()),
+                Some(MachineLine::Fail(reason.into()))
+            );
+        }
+        // The script installs the firmware under the version the runner verified and names
+        // exactly the steps and reasons the runner accepts.
+        let script = include_str!("../../docker/build-driver.sh");
+        assert!(script.contains(&format!(
+            "/usr/lib/firmware/gpu-unlock/{}",
+            crate::gpu_unlock::FIRMWARE_VERSION
+        )));
+        for step in ["unlock_module", "unlock_install"] {
+            assert!(script.contains(&format!("step {step}")));
+        }
     }
 
     #[test]

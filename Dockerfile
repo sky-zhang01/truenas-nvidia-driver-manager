@@ -7,7 +7,7 @@
 # digests and lockfiles.
 
 # Web assets.
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS web
+FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS web
 WORKDIR /build
 COPY web/package.json web/package-lock.json ./web/
 RUN npm --prefix web ci
@@ -26,9 +26,11 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-sta
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-# The program embeds the build script and the kit installer (`include_str!`), so
-# both must be present at compile time.
+# The program embeds the build script, the kit installer and the vendored
+# gpu-unlock files (`include_str!`, `include_bytes!`), so all must be present at
+# compile time.
 COPY docker ./docker
+COPY third_party ./third_party
 RUN cargo build --release --locked --target x86_64-unknown-linux-musl
 # Generate notices from the exact locked sources used by both build stages.
 COPY tools/third-party-licenses.py ./tools/
@@ -48,7 +50,7 @@ FROM scratch
 LABEL org.opencontainers.image.source="https://github.com/sky-zhang01/truenas-nvidia-driver-manager" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.title="TrueNAS NVIDIA Driver Manager" \
-      org.opencontainers.image.description="Manage NVIDIA driver updates on a TrueNAS SCALE host through a web UI"
+      org.opencontainers.image.description="Manage NVIDIA driver updates on a TrueNAS host through a web UI"
 COPY --from=rust /build/target/x86_64-unknown-linux-musl/release/truenas-nvidia-driver-manager \
                  /usr/local/bin/truenas-nvidia-driver-manager
 COPY --from=web /build/web/dist/ /usr/local/share/truenas-nvidia-driver-manager/web/
