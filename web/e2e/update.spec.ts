@@ -2,7 +2,7 @@ import { test, expect, type APIRequestContext, type Locator, type Page } from ".
 import { BASE, setScenario, signIn } from "./helpers.js";
 
 const CLOSED_OPTIONS = ["580.178.04", "575.64.05", "570.211.01", "565.77", "550.163.01", "470.256.02"];
-const OPEN_OPTIONS = ["615.71.09", "610.57.04", "595.104.02", "590.48.01", "580.178.04"];
+const OPEN_OPTIONS = ["615.71.09", "610.57.04", "610.43.03", "595.104.02", "590.48.01", "580.178.04"];
 const ALL_OPTIONS = [...OPEN_OPTIONS, ...CLOSED_OPTIONS.slice(1)];
 
 async function apiToken(page: Page): Promise<string> {
@@ -57,7 +57,8 @@ async function openUploadDialog(page: Page): Promise<Locator> {
 }
 
 function options(page: Page): Promise<string[]> {
-  return page.locator("#version-select option:not([value='other'])").allTextContents();
+  return page.locator("#version-select option:not([value='other'])").evaluateAll((nodes) =>
+    nodes.map((node) => (node as HTMLOptionElement).value));
 }
 
 test("a Pascal host lists its buildable proprietary branches and unspecified 550", async ({ page, request }) => {
@@ -164,7 +165,7 @@ test("two counted GPUs show a checkbox group and an empty list until one is pick
   await expect(page.locator(".gpu-notes .notice")).toHaveCount(2);
   await group.locator("input[type=checkbox]").nth(0).uncheck();
   expect(await options(page)).toEqual(OPEN_OPTIONS);
-  await expect(page.locator(".gpu-notes")).toContainText(/is supported from driver 580|从 580 驱动起支持/);
+  await expect(page.locator(".gpu-notes")).toContainText(/needs driver 580 or newer|要用 580 或更新的驱动/);
 });
 
 test("the upload dialog shares the GPU choice and blocks the conflict", async ({ page, request }) => {
@@ -205,10 +206,10 @@ test("a GPU bound to vfio-pci is not counted", async ({ page, request }) => {
   await expect(page.locator("fieldset.gpu-select")).toHaveCount(0);
   expect(await options(page)).toEqual(OPEN_OPTIONS);
   await expect(page.locator(".gpu-notes .notice")).toHaveCount(1);
-  await expect(page.locator(".gpu-notes")).toContainText(/is supported from driver 580|从 580 驱动起支持/);
+  await expect(page.locator(".gpu-notes")).toContainText(/needs driver 580 or newer|要用 580 或更新的驱动/);
 });
 
-test("no counted GPU lists all ten candidates, including 470 and the open exclusions", async ({ page, request }) => {
+test("no counted GPU lists every candidate, including 470 and the open exclusions", async ({ page, request }) => {
   await openUpdate(page, request, "fresh");
   expect(await options(page)).toEqual(ALL_OPTIONS);
   const response = await page.request.get(`${BASE}/api/versions`, {
@@ -241,7 +242,7 @@ test("kernel 6.12.96 with a Blackwell GPU drops the earlier branches", async ({ 
   expect(list).not.toContain("550.163.01");
   expect(list.length).toBeGreaterThan(5);
   await expect(page.locator(".gpu-notes")).toContainText(
-    /is supported from driver 570|从 570 驱动起支持/,
+    /needs driver 570 or newer|要用 570 或更新的驱动/,
   );
 });
 
@@ -257,7 +258,7 @@ test("the update link next to the list points at the NVIDIA website", async ({ p
   await expect(link).toHaveAttribute("rel", "noopener noreferrer");
 });
 
-import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -670,14 +671,6 @@ test("retained task release requires confirmation and renders the confirmed rele
 });
 
 test("retained task release explains refusals and allows a retry without losing history", async ({ page, request }) => {
-  const screenshotDir = process.env["NVM_COPY_SHOTS"] === "1" ? process.env["NVM_COPY_SCREENSHOT_DIR"] : undefined;
-  if (screenshotDir) {
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await page.addInitScript(() => {
-      localStorage.setItem("nvm.lang", "zh");
-      localStorage.setItem("nvm.theme", "focused-light");
-    });
-  }
   await openSession(page, request, "fresh");
   await page.route("**/api/tasks/retained-task", (route) => route.fulfill({ json: retainedTask() }));
   let error = "release.no_later_success";
@@ -708,11 +701,6 @@ test("retained task release explains refusals and allows a retry without losing 
     await expect(confirm).toBeEnabled();
     await expect(dialog.locator("pre.raw-output")).toContainText("release diagnostic");
     await expect(dialog.getByRole("alert")).not.toContainText("release diagnostic");
-    if (screenshotDir && (key === "release.no_later_success" || key === "release.recovery_pending")) {
-      mkdirSync(screenshotDir, { recursive: true });
-      await page.evaluate(() => document.fonts.ready);
-      await page.screenshot({ path: join(screenshotDir, `${key.replaceAll(".", "-").replaceAll("_", "-")}.png`), fullPage: true });
-    }
   }
   await expect(page.locator(".log-tail")).toBeVisible();
 });

@@ -349,6 +349,7 @@ pub fn sample_plan(
         build_timeout_minutes: 30,
         gpus: Vec::new(),
         kernel_module_type: None,
+        gpu_unlock_targets: Vec::new(),
     }
 }
 
@@ -746,6 +747,7 @@ pub fn release_scene(host: &FakeHost) {
         fingerprint: None,
         original_of: None,
         keep: None,
+        gpu_unlock_targets: Vec::new(),
     };
     host.put_text(
         row.join("record.json").to_str().unwrap(),
@@ -786,6 +788,7 @@ pub fn release_scene(host: &FakeHost) {
         expected: RELEASE_VERSION.into(),
         version_ok: true,
         passed: true,
+        load_order: None,
     });
     truenas_nvidia_driver_manager::task_state::write(host, &paths, &l).unwrap();
 }
@@ -825,6 +828,7 @@ pub fn release_restore_scene(host: &FakeHost) {
             truenas_version: TRUENAS_VERSION.into(),
         }),
         keep: Some(true),
+        gpu_unlock_targets: Vec::new(),
     };
     host.put_text(
         row.join("record.json").to_str().unwrap(),

@@ -694,7 +694,7 @@ async fn home(
     with_common_headers(read_home(&ctx, &session, &headers).await)
 }
 
-/// With host PID access, read seven independent facts concurrently, each bounded by `READING_TIMEOUT`.
+/// With host PID access, read eight independent facts concurrently, each bounded by `READING_TIMEOUT`.
 /// An unavailable reading carries its reason without suppressing the other results;
 /// saved-original lookup follows once the kernel and TrueNAS version are known.
 async fn read_home(ctx: &Arc<Ctx>, session: &SessionOpt, headers: &HeaderMap) -> Response {
@@ -714,6 +714,7 @@ async fn read_home(ctx: &Arc<Ctx>, session: &SessionOpt, headers: &HeaderMap) ->
             link: startup_unknown_json(),
             link_missing: None,
             original: startup_unknown_json(),
+            gpu_unlock: startup_unknown_json(),
         };
         return home_response(
             ctx.as_ref(),
@@ -741,14 +742,17 @@ async fn read_home(ctx: &Arc<Ctx>, session: &SessionOpt, headers: &HeaderMap) ->
     let link = bounded_reading(move || facts::link(h6.as_ref()));
     let hgpu = ctx.host.clone();
     let gpus_read = bounded_reading(move || facts::read_gpus(hgpu.as_ref()));
-    let (loaded, canonical, canonical_sha, truenas, kernel, link, gpus_read) = tokio::join!(
+    let hunlock = ctx.host.clone();
+    let unlock_read = bounded_reading(move || crate::gpu_unlock::status::read(hunlock.as_ref()));
+    let (loaded, canonical, canonical_sha, truenas, kernel, link, gpus_read, unlock_read) = tokio::join!(
         loaded,
         canonical,
         canonical_sha,
         truenas,
         kernel,
         link,
-        gpus_read
+        gpus_read,
+        unlock_read
     );
 
     let loaded_json = match loaded {
@@ -835,8 +839,31 @@ async fn read_home(ctx: &Arc<Ctx>, session: &SessionOpt, headers: &HeaderMap) ->
         link: link_json,
         link_missing,
         original,
+        gpu_unlock: gpu_unlock_json(unlock_read, reconciled.as_ref()),
     };
     home_response(ctx.as_ref(), session, readings, gpus_json, reconciled)
+}
+
+/// The tensor unlock reading: `null` without a merged rule, else the cards and whether the
+/// latest task finished after this boot started.
+fn gpu_unlock_json(
+    read: Result<Reading<Option<crate::gpu_unlock::status::Status>>, ReadingFailure>,
+    reconciled: Option<&crate::tasks::Reconciled>,
+) -> Value {
+    let status = match read {
+        Ok(Reading::Value(Some(status))) => status,
+        Ok(Reading::Value(None)) => return Value::Null,
+        Ok(Reading::Unknown(reason)) => return reading_json(&Reading::<()>::Unknown(reason)),
+        Err(f) => return f.unknown_json(),
+    };
+    let finished = match reconciled.map(|r| r.latest_recorded()) {
+        Some(crate::tasks::LatestTask::Selected(task)) => {
+            crate::tasks::project_task_times(task.status, task.state.as_ref()).finished_at
+        }
+        _ => None,
+    };
+    let after_boot = matches!((finished, status.boot_time), (Some(f), Some(b)) if f > b * 1000);
+    json!({"value": {"cards": status.cards, "reloaded_after_boot": after_boot}})
 }
 
 struct HomeReadings {
@@ -848,6 +875,7 @@ struct HomeReadings {
     link: Value,
     link_missing: Option<bool>,
     original: Value,
+    gpu_unlock: Value,
 }
 
 fn home_gpus_value(gpus: &[facts::HostGpu]) -> Value {
@@ -882,10 +910,10 @@ fn opt_millis(value: Option<u64>) -> Value {
 
 fn task_record_json(task: &crate::tasks::ReconciledTask) -> Value {
     let times = crate::tasks::project_task_times(task.status, task.state.as_ref());
-    let version = task
-        .state
-        .as_ref()
-        .and_then(|state| state.plan.as_ref().map(|plan| plan.version.clone()));
+    let plan = task.state.as_ref().and_then(|state| state.plan.as_ref());
+    let version = plan.map(|plan| plan.version.clone());
+    // An interrupted update with the unlock may have left the idle module it test-loaded.
+    let gpu_unlock = plan.is_some_and(|plan| !plan.gpu_unlock_targets.is_empty());
     json!({
         "task_id": task.id,
         "status": task.status_for_ui(),
@@ -895,6 +923,7 @@ fn task_record_json(task: &crate::tasks::ReconciledTask) -> Value {
         "interrupt_discovered_at": opt_millis(times.interrupt_discovered_at),
         "source": task_source_json(task.state.as_ref()),
         "version": version,
+        "gpu_unlock": gpu_unlock,
     })
 }
 
@@ -972,6 +1001,7 @@ fn home_response(
         "link": readings.link,
         "original_saved": readings.original,
         "gpus": gpus,
+        "gpu_unlock": readings.gpu_unlock,
         "latest_task": latest_task,
         "interrupted": interrupted,
         "active_task": active_task,
@@ -1096,8 +1126,8 @@ async fn read_versions(ctx: &Arc<Ctx>) -> Response {
         }
     };
 
-    let latest = catalog::branch_latest(&versions);
-    let items = match catalog::items(&latest, &interfaces, &modules, kernel.as_deref()) {
+    let listed = catalog::with_unlock_versions(&catalog::branch_latest(&versions), &versions);
+    let items = match catalog::items(&listed, &interfaces, &modules, kernel.as_deref()) {
         Ok(items) => items,
         Err(headers) => {
             for item in &headers.items {
@@ -1181,6 +1211,7 @@ async fn read_versions(ctx: &Arc<Ctx>) -> Response {
         "open_unbuildable": open_unbuildable,
         "unreadable": unreadable,
         "gpus": gpus_json,
+        "gpu_unlock_versions": crate::gpu_unlock::DRIVER_VERSIONS,
     }))
 }
 

@@ -78,6 +78,28 @@ async fn items_are_the_buildable_branches_newest_first() {
 }
 
 #[tokio::test]
+async fn an_unlock_release_is_listed_after_its_branch_recommendation() {
+    let (app, cookie) = setup().await;
+    let index = format!("{INDEX}<a href=\"610.43.03/\">610.43.03</a>");
+    app.host.set_curl(CATALOG_URL, 200, index.as_bytes());
+    let (status, body) = get(&app, "/api/versions", Some(&cookie)).await;
+    assert_eq!(status, 200, "{body}");
+    let items: Vec<String> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["version"].as_str().unwrap().to_string())
+        .collect();
+    let recommended = items.iter().position(|v| v == "610.57.04").unwrap();
+    assert_eq!(items[recommended + 1], "610.43.03");
+    assert_eq!(items.iter().filter(|v| v.starts_with("610.")).count(), 2);
+    assert_eq!(
+        body["gpu_unlock_versions"],
+        json!(truenas_nvidia_driver_manager::gpu_unlock::DRIVER_VERSIONS)
+    );
+}
+
+#[tokio::test]
 async fn a_new_branch_appears_in_the_list() {
     let (app, cookie) = setup().await;
     let with_new = format!("{INDEX}<a href=\"620.10.01/\">620.10.01</a>");
@@ -377,6 +399,20 @@ fn gpu_entry<'a>(body: &'a serde_json::Value, device: &str) -> &'a serde_json::V
         .iter()
         .find(|g| g["device"] == device)
         .unwrap_or_else(|| panic!("no gpu {device} in {body}"))
+}
+
+#[tokio::test]
+async fn each_gpu_reports_whether_the_unlock_supports_it() {
+    let (app, cookie) = gpu_setup(&[
+        ("0000:01:00.0", 0x2504, Some("nvidia")),
+        ("0000:02:00.0", 0x2684, Some("nvidia")),
+        ("0000:03:00.0", 0x1b80, Some("nvidia")),
+    ])
+    .await;
+    let (_, body) = get(&app, "/api/versions", Some(&cookie)).await;
+    assert_eq!(gpu_entry(&body, "2504")["gpu_unlock"], "stable");
+    assert_eq!(gpu_entry(&body, "2684")["gpu_unlock"], "experimental");
+    assert!(gpu_entry(&body, "1b80").get("gpu_unlock").is_none());
 }
 
 #[tokio::test]

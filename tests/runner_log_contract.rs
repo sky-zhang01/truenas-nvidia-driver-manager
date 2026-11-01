@@ -80,6 +80,7 @@ fn check_log_has_one_line_per_item_with_its_readings() {
             true,
         ),
         "580.178.04",
+        false,
     );
     assert!(rec.passed);
 
@@ -117,6 +118,7 @@ fn check_log_marks_distinct_times_unconfirmed_when_unmerge_was_not_confirmed() {
         Pass::Update,
         (Reading::Value(1), Reading::Value(2), None, None, false),
         "580.178.04",
+        false,
     );
     assert!(!rec.refresh_ok);
     assert!(rec.version_ok);
@@ -256,6 +258,8 @@ fn row_created_log_carries_the_published_source_and_upload_fingerprint() {
         size: 7,
         version: "580.178.04".to_string(),
         target_kernel: "6.12.105-production+truenas".to_string(),
+        entries: Vec::new(),
+        nvidia_ko: Default::default(),
     };
     let row_id = deliver(&mut ctx, &artifact).expect("the row is delivered");
 

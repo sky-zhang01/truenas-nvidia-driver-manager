@@ -1391,3 +1391,34 @@ fn compiler_requirement_is_read_from_the_host_view() {
         "gcc-14"
     );
 }
+
+#[test]
+fn the_unlock_files_and_the_rule_are_staged_only_for_a_plan_with_targets() {
+    use truenas_nvidia_driver_manager::gpu_unlock::{kit, rule_file, RULE_FILE_NAME};
+    let bytes = b"offline package bytes";
+    for targets in [vec![], vec!["0000:01:00.0".to_string()]] {
+        let host = FakeHost::new();
+        host.put_file(&offline_file(DEB), bytes.to_vec());
+        let mut ctx = ctx(&host, PlanSource::Official);
+        ctx.state.plan.as_mut().unwrap().gpu_unlock_targets = targets.clone();
+        build_env::acquire_packages(&mut ctx, deadline(&host), &kit_manifest(&[(DEB, bytes)]))
+            .unwrap();
+        let kit_dir = task_file("in/gpu-unlock");
+        if targets.is_empty() {
+            assert!(!host.exists(&kit_dir));
+            continue;
+        }
+        for (path, content) in kit::FILES {
+            assert_eq!(
+                host.file(&format!("{kit_dir}/{path}")).unwrap(),
+                *content,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            host.file_text(&format!("{kit_dir}/{RULE_FILE_NAME}"))
+                .unwrap(),
+            rule_file(&targets)
+        );
+    }
+}

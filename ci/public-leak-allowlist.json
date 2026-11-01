@@ -10,7 +10,7 @@
     },
     {
       "path": "ci/container/log-object-check-test.sh",
-      "sha256": "9716e4ab1f2519f54bb95b2859145c9239ced260f77de5de52b05d8e1deb0943",
+      "sha256": "e53564b09595f67a2e3e683a9ee32abd5303ffa5f09af0c2b3363ee8fbef812a",
       "rules": [
         "chinese"
       ],
@@ -18,7 +18,7 @@
     },
     {
       "path": "src/catalog.rs",
-      "sha256": "9235402d8acfcb69c20c7836c3594a56a2f3529b077bf409fd705c4902dae094",
+      "sha256": "6aa773111e37e606d26df643becb33f2a02e7320cf5f0c5340cca0004f00cc24",
       "rules": [
         "chinese"
       ],
@@ -34,7 +34,7 @@
     },
     {
       "path": "src/web.rs",
-      "sha256": "70f8ffe85f2a3f88439c6e55d5789f20b6d0a5495f15310d2a274e7f8e78a665",
+      "sha256": "335548b4bfb5ef6fff6575070b5278d0d1c2ddb3a739779d067d482b9daeb191",
       "rules": [
         "chinese"
       ],
@@ -42,7 +42,7 @@
     },
     {
       "path": "tests/api_contract.rs",
-      "sha256": "428509b4e4d864cd0560c83d76423fe28704265bb47b2007ea457f9a2c0b510e",
+      "sha256": "1e91d6039717f9e5cbeafb2d8784ea52b9f8b50faaf51c46e81b199c93ad6c3a",
       "rules": [
         "chinese"
       ],
@@ -50,7 +50,7 @@
     },
     {
       "path": "tests/fake_capabilities.rs",
-      "sha256": "d18302322096433aa4dd9adf442ec7b9b26315395d851a20066cb7993b51f260",
+      "sha256": "e5b0970ee93211a3005675a335a5864a72beeab429a52776faa7856cdc13ed76",
       "rules": [
         "email"
       ],
@@ -66,7 +66,7 @@
     },
     {
       "path": "tests/upload.rs",
-      "sha256": "e41ee617877abb2280db031f216193495f90b81207accf97bd7f7015eaed66c9",
+      "sha256": "57a3747eda1cc005d1436acf971286e4a6dfcfc068370dbdf882d42ae200b3c2",
       "rules": [
         "email"
       ],
@@ -74,11 +74,19 @@
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "sha256": "64e969ed5ea2c938f54ae0c45b2577977cb294df7ab33fdb27bd1ea2a2890755",
+      "sha256": "d138edb7b6602c10cac59373be761dcb30e7117f6a79c9bc3858a2e884909c5b",
       "rules": [
         "chinese"
       ],
       "reason": "Bilingual public legal notices and trademark attributions."
+    },
+    {
+      "path": "web/e2e/gpu-unlock.spec.ts",
+      "sha256": "23b19e01f4173d3f5fcbb43efa4bbff084372a7f08611314da0e1969594a17ac",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions for the GPU unlock screens."
     },
     {
       "path": "web/e2e/auth.spec.ts",
@@ -154,7 +162,7 @@
     },
     {
       "path": "web/e2e/update.spec.ts",
-      "sha256": "da9e8322f4be65ab759bd136fe47874a496b7ed82464137446c676960da5924c",
+      "sha256": "6955df192d028cf55af945d83415040908924d47989a7a6dc4e95de31503577c",
       "rules": [
         "chinese"
       ],
@@ -162,11 +170,19 @@
     },
     {
       "path": "web/src/messages.ts",
-      "sha256": "e254de33bd1fd0a2b56e16588a855c804e2387e62bd4afc29cc367e45856fab5",
+      "sha256": "17d2d1b1d852e2f4b938111d97fd2afbfefe5fa207dffbaccd0c3b07b0f1a305",
       "rules": [
         "chinese"
       ],
       "reason": "Chinese user interface message catalog."
+    },
+    {
+      "path": "web/test/gpu-unlock.test.ts",
+      "sha256": "af7daa7e85726f8b6266644cbbc65d50463e9a8aa0fba8bee1995a7495602560",
+      "rules": [
+        "chinese"
+      ],
+      "reason": "Chinese user interface assertions for the GPU unlock screens."
     },
     {
       "path": "web/test/frontend-repair.test.ts",
@@ -178,7 +194,7 @@
     },
     {
       "path": "web/test/messages.test.ts",
-      "sha256": "2496e4f3157eb20810031bfc2c846e902e8f9b6e912307244eb26309086b1aed",
+      "sha256": "b343dbcd476139bacf61baa7b9398351724fdfecf69df6fdd763852dfba988d5",
       "rules": [
         "chinese"
       ],
@@ -194,7 +210,7 @@
     },
     {
       "path": "web/test/rules.test.ts",
-      "sha256": "aeba3351ffa023577fc52fba1755ecdae064516b26dfd66d65abe97185b8f8de",
+      "sha256": "ead8c525c759121dc22334dba3e1959ac7020f947557207648a7c83214bcd6f0",
       "rules": [
         "chinese"
       ],
@@ -555,7 +571,7 @@
     },
     {
       "path": "docs/images/update-en.png",
-      "sha256": "3b6018b3a11ee1dc6f5de992023778932bf57d724d4213e5b57931e6b081552d",
+      "sha256": "f8f8ff0b40fe8121c204c05a850dfaf08d2e205da00aae30193ce261f3f23085",
       "rules": [
         "binary"
       ],
@@ -563,7 +579,7 @@
     },
     {
       "path": "docs/images/update-zh.png",
-      "sha256": "a38771e8fc95b7c4234a883c6c649c0c23606d6cddc2951c8e35e57116ba7467",
+      "sha256": "7dafb2a27e579b8012c899c9b0933eb535a5428aa827c865ba4d358c1e5c55d9",
       "rules": [
         "binary"
       ],
@@ -587,7 +603,7 @@
     },
     {
       "path": "web/e2e/readme-shots.spec.ts",
-      "sha256": "27f86a0b654de69de1900f56e5f55aee2882935bd8ab6dbf590c1c21976fdf4a",
+      "sha256": "99f01fcace7188964d0cea17410ffc93d9200572965790773e808f788dc9fe46",
       "rules": [
         "chinese"
       ],
@@ -634,46 +650,6 @@
       "reason": "Bilingual GPU state and upload checklist regression assertions."
     },
     {
-      "path": "web/e2e/feedback-scenes/drivers-and-confirmation.mjs",
-      "sha256": "337bba4e39efeeb4b27648b52f335b34103ebce85316a5030febdcd07497591b",
-      "rules": [
-        "chinese"
-      ],
-      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
-    },
-    {
-      "path": "web/e2e/feedback-scenes/gpu-narrow.mjs",
-      "sha256": "794958069ef6744e083420f18ad6468135281655c57e3fa3a50be2e48962df5d",
-      "rules": [
-        "chinese"
-      ],
-      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
-    },
-    {
-      "path": "web/e2e/feedback-scenes/lib.mjs",
-      "sha256": "c5b1ae5813a8c157a670471cf3f3a2f5406969f2a4e326b58914f51f40bf9e95",
-      "rules": [
-        "chinese"
-      ],
-      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
-    },
-    {
-      "path": "web/e2e/feedback-scenes/upload-plans.mjs",
-      "sha256": "6b76bbf3255215f5b674cc2726d76d96b83e41211e734ea7d1e1bbc28ac6a892",
-      "rules": [
-        "chinese"
-      ],
-      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
-    },
-    {
-      "path": "web/e2e/feedback-scenes/upload-transfer.mjs",
-      "sha256": "de841747508b9e7e3a3314b0e05ca6c297866e29ab6335cf87cefb1eceddf875",
-      "rules": [
-        "chinese"
-      ],
-      "reason": "Public bilingual interface assertions and synthetic screenshot fixtures."
-    },
-    {
       "path": "web/e2e/plan-interactions.spec.ts",
       "sha256": "950a324e59b05e552125d3b7ce02db812e1f1457bf025b26d4f7f5b14f69ef2d",
       "rules": [
@@ -683,7 +659,7 @@
     },
     {
       "path": "web/test/copy-integrity.test.ts",
-      "sha256": "55258f4148f878fed95ea825b21636f1fbe64a47413ff1a59cd481e644c7881b",
+      "sha256": "e34688a68a9711f421b83e87cf62e6044bcb7878188e2d4556f9bd0900f1e012",
       "rules": [
         "chinese"
       ],
@@ -731,23 +707,7 @@
     },
     {
       "path": "web/e2e/gpu-support-hints.spec.ts",
-      "sha256": "c0970b32f1554257c3346cf70b2002249f7889cdc428d6d9b6b8b8458af0285f",
-      "rules": [
-        "chinese"
-      ],
-      "reason": "Chinese user interface assertions and localized documentation contract tests using synthetic local fixtures."
-    },
-    {
-      "path": "web/e2e/feedback-scenes/confirmation-retry.mjs",
-      "sha256": "0e5623fdf7a3533e25dba3421b6f990dd24597fe4eca1f59d3c7709563837420",
-      "rules": [
-        "chinese"
-      ],
-      "reason": "Chinese user interface assertions and localized documentation contract tests using synthetic local fixtures."
-    },
-    {
-      "path": "web/e2e/feedback-scenes/update-entry.mjs",
-      "sha256": "25e0f75dc95862c4eb9d53569fd6c40115f134efbfa0f5664d3a37245fe93a59",
+      "sha256": "447aa97b1d496e51c67923fbabccdfe3ae3a4342d0d6b488820b1f9a916653a0",
       "rules": [
         "chinese"
       ],
@@ -771,7 +731,7 @@
     },
     {
       "path": "web/e2e/other-version.spec.ts",
-      "sha256": "84543e9c2e5a876f7e002ee5119e8d1c5ab86eb7b228629b1cbca10c7fe02b9c",
+      "sha256": "60d08b19b1328bca57857bd7d7c6796acef8508e8b517eaa81458a4938e4b0a6",
       "rules": [
         "chinese"
       ],
@@ -779,7 +739,7 @@
     },
     {
       "path": "web/test/version-wording.test.ts",
-      "sha256": "d9cd68f1b1b4202b96264170e5db0913407a7831f0fecf9079289418ebf19f05",
+      "sha256": "405b5893129314522ca2a2d5d91638f1ca5b5944801b06e46c5007a695ef08ee",
       "rules": [
         "chinese"
       ],

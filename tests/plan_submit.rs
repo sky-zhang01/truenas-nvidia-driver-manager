@@ -11,6 +11,7 @@ use truenas_nvidia_driver_manager::task_state::{OriginalChoice, Phase, Status};
 
 const INDEX: &str = r#"<a href="615.71.09/">615.71.09</a>
 <a href="610.57.04/">610.57.04</a>
+<a href="610.43.03/">610.43.03</a>
 <a href="595.104.02/">595.104.02</a>
 <a href="590.48.01/">590.48.01</a>
 <a href="580.178.04/">580.178.04</a>
@@ -1170,4 +1171,311 @@ async fn cancelling_a_plan_request_leaves_the_next_check_queued_and_safe() {
         body["plan_id"].as_str().unwrap()
     );
     assert_eq!(app.host.count("systemd-run"), 0);
+}
+
+// ---- the tensor unlock ------------------------------------------------------------------
+
+const STABLE: (&str, u16) = ("0000:01:00.0", 0x2504); // GA106
+const EXPERIMENTAL: (&str, u16) = ("0000:02:00.0", 0x2684); // AD102
+const UNSUPPORTED: (&str, u16) = ("0000:03:00.0", 0x2b85); // GB202: the driver's, not the unlock's
+/// The release the unlock supports.
+const UNLOCK_VERSION: &str = "610.43.03";
+
+fn add_gpus(app: &TestApp, gpus: &[(&str, u16)]) {
+    for (address, device) in gpus {
+        app.host.add_gpu(address, *device, Some("nvidia"));
+    }
+}
+
+async fn plan_with_gpus(
+    app: &TestApp,
+    cookie: &str,
+    gpus: &[(&str, u16)],
+    unlock: Option<bool>,
+) -> (StatusCode, serde_json::Value) {
+    let addresses: Vec<&str> = gpus.iter().map(|g| g.0).collect();
+    let mut source = json!({"kind": "official", "version": UNLOCK_VERSION, "gpus": addresses});
+    if let Some(unlock) = unlock {
+        source["gpu_unlock"] = json!(unlock);
+    }
+    post_plan(app, cookie, source).await
+}
+
+fn submitted_plan(app: &TestApp, task: &serde_json::Value) -> serde_json::Value {
+    let id = task["task_id"].as_str().unwrap();
+    let state: serde_json::Value = serde_json::from_slice(
+        &app.host
+            .file(&format!("/var/lib/nvm/manager/state/{id}.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    state["plan"].clone()
+}
+
+fn warning_keys(body: &serde_json::Value) -> Vec<String> {
+    body["dialog"]["confirmation"]["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["key"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_unlock_is_off_unless_asked_for() {
+    let (app, cookie) = setup().await;
+    add_gpus(&app, &[STABLE]);
+    for unlock in [None, Some(false)] {
+        let (status, body) = plan_with_gpus(&app, &cookie, &[STABLE], unlock).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(warning_keys(&body), ["original.skip_warning"]);
+        let (status, task) = post_task(&app, &cookie, &body["plan_id"], "skip").await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{task}");
+        assert_eq!(submitted_plan(&app, &task)["gpu_unlock_targets"], json!([]));
+        app.host.wait_for_units(std::time::Duration::from_secs(5));
+    }
+}
+
+#[tokio::test]
+async fn the_targets_are_the_supported_selected_gpus_and_reach_the_task() {
+    let (app, cookie) = setup().await;
+    let all = [STABLE, EXPERIMENTAL, UNSUPPORTED];
+    add_gpus(&app, &all);
+    let (status, body) = plan_with_gpus(&app, &cookie, &all, Some(true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        warning_keys(&body),
+        [
+            "confirm.gpu_unlock",
+            "confirm.gpu_unlock_notice",
+            "confirm.gpu_unlock_experimental",
+            "original.skip_warning"
+        ]
+    );
+    let warnings = body["dialog"]["confirmation"]["warnings"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        warnings[0]["params"],
+        json!({
+            "targets": [STABLE.0, EXPERIMENTAL.0],
+            "models": ["NVIDIA GeForce RTX 3060", "NVIDIA GeForce RTX 4090"]
+        })
+    );
+    assert_eq!(warnings[2]["params"], json!({"series": "RTX 40"}));
+    // Submitting does not read the GPUs again: the targets travel with the snapshot.
+    let (status, task) = post_task(&app, &cookie, &body["plan_id"], "skip").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{task}");
+    assert_eq!(
+        submitted_plan(&app, &task)["gpu_unlock_targets"],
+        json!([STABLE.0, EXPERIMENTAL.0])
+    );
+    app.host.wait_for_units(std::time::Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn each_experimental_series_gets_one_note_in_interface_order() {
+    let (app, cookie) = setup().await;
+    let turing = ("0000:04:00.0", 0x1e07); // TU102
+    let second_ada = ("0000:05:00.0", 0x2684);
+    let all = [turing, EXPERIMENTAL, second_ada, STABLE];
+    add_gpus(&app, &all);
+    let (status, body) = plan_with_gpus(&app, &cookie, &all, Some(true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let notes: Vec<&serde_json::Value> = body["dialog"]["confirmation"]["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["key"] == "confirm.gpu_unlock_experimental")
+        .map(|w| &w["params"])
+        .collect();
+    assert_eq!(
+        notes,
+        [&json!({"series": "RTX 40"}), &json!({"series": "RTX 20"})]
+    );
+}
+
+#[tokio::test]
+async fn two_cards_of_one_experimental_series_get_one_note() {
+    let (app, cookie) = setup().await;
+    let second_ada = ("0000:05:00.0", 0x2684);
+    let both = [EXPERIMENTAL, second_ada];
+    add_gpus(&app, &both);
+    let (status, body) = plan_with_gpus(&app, &cookie, &both, Some(true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let count = warning_keys(&body)
+        .iter()
+        .filter(|k| *k == "confirm.gpu_unlock_experimental")
+        .count();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn a_stable_only_selection_carries_no_experimental_note() {
+    let (app, cookie) = setup().await;
+    add_gpus(&app, &[STABLE, UNSUPPORTED]);
+    let (status, body) = plan_with_gpus(&app, &cookie, &[STABLE, UNSUPPORTED], Some(true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!warning_keys(&body).contains(&"confirm.gpu_unlock_experimental".to_string()));
+}
+
+#[tokio::test]
+async fn the_unlock_with_no_supported_gpu_is_refused() {
+    let (app, cookie) = setup().await;
+    add_gpus(&app, &[STABLE, UNSUPPORTED]);
+    for selected in [vec![UNSUPPORTED], vec![]] {
+        let (status, body) = plan_with_gpus(&app, &cookie, &selected, Some(true)).await;
+        if selected.is_empty() {
+            // The host has counted GPUs: an empty selection is a changed GPU set, as ever.
+            assert_eq!(body["error"], "plan.changed", "{body}");
+            continue;
+        }
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"], "plan.source_invalid.gpu_unlock_unsupported");
+        assert!(app.ctx.plan.lock().unwrap().0.is_none());
+    }
+    // A host without a counted GPU has nothing to unlock either.
+    let (app, cookie) = setup().await;
+    let (status, body) = plan_with_gpus(&app, &cookie, &[], Some(true)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"], "plan.source_invalid.gpu_unlock_unsupported");
+    let (status, _) = plan_with_gpus(&app, &cookie, &[], Some(false)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_unlock_with_a_driver_outside_the_supported_table_is_refused() {
+    let (app, cookie) = setup().await;
+    add_gpus(&app, &[STABLE]);
+    for version in ["580.178.04", "610.57.04"] {
+        let source =
+            json!({"kind": "official", "version": version, "gpus": [STABLE.0], "gpu_unlock": true});
+        let (status, body) = post_plan(&app, &cookie, source).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{version}: {body}"
+        );
+        assert_eq!(body["error"], "plan.source_invalid.gpu_unlock_unsupported");
+        assert!(app.ctx.plan.lock().unwrap().0.is_none());
+    }
+    // The same driver without the unlock is planned as ever.
+    let source = json!({"kind": "official", "version": "610.57.04", "gpus": [STABLE.0]});
+    assert_eq!(post_plan(&app, &cookie, source).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_unlock_field_must_be_a_boolean_and_a_local_source_refuses_it() {
+    let (app, cookie) = setup().await;
+    let (status, body) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind": "official", "version": UNLOCK_VERSION, "gpus": [], "gpu_unlock": "yes"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let row_id = write_local_row(&app, "580.95.05").await;
+    let (status, body) = post_plan(
+        &app,
+        &cookie,
+        json!({"kind": "local", "row_id": row_id, "gpu_unlock": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "request.invalid");
+    assert!(app.ctx.plan.lock().unwrap().0.is_none());
+}
+
+/// A local row of 580.95.05 whose record names `targets`.
+fn local_unlock_row(app: &TestApp, targets: serde_json::Value) -> &'static str {
+    let row_id = "20260928T101530Z-3f9a0c12-build";
+    let bytes = b"local row bytes";
+    app.host.put_file(
+        &format!("/var/lib/nvm/drivers/{row_id}/nvidia.raw"),
+        bytes.to_vec(),
+    );
+    let record = |targets: serde_json::Value| {
+        format!(
+            r#"{{"kind":"official","version":"580.95.05","sha256":"{}","size":{},"target_kernel":"{KERNEL}","created_at":7,"fingerprint":null,"original_of":null,"keep":null,"gpu_unlock_targets":{targets}}}"#,
+            sha256_hex(bytes),
+            bytes.len()
+        )
+    };
+    app.host.put_text(
+        &format!("/var/lib/nvm/drivers/{row_id}/record.json"),
+        &record(targets),
+    );
+    row_id
+}
+
+#[tokio::test]
+async fn a_local_row_brings_the_targets_of_its_record() {
+    let (app, cookie) = setup().await;
+    add_gpus(&app, &[STABLE]);
+    // The recorded targets come back as they are, a GPU of this host or not.
+    let row_id = local_unlock_row(&app, json!([STABLE.0, "0000:09:00.0"]));
+    let (status, body) = post_plan(&app, &cookie, json!({"kind": "local", "row_id": row_id})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let warnings = body["dialog"]["confirmation"]["warnings"]
+        .as_array()
+        .unwrap();
+    assert_eq!(warnings[0]["key"], "confirm.gpu_unlock");
+    // A target that is not a counted GPU now keeps its address and gets its own line.
+    assert_eq!(
+        warnings[0]["params"],
+        json!({
+            "targets": [STABLE.0, "0000:09:00.0"],
+            "models": ["NVIDIA GeForce RTX 3060", "0000:09:00.0"]
+        })
+    );
+    assert_eq!(warnings[1]["key"], "confirm.gpu_unlock_unavailable");
+    assert_eq!(warnings[1]["params"], json!({"address": "0000:09:00.0"}));
+    // A local row is installed without a build: no download line.
+    assert_eq!(warnings[2]["key"], "confirm.gpu_unlock_notice");
+    let (status, task) = post_task(&app, &cookie, &body["plan_id"], "skip").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{task}");
+    assert_eq!(
+        submitted_plan(&app, &task)["gpu_unlock_targets"],
+        json!([STABLE.0, "0000:09:00.0"])
+    );
+    app.host.wait_for_units(std::time::Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn unreadable_gpus_call_no_local_target_missing() {
+    let (app, cookie) = setup().await;
+    add_gpus(&app, &[STABLE]);
+    app.host
+        .fail_read(&format!("/sys/bus/pci/devices/{}/vendor", STABLE.0));
+    let row_id = local_unlock_row(&app, json!([STABLE.0]));
+    let (status, body) = post_plan(&app, &cookie, json!({"kind": "local", "row_id": row_id})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let warnings = &body["dialog"]["confirmation"]["warnings"];
+    assert_eq!(
+        warnings[0]["params"],
+        json!({"targets": [STABLE.0], "models": [STABLE.0]})
+    );
+    assert_eq!(warnings[1]["key"], "confirm.gpu_unlock_notice");
+}
+
+#[tokio::test]
+async fn a_local_record_with_bad_targets_is_an_unreadable_record() {
+    let (app, cookie) = setup().await;
+    let row_id = "20260928T101530Z-3f9a0c12-build";
+    let bytes = b"local row bytes";
+    app.host.put_file(
+        &format!("/var/lib/nvm/drivers/{row_id}/nvidia.raw"),
+        bytes.to_vec(),
+    );
+    app.host.put_text(
+        &format!("/var/lib/nvm/drivers/{row_id}/record.json"),
+        &format!(
+            r#"{{"kind":"official","version":"580.95.05","sha256":"{}","size":{},"target_kernel":"{KERNEL}","created_at":7,"fingerprint":null,"original_of":null,"keep":null,"gpu_unlock_targets":["all"]}}"#,
+            sha256_hex(bytes),
+            bytes.len()
+        ),
+    );
+    let (status, body) = post_plan(&app, &cookie, json!({"kind": "local", "row_id": row_id})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"], "blocked", "{body}");
 }

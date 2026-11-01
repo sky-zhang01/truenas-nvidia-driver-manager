@@ -1044,3 +1044,51 @@ fn a_gate_wait_observes_the_barrier_or_a_finished_runner() {
     runner.join().unwrap();
     assert!(blocked);
 }
+
+#[test]
+fn insmod_loads_an_existing_file_and_refuses_a_missing_one() {
+    let host = FakeHost::new();
+    let out = host.run(&cmd("insmod").arg("/x/gpu_unlock.ko"));
+    assert!(!out.exit.ok());
+    assert!(out.stderr_text().contains("No such file or directory"));
+    host.put_text("/x/gpu_unlock.ko", "module");
+    assert!(host.run(&cmd("insmod").arg("/x/gpu_unlock.ko")).exit.ok());
+    let modules = host.read(std::path::Path::new("/proc/modules")).unwrap();
+    assert!(String::from_utf8_lossy(&modules).contains("gpu_unlock"));
+}
+
+#[test]
+fn journalctl_greps_the_kernel_log_like_the_real_one() {
+    // Measured on TrueNAS 25.10.7 (systemd 254) and 27.0.0-RC.1 (systemd 257).
+    let host = FakeHost::new();
+    host.set_kernel_journal("NVRM: loading\ngpu_unlock: a\nother\ngpu_unlock: b\n");
+    let grep = |extra: &[&str], pattern: &str| {
+        let mut c = cmd("journalctl").args(["-k", "-b"]);
+        c = c.args(extra.iter().copied());
+        host.run(&c.args(["--grep", pattern]))
+    };
+    let out = grep(&["-o", "cat", "-n", "1"], "gpu_unlock|power off first");
+    assert!(out.exit.ok());
+    assert_eq!(out.stdout_text(), "gpu_unlock: b\n");
+    // No match: exit 1; the "-- No entries --" line only without -q and outside -o cat.
+    let short = grep(&[], "nothing here");
+    assert_eq!(short.exit, Exit::Code(1));
+    assert_eq!(short.stdout_text(), "-- No entries --\n");
+    for extra in [&["-q"][..], &["-o", "cat"][..], &["-o", "cat", "-q"][..]] {
+        let out = grep(extra, "nothing here");
+        assert_eq!(out.exit, Exit::Code(1), "{extra:?}");
+        assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{extra:?}");
+    }
+}
+
+#[test]
+fn show_depends_lists_without_loading() {
+    let host = FakeHost::new();
+    let out = host.run(&cmd("modprobe").arg("--show-depends").arg("nvidia"));
+    assert!(out.exit.ok());
+    assert!(out.stdout_text().starts_with("insmod /lib/modules/"));
+    let modules = host
+        .read(std::path::Path::new("/proc/modules"))
+        .unwrap_or_default();
+    assert!(!String::from_utf8_lossy(&modules).contains("nvidia"));
+}

@@ -2,7 +2,8 @@
 # so later exclusions are restated after the negations.
 #
 # Admit the license generator and production build inputs. The program embeds
-# docker/build-driver.sh and docker/install-build-kit.sh at compile time.
+# docker/build-driver.sh, docker/install-build-kit.sh and the vendored
+# third_party/ files at compile time.
 *
 !Cargo.toml
 !Cargo.lock
@@ -11,6 +12,7 @@
 !docker
 !LICENSE
 !THIRD_PARTY_NOTICES.md
+!third_party
 !tools
 tools/*
 !tools/third-party-licenses.py

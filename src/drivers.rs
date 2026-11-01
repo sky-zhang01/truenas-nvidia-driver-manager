@@ -29,6 +29,9 @@ pub struct Record {
     pub fingerprint: Option<String>,
     pub original_of: Option<OriginalOf>,
     pub keep: Option<bool>,
+    /// The PCI addresses the unlock was built for; absent for a driver without it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_unlock_targets: Vec<String>,
 }
 
 fn is_hex(s: &str, len: usize) -> bool {
@@ -47,6 +50,12 @@ impl Validate for Record {
         }
         if self.target_kernel.is_empty() {
             return Err("bad target kernel".into());
+        }
+        if !self.gpu_unlock_targets.is_empty()
+            && (self.kind == RowKind::Original
+                || !crate::gpu_unlock::targets_ok(&self.gpu_unlock_targets))
+        {
+            return Err("bad unlock targets".into());
         }
         match self.kind {
             RowKind::Upload => {
@@ -410,6 +419,7 @@ mod tests {
             fingerprint: None,
             original_of: None,
             keep: None,
+            gpu_unlock_targets: Vec::new(),
         }
     }
 
@@ -432,6 +442,45 @@ mod tests {
         assert!(up.validate().is_err());
         up.fingerprint = Some("b".repeat(12));
         assert!(up.validate().is_ok());
+    }
+
+    #[test]
+    fn unlock_targets_belong_on_official_and_upload_records_only() {
+        let targets = vec!["0000:01:00.0".to_string()];
+        let mut r = official("580.178.04", &"a".repeat(64), "6.12.105");
+        r.gpu_unlock_targets = targets.clone();
+        assert!(r.validate().is_ok());
+        let mut up = r.clone();
+        up.kind = RowKind::Upload;
+        up.fingerprint = Some("b".repeat(12));
+        assert!(up.validate().is_ok());
+        let mut original = official("580.178.04", &"a".repeat(64), "6.12.105");
+        original.kind = RowKind::Original;
+        original.keep = Some(true);
+        original.original_of = Some(OriginalOf {
+            kernel: "k".into(),
+            truenas_version: "t".into(),
+        });
+        assert!(original.validate().is_ok());
+        original.gpu_unlock_targets = targets.clone();
+        assert!(original.validate().is_err());
+        for bad in [
+            vec!["0000:01:00.0".to_string(), "0000:01:00.0".to_string()],
+            vec!["all".to_string()],
+            vec!["0000:0A:00.0".to_string()],
+        ] {
+            r.gpu_unlock_targets = bad;
+            assert!(r.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn a_record_without_targets_writes_and_reads_without_the_field() {
+        let r = official("580.178.04", &"a".repeat(64), "6.12.105");
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(!text.contains("gpu_unlock_targets"));
+        let back: Record = serde_json::from_str(&text).unwrap();
+        assert!(back.gpu_unlock_targets.is_empty());
     }
 
     #[test]

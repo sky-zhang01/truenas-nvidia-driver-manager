@@ -714,6 +714,7 @@ async fn the_task_list_list_is_sorted_and_the_terminal_state_comes_from_the_file
             expected: "580.178.04".to_string(),
             version_ok: true,
             passed: true,
+            load_order: None,
         });
         state.loaded_version_end = Some(ReadingJson::value("580.178.04".to_string()));
         truenas_nvidia_driver_manager::task_state::write(
@@ -958,6 +959,7 @@ fn succeeded(host: &FakeHost, reload_failed: Option<&str>) -> TaskState {
         expected: NOTICE_VERSION.to_string(),
         version_ok: true,
         passed: true,
+        load_order: None,
     });
     task_state::write(host, &notice_paths(), &state).unwrap();
     host.mkdir(&format!("{CONTAINER_DATA_DIR}/manager/tasks/{NOTICE_ID}"));
@@ -1255,4 +1257,103 @@ async fn release_api_serializes_a_concurrent_task_submission() {
             .to_str()
             .unwrap()
     ));
+}
+
+fn with_load_order(host: &FakeHost, targets: bool, effective: bool) {
+    let paths = notice_paths();
+    let mut state = match task_state::read(host, &paths, NOTICE_ID) {
+        truenas_nvidia_driver_manager::store::JsonRead::Ok(state) => state,
+        other => panic!("{other:?}"),
+    };
+    if targets {
+        state.plan.as_mut().unwrap().gpu_unlock_targets = vec!["0000:01:00.0".to_string()];
+    }
+    state.checks[0].load_order = Some(truenas_nvidia_driver_manager::task_state::LoadOrderRecord {
+        show_depends: ReadingJson::value(String::new()),
+        nvidia_conf: ReadingJson::value(false),
+        vfio_pci_first: true,
+        gpu_unlock_before_nvidia: effective,
+    });
+    task_state::write(host, &paths, &state).unwrap();
+}
+
+#[tokio::test]
+async fn the_success_notice_says_whether_the_unlock_rule_took_effect() {
+    for (effective, key) in [
+        (true, "notice.gpu_unlock_installed"),
+        (false, "notice.gpu_unlock_not_effective"),
+    ] {
+        let (app, cookie) = setup().await;
+        succeeded(&app.host, None);
+        with_load_order(&app.host, true, effective);
+        let (_, body) = get(&app, &format!("/api/tasks/{NOTICE_ID}"), Some(&cookie)).await;
+        assert_eq!(body["notice"]["key"], "notice.update_complete", "{body}");
+        assert_eq!(body["notice"]["unlock"], key, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn an_update_without_the_unlock_has_no_unlock_sentence() {
+    let (app, cookie) = setup().await;
+    succeeded(&app.host, None);
+    let (_, body) = get(&app, &format!("/api/tasks/{NOTICE_ID}"), Some(&cookie)).await;
+    assert!(body["notice"].get("unlock").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn a_load_order_without_planned_targets_adds_no_unlock_sentence() {
+    let (app, cookie) = setup().await;
+    succeeded(&app.host, None);
+    with_load_order(&app.host, false, true);
+    let (_, body) = get(&app, &format!("/api/tasks/{NOTICE_ID}"), Some(&cookie)).await;
+    assert!(body["notice"].get("unlock").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn the_reload_warning_and_the_unlock_sentence_come_together() {
+    let (app, cookie) = setup().await;
+    succeeded(&app.host, Some("nvidia_uvm"));
+    with_load_order(&app.host, true, false);
+    let (_, body) = get(&app, &format!("/api/tasks/{NOTICE_ID}"), Some(&cookie)).await;
+    assert_eq!(body["notice"]["variant"], "reload_warning", "{body}");
+    assert_eq!(
+        body["notice"]["unlock"], "notice.gpu_unlock_not_effective",
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_restored_task_has_no_unlock_sentence_even_with_an_update_load_order() {
+    use truenas_nvidia_driver_manager::task_state::{
+        Restore, RestoreDecision, RestoreOriginal, Status,
+    };
+    let (app, cookie) = setup().await;
+    let mut state = succeeded(&app.host, None);
+    state.plan.as_mut().unwrap().gpu_unlock_targets = vec!["0000:01:00.0".to_string()];
+    let mut update = state.checks[0].clone();
+    update.passed = false;
+    update.load_order = Some(truenas_nvidia_driver_manager::task_state::LoadOrderRecord {
+        show_depends: ReadingJson::value(String::new()),
+        nvidia_conf: ReadingJson::value(true),
+        vfio_pci_first: false,
+        gpu_unlock_before_nvidia: true,
+    });
+    let mut restore = state.checks[0].clone();
+    restore.pass = Pass::Restore;
+    state.checks = vec![update, restore];
+    state.status = Status::StockRestored;
+    state.restore = Some(Restore {
+        decision: RestoreDecision::Restore,
+        reason: None,
+        read_reason: None,
+        original: Some(RestoreOriginal {
+            row_id: "r".into(),
+            version: "580.173.02".into(),
+            saved_at: 1,
+        }),
+    });
+    task_state::write(&app.host, &notice_paths(), &state).unwrap();
+    let (_, body) = get(&app, &format!("/api/tasks/{NOTICE_ID}"), Some(&cookie)).await;
+    assert_eq!(body["notice"]["key"], "notice.restored", "{body}");
+    assert!(body["notice"].get("unlock").is_none(), "{body}");
 }

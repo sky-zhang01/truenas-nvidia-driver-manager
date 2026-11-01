@@ -60,6 +60,8 @@ The challenge must be signed exactly, with no added newline; `.expires_in_s` giv
 
 Read `.loaded_version`, `.kernel`, `.truenas_version`, `.original_saved`, `.active_task`, `.interrupted`, and `.update_blocked` from home. Home GPU addresses are in `.gpus.value.devices[].address`; check for `.gpus.unknown` before reading that array. Versions instead has a flat `.gpus[].address` array alongside `.items`; drivers has `.rows`. A reading has `.value`, `.not_loaded`, or `.unknown` with a stable `.key` and `.params`; unknown is never zero, false, or success. An active or unreadable task blocks a new replacement. Read its details first. Never bypass a setup or host-recovery block.
 
+The optional full-speed GPU unlock appears in three places. Versions marks each GPU the unlock supports in `.gpus[].gpu_unlock` as `stable` or `experimental`; the key is absent for a GPU that is not supported. The support range by series is RTX 30 stable, RTX 40 and RTX 20 experimental, RTX 50 not supported; the server decides for each card from its PCI device ID. Each drivers row has `.gpu_unlock_targets`, an array of the PCI addresses the row's image unlocks: empty without the unlock, `null` when the row's record cannot be read. Home has `.gpu_unlock`, a read-only reading of the merged image: `null` when it carries no unlock rule, an `.unknown` reading when it cannot be read, or `.value` holding `reloaded_after_boot` and a `cards` list with one entry per target (`address`, `result` and, for a card that was not unlocked, the kernel log `line` when there is one). `result` is `unlocked`, `not_cold` (needs a full power-off. Shut the computer down, switch the power off, then turn it on again), `next_boot` (the unlock is installed. It takes effect the next time the computer starts) or `not_unlocked`. When `.interrupted` is set, its `.gpu_unlock` is true for an interrupted update that carried the unlock; an unlock program that does nothing may then still be loaded. It goes away the next time the computer starts.
+
 ## 2. Create the requested plan
 
 An official source can use any version in the NVIDIA website catalog; choose the intended `.gpus[].address` values from versions. Keep the requested version and GPU selection; the server verifies catalog membership, source support and current host facts.
@@ -88,6 +90,8 @@ jq . "$WORK/plan.json"
 
 For files already staged by the administrator, read `GET /api/uploads/current` and use the current `.group_id` in the same plan endpoint: `{"source":{"kind":"upload","group_id":"<current-group-id>","version":"<selected-upload-version>","gpus":["<gpu-address>"]}}`. This guide does not stage files. The request decoder permits omitting `version`, but plan validation requires it: select an exact value from `.run.candidates` when candidates exist; when that list is empty, have the administrator supply the actual driver's version in a valid version format. Do not infer it from the official catalog. Missing required files, inconsistent package versions, or an unsuitable toolkit block the plan. GPU addresses must be unique current host GPU addresses, excluding GPUs bound to `vfio-pci` for passthrough; an empty list is accepted only when no GPUs remain after that exclusion. Upload plans reject conflicting selected GPUs, while official plans also check whether the chosen release supports each GPU. Local plans use only `row_id`, without a GPU list.
 
+The unlock is off unless the administrator asks for it. For an official or upload source, add `"gpu_unlock":true` to the source object only on that request; the default is false. It applies only to driver 610.43.03 and needs at least one selected GPU with `.gpus[].gpu_unlock` present; otherwise the plan request is refused with HTTP 422 `plan.source_invalid.gpu_unlock_unsupported`. The server chooses the targets: the selected GPUs that support the unlock. A local source takes no `gpu_unlock` key (the request is rejected); it follows the unlock recorded for the row, shown in `.gpu_unlock_targets`.
+
 Run only the source block that matches the request. If `.result` is `blocked`, report `.failures` and `.gpu`, including every occupying application's name and type in `.gpu.users`, plus unreadable reasons and `.gpu.errors`. Only with explicit administrator permission may an agent stop those apps, using the administrator's own TrueNAS operating procedure; this tool does not stop apps. Permission to replace a driver does not automatically authorize stopping apps. After conditions change, create a fresh plan. If `.result` is `uncomputable`, report `.items` and resolve their unreadable facts first. Only `ready` proceeds to confirmation.
 
 ## 3. Present the exact plan, obtain confirmation, then submit
@@ -105,8 +109,15 @@ For each key actually returned in `.how` and `.warnings`, read its full text bel
 | `confirm.how.local` | Uses an existing local driver; nothing is downloaded or built. |
 | `confirm.upload_trust` | The uploaded installer is built on this host and loaded into its kernel, and the program does not verify NVIDIA signatures. |
 | `confirm.community_patch` | This driver uses Debian community compatibility patches: user I/O memory mappings are unavailable, display hotplug behavior may differ, and it cannot load on systems with IBT enabled. Loading, display, and CUDA workloads on Kepler have not been verified. |
+| `confirm.gpu_unlock` | Full-speed GPU unlock: UNKNOWN. It takes effect the next time the computer starts. |
+| `confirm.gpu_unlock_download` | Turning on the full-speed GPU unlock downloads a file of about 340 MB from the NVIDIA website. The first time takes a few minutes. It is not downloaded again after that. |
+| `confirm.gpu_unlock_notice` | The unlock runs the next time the computer starts, before the driver loads. If the unlock program fails to load, or it skips a card, the driver still loads as usual. If the unlock fails partway on a card, that card may not work until you shut the computer down, switch the power off, and turn it back on. The home page says so. |
+| `confirm.gpu_unlock_experimental` | The unlock for the UNKNOWN series is still experimental and may be unstable. |
+| `confirm.gpu_unlock_unavailable` | UNKNOWN is not a card this computer can unlock right now. It may be missing, or it may already have been given to a virtual machine. It will not be unlocked. |
 | `confirm.original.unsavable` | The driver file at the permanent path does not reveal its driver version or target kernel, so it cannot be saved as the original driver. |
 | `original.skip_warning` | If you skip saving and this update fails, there is no original driver to restore. |
+
+When the plan carries the unlock, the warnings come in this order: `confirm.gpu_unlock` (its params are `targets`, the PCI addresses, and `models`, the model names), then `confirm.gpu_unlock_download` or `confirm.gpu_unlock_unavailable` when they apply, then `confirm.gpu_unlock_notice`, then one `confirm.gpu_unlock_experimental` for each experimental series among the targets (param `series`, such as `RTX 40`), RTX 40 before RTX 20. The unlock takes effect the next time the computer starts, and a card may need a full power-off before it unlocks: the agent must not restart or power off the host on its own.
 
 The buttons are `start` when the original driver is already saved, `save` to save it before replacing, or `skip` to replace without saving. Never choose `skip` merely because saving is unavailable: the administrator must explicitly accept that risk. Use only a button offered by `.dialog.confirmation.buttons` with `.enabled` true.
 
@@ -170,7 +181,9 @@ else
 fi
 ```
 
-Use the task's `.status` to report the result together with evidence. `.checks` is an array: use `.checks[] | select(.pass == "update")` for the requested replacement, or `.checks[] | select(.pass == "restore")` for recovery. Use the last matching record if more than one exists. A successful requested replacement requires a successful `update` check. A successful recovery requires a successful `restore` check. For the applicable check, verify `.passed`, `.refresh_ok`, and `.version_ok` are true; `.since_before.value` and `.since_after.value` are readable and different; `.nvidia_smi.value` and `.proc_version.value` both equal `.expected`. Compare the expected version with the confirmed target, or with the original version for recovery. `since_before` and `since_after` values are Unix epoch microseconds (divide by 1000000 for seconds); compare their raw values for the refresh check, not values rounded for display. Report these actual readings and `.loaded_version_end`, not just `SUCCEEDED` or a completed progress bar. Missing or contradictory readings prevent a claim of verified success. Review failed module reloads in `.replace[].reloaded` and any notice: the driver check passing does not mean all previous apps or modules resumed.
+Use the task's `.status` to report the result together with evidence. `.checks` is an array: use `.checks[] | select(.pass == "update")` for the requested replacement, or `.checks[] | select(.pass == "restore")` for recovery. Use the last matching record if more than one exists. A successful requested replacement requires a successful `update` check. A successful recovery requires a successful `restore` check. For the applicable check, verify `.passed`, `.refresh_ok`, and `.version_ok` are true; `.since_before.value` and `.since_after.value` are readable and different; `.nvidia_smi.value` and `.proc_version.value` both equal `.expected`. Compare the expected version with the confirmed target, or with the original version for recovery. `since_before` and `since_after` values are Unix epoch microseconds (divide by 1000000 for seconds); compare their raw values for the refresh check, not values rounded for display. For an update whose image carries the unlock rule, the `update` check also carries `.load_order`: `.vfio_pci_first` is part of `.passed`, and `.gpu_unlock_before_nvidia` being false means the next time the computer starts the unlock will not happen while the driver still works as usual. Report these actual readings and `.loaded_version_end`, not just `SUCCEEDED` or a completed progress bar. Missing or contradictory readings prevent a claim of verified success. Review failed module reloads in `.replace[].reloaded` and any notice: the driver check passing does not mean all previous apps or modules resumed.
+
+An update with the unlock has two more stages in `.phase`: `unlock_firmware` (before the build; a local row is not built, so it has none) and `unlock_preload` (after the build, before the driver file is replaced; for a local row, before the modules are unloaded). On success, `.notice` carries an `unlock` key whose value is a message key: `notice.gpu_unlock_installed` means the unlock takes effect the next time the computer starts; `notice.gpu_unlock_not_effective` means the settings for the full-speed GPU unlock did not take effect on this computer (`.gpu_unlock_before_nvidia` is false), so the next time the computer starts the unlock will not happen while the driver still works as usual. If `.vfio_pci_first` is false the update check fails and the task ends as `STOCK_RESTORED`. Report the actual `.load_order` readings and that notice. Whether a card is really unlocked can be read only after the next boot, from `.gpu_unlock` on home.
 
 GPU-user queries include Docker apps and Incus instances, selecting `container.query` with embedded devices, then `virt.instance.*` only if the first API is absent. Both APIs absent means no instances. The task detail field `.nvidia_smi_gpus` contains `{value: [{name, pci_address}]}` or `{unknown: {key, params}}`; `null` means no diagnostic query has been recorded. It describes the latest post-replacement check, including a recovery check. Report this as diagnostic evidence only; an unreadable GPU list does not invalidate a passed driver check or trigger recovery.
 
@@ -194,6 +207,7 @@ Use `.error.code`, nested reason `.key` and `.params`, and top-level rejection `
 | `plan.source_invalid.branch_unbuildable` | `.params.version` cannot be built for this host; `.params.reasons` lists the reason keys, and `.params.from` is an alternative version of the same branch or `null`. Explain the parameters and obtain a newly confirmed alternative. |
 | `plan.source_invalid.version_not_official` | HTTP 422: NVIDIA does not list `.params.version`. Check the version number before creating a newly confirmed plan. |
 | `plan.source_invalid.version_unconfirmed` | HTTP 409: NVIDIA catalog membership could not be confirmed for `.params.version`; `.params.unreadable` lists the catalog read failure as `{object: "catalog", reason, raw?}`. Resolve the reading failure before creating a newly confirmed plan. |
+| `plan.source_invalid.gpu_unlock_unsupported` | HTTP 422: the unlock was requested for a driver version other than 610.43.03, or none of the selected GPUs supports it. Ask the administrator whether to continue without the unlock; a changed plan needs new confirmation. |
 | `branch.extra_cflags_removed` | The kernel build scripts no longer support the EXTRA_CFLAGS used by this version. Select a buildable version and reconfirm the plan. |
 | `branch.fb_create_format_info` | This version's `nvidia-drm` source does not match the current kernel headers (for example, `fb_create` takes an extra `drm_format_info` argument). Select a buildable version and reconfirm the plan. |
 | `branch.follow_pfn_removed` | The kernel no longer has the `follow_pfn()` function that this version's driver source calls. Select a buildable version and reconfirm the plan. |
@@ -204,6 +218,7 @@ Use `.error.code`, nested reason `.key` and `.params`, and top-level rejection `
 | `branch.nvidia_drm_not_loaded` | The `nvidia_drm` module is not loaded on the host, so this version's installer would load it after installing, which the build container does not allow. Select a buildable version and reconfirm the plan. |
 | `SAVE_ORIGINAL_FAILED` | Original-driver saving failed. Inspect its reason; do not automatically retry without saving. |
 | `DOWNLOAD_FAILED` / `BUILD_FAILED` / `BUILD_TIMEOUT` | Download/build failed or timed out. Inspect nested reasons and diagnostic output; resolve the cause before a newly confirmed retry. |
+| `BUILD_FAILED` with reason `gpu_unlock_installer_unusable` or `gpu_unlock_module_rejected` | Unlock only. The installer cannot give the fixed firmware files, or this computer refused to load the unlock program in the test load. The driver file was not replaced. Report the reason and do not retry the same installer without the administrator. |
 | `GPU_IN_USE` / `MODULE_UNLOAD_REFUSED` | GPU use or a module prevented replacement. Report actual users and obtain permission before stopping apps. |
 | `WRITE_FAILED` / `REPLACE_DEADLINE_EXCEEDED` | Writing failed or the replacement deadline elapsed. Inspect status and recovery checks before choosing any next action. |
 | `RESTORE_ABORTED` / `RESTORE_NOT_WRITTEN` / `RESTORE_CHECK_FAILED` / `NO_USABLE_ORIGINAL` | Recovery did not complete or no usable saved original exists. Report recovery details and ask the administrator to inspect the host; do not claim it is safe or restored. |
@@ -274,7 +289,8 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
     ],
     "GpuReading": [
       "address",
-      "usable_from_branch"
+      "usable_from_branch",
+      "gpu_unlock"
     ],
     "DriversResponse": [
       "rows"
@@ -282,7 +298,8 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
     "DriverRow": [
       "id",
       "kind",
-      "can_update"
+      "can_update",
+      "gpu_unlock_targets"
     ],
     "PlanRequest": [
       "source"
@@ -292,7 +309,8 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
       "version",
       "gpus",
       "group_id",
-      "row_id"
+      "row_id",
+      "gpu_unlock"
     ],
     "PlanReady": [
       "result",
@@ -386,7 +404,14 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
       "proc_version",
       "expected",
       "version_ok",
-      "passed"
+      "passed",
+      "load_order"
+    ],
+    "LoadOrderRecord": [
+      "show_depends",
+      "nvidia_conf",
+      "vfio_pci_first",
+      "gpu_unlock_before_nvidia"
     ],
     "ReplaceRecord": [
       "reloaded"
@@ -462,6 +487,7 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
     "plan.source_invalid.branch_unbuildable",
     "plan.source_invalid.version_not_official",
     "plan.source_invalid.version_unconfirmed",
+    "plan.source_invalid.gpu_unlock_unsupported",
     "branch.extra_cflags_removed",
     "branch.fb_create_format_info",
     "branch.follow_pfn_removed",
@@ -495,6 +521,11 @@ The following inventory binds this guide to the tested API. `POST /api/setup` is
     "confirm.how.local",
     "confirm.upload_trust",
     "confirm.community_patch",
+    "confirm.gpu_unlock",
+    "confirm.gpu_unlock_download",
+    "confirm.gpu_unlock_notice",
+    "confirm.gpu_unlock_experimental",
+    "confirm.gpu_unlock_unavailable",
     "confirm.original.unsavable",
     "original.skip_warning"
   ]

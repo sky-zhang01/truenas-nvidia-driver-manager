@@ -1,6 +1,6 @@
 [package]
 name = "truenas-nvidia-driver-manager"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.87"
 # MSRV-aware resolution: resolver 3 makes `cargo update` — the command Renovate's
@@ -11,7 +11,7 @@ rust-version = "1.87"
 # unchanged from resolver 2.
 resolver = "3"
 license = "MIT"
-description = "Update the NVIDIA driver of a TrueNAS SCALE host from a web UI"
+description = "Update the NVIDIA driver of a TrueNAS host from a web UI"
 
 [[bin]]
 name = "truenas-nvidia-driver-manager"
@@ -38,6 +38,13 @@ libc = "0.2"
 ssh-key = { version = "=0.6.7", default-features = false, features = ["alloc", "ed25519", "p256", "p384"] }
 # Reject weak and low-order Ed25519 public keys.
 ed25519-dalek = "2.2"
+# The tensor unlock's firmware is generated from the NVIDIA installer in process: a zstd tar
+# payload, an ELF object and raw DEFLATE arrays. All pure Rust, so the static musl build still
+# needs no C compiler.
+ruzstd = "0.9"
+tar = { version = "0.4", default-features = false }
+object = { version = "0.40", default-features = false, features = ["read_core", "elf", "std"] }
+miniz_oxide = "0.9"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

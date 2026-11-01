@@ -61,7 +61,7 @@ fn community_patch(ctx: &RunCtx) -> bool {
     )
 }
 
-fn hash_fixed_input(
+pub(crate) fn hash_fixed_input(
     ctx: &mut RunCtx,
     path: &std::path::Path,
     deadline: Instant,

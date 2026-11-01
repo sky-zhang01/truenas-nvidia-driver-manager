@@ -19,7 +19,7 @@ function requireRule(condition, message) {
 }
 const leak = job('public-leak');
 requireRule(Boolean(leak), 'public leak job is required');
-requireRule(!/^    (?:if|needs):/m.test(leak), 'public scan must run on every event');
+requireRule(leak.includes('    needs: changes\n') && leak.includes("    if: needs.changes.outputs.leak == 'true'\n"), 'public scan must follow the shared leak switch');
 requireRule(/^    timeout-minutes: [1-9][0-9]*$/m.test(leak), 'public scan needs a timeout');
 requireRule(leak.includes('    permissions:\n      contents: read\n'), 'public scan needs read-only permissions');
 requireRule(!/secrets\.|FORBIDDEN_|--content-only/.test(leak), 'public scan must be complete and independent of private policy');
@@ -40,16 +40,22 @@ const body = steps[scan].split('        run: |\n')[1];
 requireRule(Boolean(body), 'public scan body is required');
 fs.writeFileSync(process.argv[2] + '/scan.sh', body.split('\n').map(line => line.replace(/^          /, '')).join('\n'));
 const gate = job('gate');
-requireRule(gate.includes('needs: [changes, static, rust, e2e, image, build-script, public-leak]'), 'gate must depend on public scan');
+requireRule(gate.includes('needs: [changes, guards, controls, web, compose, rust, e2e, image, build-script, osv, public-leak]'), 'gate must depend on public scan');
 requireRule(gate.includes('    if: always()'), 'gate must judge unsuccessful dependencies');
-requireRule(gate.includes('PUBLIC_LEAK_RESULT: ${{ needs.public-leak.result }}'), 'gate must consume public scan result');
+requireRule(gate.includes('LEAK_RESULT: ${{ needs.public-leak.result }}'), 'gate must consume public scan result');
 requireRule(gate.includes('run: bash ci/gate.sh'), 'gate must use the shared result checks');
-const stat = job('static');
-requireRule(!/^    if:/m.test(stat), 'static must run on every event');
-for (const command of ['python3 tools/third-party-licenses-test.py', 'bash ci/image-assert-test.sh', 'bash ci/check-readme-compose-test.sh', 'python3 ci/check-readme-compose.py']) {
-    const matches = stat.split(/(?=^      - (?:name:|uses:))/m).filter(step => step.includes(command));
-    requireRule(matches.length === 1 && !/^        if:/m.test(matches[0]), 'static controls must run unconditionally');
+const guards = job('guards');
+requireRule(!/^    if:/m.test(guards), 'guards must run on every event');
+for (const name of ['controls', 'web', 'compose', 'osv']) {
+    const selected = job(name);
+    requireRule(selected?.includes('    needs: changes\n'), name + ' must depend only on changes');
+    requireRule(selected.includes("    if: needs.changes.outputs." + name + " == 'true'\n"), name + ' must consume its shared switch');
+    requireRule(selected.includes('run: bash ci/job/' + name + '.sh'), name + ' must use its shared body');
 }
+requireRule(gate.includes('SWITCH_LEAK: ${{ needs.changes.outputs.leak }}'), 'gate must judge skipped leaks from the shared switch');
+requireRule(gate.includes('GATE_PR_HEAD: ${{ github.event.pull_request.head.sha }}'), 'staleness must use the PR head, not the merge checkout');
+requireRule(gate.includes('git fetch --no-tags origin "refs/heads/${GATE_BASE_BRANCH}"'), 'staleness must read the live base');
+requireRule(gate.includes('GATE_BASE_SHA=%s'), 'the fetched base must reach the shared gate');
 const step = (body, name) => body.split(/(?=^      - (?:name:|uses:))/m)
     .find(value => value.startsWith('      - name: ' + name + '\n'));
 function writeRun(value, file) {
@@ -57,6 +63,8 @@ function writeRun(value, file) {
     requireRule(Boolean(body), file + ' needs a shell body');
     fs.writeFileSync(process.argv[2] + '/' + file, body.split('\n').map(line => line.replace(/^          /, '')).join('\n'));
 }
+writeRun(step(gate, 'read the live pull request base'), 'base.sh');
+requireRule(gate.includes('persist-credentials: true'), 'the read-only base fetch needs checkout credentials until post cleanup');
 const locks = step(job('rust'), 'test host locks across Linux processes');
 requireRule(locks?.includes('cargo test --locked --test lock_process --no-run --message-format=json'), 'compile locks as the runner user');
 requireRule(!locks.includes('sudo cargo'), 'root must not compile into target');
@@ -93,10 +101,68 @@ const docker = dependabot.split('  - package-ecosystem: docker\n')[1]?.split(/^ 
 requireRule(/      - dependency-name: node\n        update-types: \["version-update:semver-major"\]/.test(docker || ''), 'coordinate Node major upgrades across Docker and workflows');
 NODE
 then
-    pass 'public scan, gate and static are wired unconditionally without private policy'
+    pass 'public scan and split checks follow the shared routing without private policy'
 else
     fail 'public workflow contracts are invalid'
 fi
+
+# Prove the runtime base lookup propagates failures and uses the fetched commit.
+mkdir -p "${WORK}/base-bin"
+cat >"${WORK}/base-bin/git" <<'STUB'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >>"${BASE_CONTROL_WORK}/calls"
+case "$1" in
+    check-ref-format) exit "${BASE_FORMAT_RC:-0}" ;;
+    fetch) exit "${BASE_FETCH_RC:-0}" ;;
+    rev-parse) [ "$2" = FETCH_HEAD ] || exit 90; printf '%s\n' fetched-base ;;
+    *) exit 91 ;;
+esac
+STUB
+chmod 0700 "${WORK}/base-bin/git"
+base_control() {
+    : >"${WORK}/base-env"
+    : >"${WORK}/calls"
+    PATH="${WORK}/base-bin:${PATH}" BASE_CONTROL_WORK="${WORK}" GATE_BASE_BRANCH=main \
+        GITHUB_ENV="${WORK}/base-env" /bin/bash -e -o pipefail "${WORK}/base.sh"
+}
+check 'gate fetches the current base revision at runtime' base_control
+check 'the fetched base reaches the shared gate' grep -qxF GATE_BASE_SHA=fetched-base "${WORK}/base-env"
+printf '%s\n' 'check-ref-format refs/heads/main' 'fetch --no-tags origin refs/heads/main' 'rev-parse FETCH_HEAD' >"${WORK}/base-expected"
+check 'base validation precedes fetch and fetched revision lookup' cmp -s "${WORK}/base-expected" "${WORK}/calls"
+for mode in format fetch; do
+    rc=0
+    if [ "$mode" = format ]; then BASE_FORMAT_RC=21 base_control >/dev/null 2>&1 || rc=$?
+    else BASE_FETCH_RC=22 base_control >/dev/null 2>&1 || rc=$?; fi
+    check "${mode} failure rejects live-base lookup" test "$rc" -ne 0
+    check "${mode} failure never exports a stale revision" test ! -s "${WORK}/base-env"
+done
+# Exercise scheduled exception expiry with the real parser and a scanner stub.
+mkdir -p "${WORK}/osv"
+osv_control() {
+    (
+        cd "${WORK}/osv"
+        bash() { [ "$*" = ci/osv-scan.sh ] || return 90; printf 'scan\n' >>calls; return "${OSV_CONTROL_RC:-0}"; }
+        export -f bash
+        /bin/bash "${SCRIPT_DIR}/job/osv.sh"
+    )
+}
+for mode in future expired malformed; do
+    case "$mode" in
+        future) until=2099-01-01T00:00:00Z ;;
+        expired) until=2000-01-01T00:00:00Z ;;
+        malformed) until='"tomorrow"' ;;
+    esac
+    printf '[[IgnoredVulns]]\nid = "fixture"\nignoreUntil = %s\n' "$until" >"${WORK}/osv/osv-scanner.toml"
+    : >"${WORK}/osv/calls"
+    rc=0; osv_control >"${WORK}/osv/out" 2>"${WORK}/osv/err" || rc=$?
+    if [ "$mode" = future ]; then check 'future OSV exceptions pass' test "$rc" -eq 0
+    else check "${mode} OSV exceptions fail" test "$rc" -ne 0; fi
+    check "${mode} expiry still runs the vulnerability scanner" grep -qxF scan "${WORK}/osv/calls"
+done
+printf '[[IgnoredVulns]]\nid = "fixture"\nignoreUntil = 2099-01-01T00:00:00Z\n' >"${WORK}/osv/osv-scanner.toml"
+rc=0; OSV_CONTROL_RC=23 osv_control >"${WORK}/osv/out" 2>"${WORK}/osv/err" || rc=$?
+check 'scanner failure rejects an unexpired OSV run' test "$rc" -ne 0
 
 if [ -f "${WORK}/locks.sh" ] && [ -f "${WORK}/record.sh" ]; then
     mkdir -p "${WORK}/bin" "${WORK}/lock-runner" "${WORK}/record"

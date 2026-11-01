@@ -7,6 +7,9 @@
 # The runner sets NVM_COMMUNITY_PATCH=470.256.02 only for the exact official
 # version on an actual 6.12 or 6.18 kernel and supplies the fixed Debian
 # 470.256.02-10 archive in /in.
+# The runner sets NVM_GPU_UNLOCK=1 when the plan carries the tensor unlock; it
+# stages the vendored upstream files and the rule in /in/gpu-unlock and mounts the
+# verified firmware read-only at /gpu-unlock-firmware.
 #
 # Lines this script writes itself use only the three machine-readable forms
 # below; other lines are diagnostic logs or verbatim external-command output.
@@ -85,6 +88,7 @@ for rel in \
     kernel/drivers/video/nvidia-modeset.ko \
     kernel/drivers/video/nvidia-drm.ko \
     kernel/drivers/video/nvidia-peermem.ko \
+    extra/gpu_unlock.ko \
     modules.alias \
     modules.alias.bin \
     modules.builtin.alias.bin \
@@ -104,6 +108,17 @@ step compiler
 command -v "${NVM_BUILD_COMPILER}" >/dev/null 2>&1 || fail "compiler_missing:${NVM_BUILD_COMPILER}"
 export CC="${NVM_BUILD_COMPILER}" HOSTCC="${NVM_BUILD_COMPILER}" IGNORE_CC_MISMATCH=1
 info "cc=${CC}"
+
+# NVM_GPU_UNLOCK=1: build the vendored gpu_unlock module (staged by the runner in
+# /in/gpu-unlock) against the same headers and with the same compiler as the driver.
+UNLOCK_SRC=/tmp/nvm-gpu-unlock
+if [ "${NVM_GPU_UNLOCK:-}" = 1 ]; then
+    step unlock_module
+    cp -a /in/gpu-unlock/kernel/gpu_unlock "${UNLOCK_SRC}" || fail gpu_unlock_module_build_failed
+    make -C "${UNLOCK_SRC}" "KDIR=${HOST_HEADERS}" "CC=${CC}" "HOSTCC=${HOSTCC}" \
+        || fail gpu_unlock_module_build_failed
+    strip --strip-debug "${UNLOCK_SRC}/gpu_unlock.ko" || fail gpu_unlock_module_build_failed
+fi
 
 step probe
 sh "${DRIVER_RUN}" --extract-only --target "${PROBE_DIR}" || fail extract_failed
@@ -272,6 +287,25 @@ else
         dump_installer_log
         fail installer_kernel_module_failed
     fi
+fi
+
+# The module, its modprobe rule, the firmware the runner verified (mounted read-only) and the
+# license texts. They are written after MARK, so the capture below picks them up, and before
+# depmod, so the module reaches the dependency index.
+if [ "${NVM_GPU_UNLOCK:-}" = 1 ]; then
+    step unlock_install
+    firmware=/usr/lib/firmware/gpu-unlock/610.43.03
+    licenses=/usr/share/licenses
+    bad=gpu_unlock_install_failed
+    install -D -m0644 "${UNLOCK_SRC}/gpu_unlock.ko" "${MODULES_UNDER}/extra/gpu_unlock.ko" || fail "${bad}"
+    install -D -m0644 /in/gpu-unlock/gpu-unlock.conf /usr/lib/modprobe.d/gpu-unlock.conf || fail "${bad}"
+    mkdir -p "${firmware}" "${licenses}/gpu-unlock-firmware" "${licenses}/gpu-unlock" || fail "${bad}"
+    for file in /gpu-unlock-firmware/*; do
+        [ "${file##*/}" = NVIDIA-LICENSE ] || install -m0644 "${file}" "${firmware}/" || fail "${bad}"
+    done
+    install -m0644 /gpu-unlock-firmware/NVIDIA-LICENSE /in/gpu-unlock/firmware/NOTICE.md \
+        "${licenses}/gpu-unlock-firmware/" || fail "${bad}"
+    install -m0644 /in/gpu-unlock/licenses/* "${licenses}/gpu-unlock/" || fail "${bad}"
 fi
 
 step depmod

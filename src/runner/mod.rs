@@ -6,6 +6,8 @@ pub mod check;
 pub mod download;
 pub mod original;
 pub mod replace;
+pub mod unlock_firmware;
+pub mod unlock_preload;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -322,6 +324,7 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
         stage_build(ctx, prepared, compiler.as_deref().unwrap())?;
     }
 
+    let unlock_rule = stage_unlock_preload(ctx, &plan_source)?;
     let update = replace::unload(ctx, Pass::Update).or_else(|e| module_error(ctx, e))?;
     replace::write(ctx, &update, None).or_else(|e| module_error(ctx, e))?;
     let readings = replace::refresh(ctx, &update);
@@ -329,7 +332,7 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
     let expected = ctx.state.plan.as_ref().unwrap().version.clone();
     replace::align_modules(ctx, &update, &expected).or_else(|e| module_error(ctx, e))?;
     ctx.enter(Phase::Check);
-    let checked = check::check(ctx, Pass::Update, readings, &expected);
+    let checked = check::check(ctx, Pass::Update, readings, &expected, unlock_rule);
     let passed = checked.passed;
     ctx.state.checks.push(checked);
     let _ = ctx.write_state();
@@ -374,13 +377,14 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
         json!({"original": original.version, "date": original.saved_at}),
     );
 
+    unlock_preload::before_restore(ctx, &original.path);
     let restore = replace::unload(ctx, Pass::Restore).or_else(|e| module_error(ctx, e))?;
     replace::write(ctx, &restore, Some(&original)).or_else(|e| module_error(ctx, e))?;
     let readings = replace::refresh(ctx, &restore);
     replace::reload_targets(ctx, &restore).or_else(|e| module_error(ctx, e))?;
     replace::align_modules(ctx, &restore, &original.version).or_else(|e| module_error(ctx, e))?;
     ctx.enter(Phase::RestoreCheck);
-    let checked = check::check(ctx, Pass::Restore, readings, &original.version);
+    let checked = check::check(ctx, Pass::Restore, readings, &original.version, false);
     let passed = checked.passed;
     ctx.state.checks.push(checked);
     let _ = ctx.write_state();
@@ -392,21 +396,63 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
     }
 }
 
+/// Whether the image this pass writes carries the unlock rule. A built image does when the
+/// plan has targets, as its pre-delivery check proved; a local row is looked at and its module
+/// is loaded in the kernel before anything is unloaded.
+fn stage_unlock_preload(
+    ctx: &mut RunCtx,
+    source: &task_state::PlanSource,
+) -> Result<bool, FlowStop> {
+    let task_state::PlanSource::Local { row_id, .. } = source else {
+        return Ok(!ctx
+            .state
+            .plan
+            .as_ref()
+            .unwrap()
+            .gpu_unlock_targets
+            .is_empty());
+    };
+    unlock_preload::before_local(ctx, row_id).or_else(|failure| {
+        ctx.fail_with_command(failure.code, failure.params, failure.raw, failure.command);
+        finish(ctx).map_err(|_| FlowStop::Interrupted)?;
+        Err(FlowStop::Terminal)
+    })
+}
+
 /// prepare the pinned build environment and run the build container. Both compiling
 /// sources — the official download and the uploaded package — come through here, so neither
 /// can skip the environment; a task that does not compile never calls it. `prepared` is an
 /// environment the caller already prepared (tests, [`run_with_env`]); `None` prepares the
-/// pinned environment itself.
+/// pinned environment itself. An update with the unlock makes its firmware available first.
 pub fn stage_build(
     ctx: &mut RunCtx,
     prepared: Option<build_env::BuildEnv>,
     compiler: &str,
 ) -> Result<(), FlowStop> {
-    ctx.enter(Phase::Build);
+    let unlock = !ctx
+        .state
+        .plan
+        .as_ref()
+        .unwrap()
+        .gpu_unlock_targets
+        .is_empty();
+    ctx.enter(if unlock {
+        Phase::UnlockFirmware
+    } else {
+        Phase::Build
+    });
     if ctx.build_deadline.is_none() {
         ctx.set_build_deadline();
     }
     let deadline = ctx.build_deadline.expect("the deadline was just set");
+    if unlock {
+        if let Err(failure) = unlock_firmware::run(ctx, deadline) {
+            ctx.fail_with_command(failure.code, failure.params, failure.raw, failure.command);
+            finish(ctx).map_err(|_| FlowStop::Interrupted)?;
+            return Err(FlowStop::Terminal);
+        }
+        ctx.enter(Phase::Build);
+    }
     let acquired = match prepared {
         Some(env) => Ok(env),
         None => build_env::acquire(ctx, deadline),

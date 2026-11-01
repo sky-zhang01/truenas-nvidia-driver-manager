@@ -16,6 +16,9 @@
   "branch.output_poll_changed_removed": [],
   "branch.pci_resize_resource_args": [],
   "build.artifact.deliver_failed": [],
+  "build.artifact.gpu_unlock_files": [],
+  "build.artifact.gpu_unlock_module": [],
+  "build.artifact.gpu_unlock_unexpected": [],
   "build.artifact.kernel_ambiguous": [],
   "build.artifact.kernel_mismatch": [
     "built_kernel",
@@ -48,6 +51,11 @@
   "build.depmod_failed": [],
   "build.docker_run_failed": [],
   "build.extract_failed": [],
+  "build.gpu_unlock_firmware_failed": [],
+  "build.gpu_unlock_install_failed": [],
+  "build.gpu_unlock_installer_unusable": [],
+  "build.gpu_unlock_module_build_failed": [],
+  "build.gpu_unlock_module_rejected": [],
   "build.installer_failed": [],
   "build.installer_kernel_module_failed": [],
   "build.installer_userspace_failed": [],
@@ -81,6 +89,7 @@
   "catalog.no_usable_version": [],
   "catalog.no_usable_version.one": [],
   "catalog.other_version": [],
+  "check.expected.load_order": [],
   "check.expected.refresh": [],
   "check.expected.version": [
     "target"
@@ -88,6 +97,9 @@
   "check.fail": [],
   "check.item.refresh": [],
   "check.item.version": [],
+  "check.item.vfio_pci_first": [],
+  "check.observed.load_order.first": [],
+  "check.observed.load_order.not_first": [],
   "check.observed.refresh_after_absent": [],
   "check.observed.refresh_before_absent": [],
   "check.observed.refresh_before_unmerged": [],
@@ -150,6 +162,17 @@
   "confirm.file_values": [
     "checksum",
     "fingerprint"
+  ],
+  "confirm.gpu_unlock": [
+    "models"
+  ],
+  "confirm.gpu_unlock_download": [],
+  "confirm.gpu_unlock_experimental": [
+    "series"
+  ],
+  "confirm.gpu_unlock_notice": [],
+  "confirm.gpu_unlock_unavailable": [
+    "address"
   ],
   "confirm.how.local": [],
   "confirm.how.official": [],
@@ -298,6 +321,7 @@
   ],
   "drivers.source.official": [],
   "drivers.source.original": [],
+  "drivers.source.unlock": [],
   "drivers.source.upload": [
     "fingerprint"
   ],
@@ -345,6 +369,24 @@
   ],
   "home.canonical_checksum": [],
   "home.canonical_version": [],
+  "home.gpu_unlock": [],
+  "home.gpu_unlock.next_boot": [
+    "model"
+  ],
+  "home.gpu_unlock.not_cold": [
+    "model"
+  ],
+  "home.gpu_unlock.not_run": [
+    "model"
+  ],
+  "home.gpu_unlock.not_unlocked": [
+    "line",
+    "model"
+  ],
+  "home.gpu_unlock.reloaded": [],
+  "home.gpu_unlock.unlocked": [
+    "model"
+  ],
   "home.gpus": [],
   "home.gpus.basis": [],
   "home.gpus.meta": [
@@ -405,6 +447,7 @@
     "time",
     "version"
   ],
+  "home.interrupted.unlock_module": [],
   "home.kernel": [],
   "home.latest.none": [],
   "home.latest.record": [
@@ -508,6 +551,8 @@
   "log.build_step.release": [],
   "log.build_step.result": [],
   "log.build_step.toolkit": [],
+  "log.build_step.unlock_install": [],
+  "log.build_step.unlock_module": [],
   "log.build_timeout": [],
   "log.canonical_written": [],
   "log.check_item": [
@@ -559,6 +604,8 @@
   "log.install_mode.single": [],
   "log.install_mode.two_pass": [],
   "log.install_mode.userspace-make": [],
+  "log.load_order.first": [],
+  "log.load_order.not_first": [],
   "log.loaded_version": [
     "version"
   ],
@@ -656,6 +703,17 @@
   "log.unload_wait.refused": [],
   "log.unload_wait.unloaded": [],
   "log.unload_wait.unreadable": [],
+  "log.unlock_firmware_generated": [],
+  "log.unlock_firmware_reused": [],
+  "log.unlock_load_order": [
+    "unlock",
+    "vfio"
+  ],
+  "log.unlock_preload_failed": [
+    "raw"
+  ],
+  "log.unlock_preload_skipped": [],
+  "log.unlock_preloaded": [],
   "log.usage.busy": [],
   "log.usage.not_in_use": [],
   "log.usage.unreadable": [],
@@ -708,6 +766,8 @@
     "read_reason",
     "type"
   ],
+  "notice.gpu_unlock_installed": [],
+  "notice.gpu_unlock_not_effective": [],
   "notice.no_restore": [
     "check_reason",
     "no_original_reason",
@@ -931,6 +991,8 @@
   "phase.restore_write": [],
   "phase.save_original": [],
   "phase.unload": [],
+  "phase.unlock_firmware": [],
+  "phase.unlock_preload": [],
   "phase.write": [],
   "plan.button_invalid": [],
   "plan.changed": [
@@ -958,6 +1020,7 @@
     "version"
   ],
   "plan.source_invalid.branch_undecidable": [],
+  "plan.source_invalid.gpu_unlock_unsupported": [],
   "plan.source_invalid.gpu_unsupported": [
     "version"
   ],
@@ -1002,6 +1065,7 @@
   "query.object.current_kernel": [],
   "query.object.docker": [],
   "query.object.extension_link": [],
+  "query.object.gpu_unlock": [],
   "query.object.gpu_usage": [],
   "query.object.gpus": [],
   "query.object.host_task_unit": [],
@@ -1281,7 +1345,14 @@
     "pci_address"
   ],
   "update.gpu_select": [],
+  "update.gpu_unlock": [],
+  "update.gpu_unlock.none": [],
+  "update.gpu_unlock.range": [],
+  "update.gpu_unlock.version_unsupported": [],
   "update.other_version_example": [],
+  "update.version.unlock": [
+    "version"
+  ],
   "upload.action_failed": [],
   "upload.big_file": [],
   "upload.busy": [],

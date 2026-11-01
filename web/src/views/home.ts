@@ -13,7 +13,8 @@ import {
 } from "../dom.js";
 import type { App } from "../main.js";
 import { stateReadErrorReasonKey, QUERY_OBJECT_RUNNING_TASK } from "../rules.js";
-import { interruptCopyKey } from "../task-steps.js";
+import { interruptCopyKey, interruptUnlockNote } from "../task-steps.js";
+import { unlockReadingNode } from "../gpu-unlock.js";
 
 function readingText<T>(r: Reading<T> | null | undefined): string {
   if (!r) return "UNKNOWN";
@@ -117,6 +118,9 @@ export function renderHome(app: App, container: HTMLElement): void {
     if (home.interrupted) {
       const task = home.interrupted;
       container.append(renderNotice(interruptCopyKey(task.phase), taskTimeParams(task), lang));
+      if (interruptUnlockNote(task.phase, task.gpu_unlock === true)) {
+        container.append(el("p", { class: "hint", text: expandText("home.interrupted.unlock_module", {}, lang) }));
+      }
       container.append(
         el("a", {
           href: "#/update",
@@ -193,6 +197,8 @@ export function renderHome(app: App, container: HTMLElement): void {
     gpuRow.append(el("span", { class: "reading-label", text: expandText("home.gpus", {}, lang) }));
     gpuRow.append(gpuValue);
     list.append(gpuRow);
+    const unlockRow = unlockReadingNode(home, lang);
+    if (unlockRow) list.append(unlockRow);
 
     let linkText = "UNKNOWN";
     if (home.link && home.link.exists) {

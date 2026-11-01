@@ -161,6 +161,15 @@ SEED_KIT_CID="$(docker create --name "${SEED_KIT}" --platform "${PLATFORM}" --pu
 nvm_cleanup_track "container:${SEED_KIT_CID}"
 seed_root "${KIT}" . "${SEED_KIT_CID}:/build-kit"
 
+# The verified firmware directory of the tensor unlock (a daemon-side named volume, mounted
+# `readonly` only into the builds that ask for the unlock).
+new_volume unlockfw; FW_VOL="${NEW_VOLUME}"
+SEED_FW="nvm-build-script-firmware-${FW_VOL}"
+SEED_FW_CID="$(docker create --name "${SEED_FW}" --platform "${PLATFORM}" --pull never --entrypoint /bin/true \
+    --mount "type=volume,src=${FW_VOL},dst=/gpu-unlock-firmware" \
+    "${BUILD_IMAGE}" /bin/true)"
+nvm_cleanup_track "container:${SEED_FW_CID}"
+
 . "${SCRIPT_DIR}/../test-lib.sh"
 
 HDR="${WORK}/hdr"
@@ -182,6 +191,10 @@ done
 for base in modules.builtin modules.builtin.modinfo modules.order; do
     printf 'stub %s\n' "${base}" > "${MODS}/${base}"
 done
+# The host module tree is the merged view, so it can hold the module of an earlier
+# image built with the tensor unlock. No build may carry it over.
+mkdir -p "${MODS}/extra"
+printf 'stale gpu_unlock of an earlier image\n' > "${MODS}/extra/gpu_unlock.ko"
 
 for variant in 555 545 470 check-fail no-options install-fail install-fail-kernel; do
     bash "${SCRIPT_DIR}/make-fake-run.sh" run "${variant}" "${BIN}/${variant}.run"
@@ -201,6 +214,42 @@ for deb in "${KIT}"/*.deb; do
     printf '/build-kit/%s\n' "$(basename "${deb}")" >> "${IN}/build-kit.list"
 done
 [ -s "${IN}/build-kit.list" ] || { echo "test.sh: the package list is empty" >&2; exit 1; }
+
+# The tensor unlock inputs the runner writes under /in/gpu-unlock: a stand-in for the
+# upstream module source (the real one needs real kernel headers) that compiles a small
+# ELF object with the compiler and headers the script passes, the vendored licence texts,
+# the rule, and a stand-in for the verified firmware the runner mounts read-only.
+UNLOCK_IN="${IN}/gpu-unlock"
+mkdir -p "${UNLOCK_IN}/kernel/gpu_unlock" "${UNLOCK_IN}/firmware" "${UNLOCK_IN}/licenses"
+printf 'const char nvm_fake_gpu_unlock[] = "nvm-fake-gpu-unlock";\n' > "${UNLOCK_IN}/kernel/gpu_unlock/main.c"
+cat > "${UNLOCK_IN}/kernel/gpu_unlock/Makefile" <<'UNLOCK_MAKEFILE'
+.PHONY: all
+all:
+	test -d "$(KDIR)/include/config"
+	test -n "$(CC)" && test "$(HOSTCC)" = "$(CC)"
+	test -z "$(FAKE_UNLOCK_MAKE_FAIL)"
+	$(CC) -g -c main.c -o gpu_unlock.ko
+UNLOCK_MAKEFILE
+cp "${REPO_ROOT}/third_party/gpu-unlock/firmware/NOTICE.md" "${UNLOCK_IN}/firmware/NOTICE.md"
+cp "${REPO_ROOT}"/third_party/gpu-unlock/licenses/* "${UNLOCK_IN}/licenses/"
+UNLOCK_RULE="${WORK}/unlock-rule.expected"
+printf '%s\n' \
+    '# Written by truenas-nvidia-driver-manager: gpu-unlock 2.0.0 (Zagitta/gpu-unlock 1fc6d628)' \
+    'softdep nvidia pre: vfio-pci gpu_unlock' \
+    'options gpu_unlock targets=0000:01:00.0,0000:02:00.0' > "${UNLOCK_RULE}"
+cp "${UNLOCK_RULE}" "${UNLOCK_IN}/gpu-unlock.conf"
+# The 16 firmware names and the licence file are the OUTPUTS table of the program.
+UNLOCK_FW="${WORK}/unlock-firmware"
+mkdir -p "${UNLOCK_FW}"
+awk '/^pub const OUTPUTS/ {in_table=1; next} in_table && /^\];/ {exit}
+     in_table && match($0, /name: "[^"]*"/) {print substr($0, RSTART + 7, RLENGTH - 8)}' \
+    "${REPO_ROOT}/src/gpu_unlock/mod.rs" > "${WORK}/unlock-outputs.txt"
+[ "$(wc -l < "${WORK}/unlock-outputs.txt" | tr -d ' ')" = 17 ] \
+    || { echo "test.sh: cannot read the 17 firmware output names" >&2; exit 1; }
+while IFS= read -r name; do
+    printf 'fake firmware %s\n' "${name}" > "${UNLOCK_FW}/${name}"
+done < "${WORK}/unlock-outputs.txt"
+seed_root "${UNLOCK_FW}" . "${SEED_FW_CID}:/gpu-unlock-firmware"
 
 # Reproduce the official package's non-searchable root without changing its files.
 DEB_ROOT_FIXTURE="${WORK}/deb-root-fixture"
@@ -289,8 +338,8 @@ LAST_RC=0
 LAST_LOG=""
 BUILD_RUNS=0
 
-run_build() { # run_build <variant> [module-type] [gcc-major] [failure-mode] [community-marker]
-    local variant="$1" mtype="${2:-}" gcc="${3:-12}" failure_mode="${4:-}" marker="${5:-}"
+run_build() { # run_build <variant> [module-type] [gcc-major] [failure-mode] [community-marker] [unlock]
+    local variant="$1" mtype="${2:-}" gcc="${3:-12}" failure_mode="${4:-}" marker="${5:-}" unlock="${6:-}"
     cp "${BIN}/${variant}.run" "${IN}/driver.run"
     seed_inputs
 
@@ -314,6 +363,17 @@ run_build() { # run_build <variant> [module-type] [gcc-major] [failure-mode] [co
     fi
     if [ -n "${marker}" ]; then
         env_args+=(-e "NVM_COMMUNITY_PATCH=${marker}")
+    fi
+    # The tensor unlock: the variable, and the verified firmware mounted read-only
+    # unless the failure mode withholds it.
+    if [ -n "${unlock}" ]; then
+        env_args+=(-e NVM_GPU_UNLOCK=1)
+        if [ "${failure_mode}" != no-firmware ]; then
+            env_args+=(--mount "type=volume,src=${FW_VOL},dst=/gpu-unlock-firmware,readonly")
+        fi
+    fi
+    if [ "${failure_mode}" = fail-unlock-module ]; then
+        env_args+=(-e FAKE_UNLOCK_MAKE_FAIL=1)
     fi
 
     name="$(docker create --cap-drop ALL --platform "${PLATFORM}" --pull never --network none \
@@ -627,6 +687,94 @@ check "gcc-14 selected" log_has "NVM:INFO:cc=gcc-14"
 run_build 555 "" 99
 check "gcc-99 exit code 1" test "${LAST_RC}" -eq 1
 check "gcc-99 reason compiler_missing:gcc-99" log_has "NVM:FAIL:compiler_missing:gcc-99"
+
+echo "== tensor unlock =="
+# A build that asks for it: the module is compiled with the selected compiler against the
+# headers, then installed with its rule, the firmware and the licences.
+run_build 555 "" 12 "" "" unlock
+check "unlock: exit code 0" test "${LAST_RC}" -eq 0
+check "unlock: no NVM:FAIL" bash -c "! grep -q '^NVM:FAIL:' '${LAST_LOG}'"
+check "unlock: the steps run in order" bash -c "
+    steps=\"\$(grep '^NVM:STEP:' '${LAST_LOG}' | tr '\n' ' ')\"
+    case \"\${steps}\" in
+        *compiler\ *unlock_module\ *probe\ *install\ *unlock_install\ *depmod\ *capture\ *) exit 0 ;;
+        *) echo \"\${steps}\" >&2; exit 1 ;;
+    esac"
+copy_out /out/nvidia.raw "${WORK}/nvidia.raw"
+seed_artifact nvidia.raw
+check "unlock: the module is in extra/" artifact_has "usr/lib/modules/${KERNEL}/extra/gpu_unlock.ko"
+artifact_cat "usr/lib/modules/${KERNEL}/extra/gpu_unlock.ko" > "${WORK}/unlock-module.ko"
+check "unlock: the module is the one this build compiled" grep -q nvm-fake-gpu-unlock "${WORK}/unlock-module.ko"
+check "unlock: the module is not the stale one of the host tree" bash -c "! grep -q stale '${WORK}/unlock-module.ko'"
+# The module is compiled with -g; the build strips the debug sections and keeps the symbols.
+docker run --rm --platform "${PLATFORM}" --entrypoint /bin/sh \
+    --mount "type=volume,src=${ARTIFACT_VOL},dst=/w,readonly" "${HELPER_IMAGE}" \
+    -c "unsquashfs -no-progress -d /tmp/m /w/nvidia.raw usr/lib/modules/${KERNEL}/extra/gpu_unlock.ko >/dev/null \
+        && readelf -S /tmp/m/usr/lib/modules/${KERNEL}/extra/gpu_unlock.ko" > "${WORK}/unlock-sections" 2>/dev/null \
+    || echo "test.sh: the section listing of the module failed" >&2
+check "unlock: the module keeps its symbols" grep -q '\.symtab' "${WORK}/unlock-sections"
+check "unlock: the module has no debug sections" bash -c "! grep -q '\.debug_' '${WORK}/unlock-sections'"
+artifact_cat usr/lib/modprobe.d/gpu-unlock.conf > "${WORK}/unlock-rule.actual"
+check "unlock: the rule is the text the runner supplied" cmp -s "${UNLOCK_RULE}" "${WORK}/unlock-rule.actual"
+artifact_cat "usr/lib/modules/${KERNEL}/modules.dep" > "${WORK}/unlock-modules.dep"
+check "unlock: modules.dep lists the module" grep -q '^extra/gpu_unlock.ko:' "${WORK}/unlock-modules.dep"
+artifact_paths > "${WORK}/unlock-list" || fail "unlock: the artifact listing failed"
+grep -vx NVIDIA-LICENSE "${WORK}/unlock-outputs.txt" | sort > "${WORK}/unlock-fw.expected"
+sed -n 's#^usr/lib/firmware/gpu-unlock/610\.43\.03/\([^/]*\)$#\1#p' "${WORK}/unlock-list" | sort > "${WORK}/unlock-fw.actual"
+check "unlock: the firmware directory holds the 16 names and no licence" \
+    bash -c "[ \"\$(wc -l < '${WORK}/unlock-fw.actual' | tr -d ' ')\" = 16 ] && cmp -s '${WORK}/unlock-fw.expected' '${WORK}/unlock-fw.actual'"
+artifact_cat usr/lib/firmware/gpu-unlock/610.43.03/gsp_ga10x.bin > "${WORK}/unlock-fw-sample"
+check "unlock: a firmware file is the mounted one" cmp -s "${UNLOCK_FW}/gsp_ga10x.bin" "${WORK}/unlock-fw-sample"
+check "unlock: the NVIDIA licence is installed" artifact_has "usr/share/licenses/gpu-unlock-firmware/NVIDIA-LICENSE"
+check "unlock: the firmware notice is installed" artifact_has "usr/share/licenses/gpu-unlock-firmware/NOTICE.md"
+for licence in CMP40HX-MIT.txt GPL-2.0.txt NVIDIA-MIT.txt; do
+    check "unlock: licence ${licence} is installed" artifact_has "usr/share/licenses/gpu-unlock/${licence}"
+done
+check "unlock: the driver modules are still there" artifact_has "usr/lib/modules/${KERNEL}/kernel/drivers/video/nvidia.ko"
+
+# The compiler of the task is the one used for the module.
+run_build 555 "" 14 "" "" unlock
+check "unlock: gcc-14 build exits 0" test "${LAST_RC}" -eq 0
+copy_out /out/nvidia.raw "${WORK}/nvidia.raw"
+seed_artifact nvidia.raw
+artifact_cat "usr/lib/modules/${KERNEL}/extra/gpu_unlock.ko" > "${WORK}/unlock-module-14.ko"
+check "unlock: the module of a gcc-14 build was compiled by gcc 14" grep -q 'GCC: (Debian 14' "${WORK}/unlock-module-14.ko"
+
+# The default: the same inputs are present in /in, and nothing of them reaches the image.
+run_build 555
+check "no unlock: exit code 0" test "${LAST_RC}" -eq 0
+check "no unlock: no unlock step" bash -c "! grep -q '^NVM:STEP:unlock_' '${LAST_LOG}'"
+copy_out /out/nvidia.raw "${WORK}/nvidia.raw"
+seed_artifact nvidia.raw
+check "no unlock: no module in extra/" artifact_lacks "usr/lib/modules/${KERNEL}/extra/gpu_unlock.ko"
+check "no unlock: no rule" artifact_lacks "usr/lib/modprobe.d/gpu-unlock.conf"
+artifact_paths > "${WORK}/plain-list" || fail "no unlock: the artifact listing failed"
+check "no unlock: the listing is the artifact's" grep -qx 'usr/bin/nvidia-smi' "${WORK}/plain-list"
+check "no unlock: no firmware or licence directory" \
+    bash -c "! grep -Eq '^usr/(share/licenses/gpu-unlock|lib/firmware/gpu-unlock)' '${WORK}/plain-list'"
+artifact_cat "usr/lib/modules/${KERNEL}/modules.dep" > "${WORK}/plain-modules.dep"
+check "no unlock: modules.dep does not list the module" bash -c "! grep -q gpu_unlock '${WORK}/plain-modules.dep'"
+
+# Failures of the two steps name their reason and stop the build early.
+run_build 555 "" 12 fail-unlock-module "" unlock
+check "unlock module failure: exit code 1" test "${LAST_RC}" -eq 1
+check "unlock module failure: reason gpu_unlock_module_build_failed" log_has "NVM:FAIL:gpu_unlock_module_build_failed"
+check "unlock module failure: stopped before the driver was touched" bash -c "! grep -q '^NVM:STEP:probe' '${LAST_LOG}'"
+if copy_out /out/nvidia.raw "${WORK}/unlock-module-fail.raw"; then
+    fail "unlock module failure: nvidia.raw must not be produced"
+else
+    pass "unlock module failure: nvidia.raw was not produced"
+fi
+
+run_build 555 "" 12 no-firmware "" unlock
+check "unlock install failure: exit code 1" test "${LAST_RC}" -eq 1
+check "unlock install failure: reason gpu_unlock_install_failed" log_has "NVM:FAIL:gpu_unlock_install_failed"
+check "unlock install failure: stopped before depmod" bash -c "! grep -q '^NVM:STEP:depmod' '${LAST_LOG}'"
+if copy_out /out/nvidia.raw "${WORK}/unlock-install-fail.raw"; then
+    fail "unlock install failure: nvidia.raw must not be produced"
+else
+    pass "unlock install failure: nvidia.raw was not produced"
+fi
 
 finish_tests "build script tests: ${FAILURES} assertion(s) failed" \
     "build script tests: all assertions passed"

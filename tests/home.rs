@@ -116,6 +116,19 @@ async fn interrupted_task_is_shown_with_its_phase() {
     let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
     assert_eq!(body["interrupted"]["task_id"], id);
     assert_eq!(body["interrupted"]["phase"], "unload");
+    assert_eq!(body["interrupted"]["gpu_unlock"], false);
+}
+
+#[tokio::test]
+async fn an_interrupted_update_says_whether_it_had_the_unlock() {
+    let (app, cookie) = setup().await;
+    let id = "20260928T101530Z-3f9a0c12";
+    let mut state = write_state(&app.host, id, Status::Interrupted, Some(Phase::Write));
+    state.plan.as_mut().unwrap().gpu_unlock_targets = vec!["0000:01:00.0".into()];
+    let paths = truenas_nvidia_driver_manager::store::Paths::new(CONTAINER_DATA_DIR);
+    truenas_nvidia_driver_manager::task_state::write(&app.host, &paths, &state).unwrap();
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert_eq!(body["interrupted"]["gpu_unlock"], true);
 }
 
 #[tokio::test]
@@ -505,4 +518,232 @@ async fn a_failed_canonical_listing_keeps_the_exit_code() {
         body["canonical"]["version"]["unknown"],
         serde_json::json!({"key": REASON_EXIT_STATUS, "params": {"code": 1}})
     );
+}
+
+const UNLOCK_RULE: &str = "softdep nvidia pre: vfio-pci gpu_unlock\noptions gpu_unlock targets=0000:01:00.0,0000:02:00.0\n";
+const RULE_PATH: &str = "/usr/lib/modprobe.d/gpu-unlock.conf";
+const JOURNAL: [&str; 5] = ["-k", "-b", "-o", "cat", "--no-pager"];
+
+#[tokio::test]
+async fn without_a_merged_rule_the_unlock_reading_is_null() {
+    let (app, cookie) = setup().await;
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert!(body["gpu_unlock"].is_null(), "{body}");
+    assert_eq!(app.host.count("journalctl"), 0);
+}
+
+#[tokio::test]
+async fn a_merged_rule_gives_each_target_its_result() {
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    app.host.put_text(
+        "/sys/module/gpu_unlock/parameters/targets",
+        "0000:01:00.0,0000:02:00.0\n",
+    );
+    app.host.preset(
+        "journalctl",
+        &JOURNAL,
+        FakeOutput::stdout(
+            "pci 0000:01:00.0: gpu_unlock: unlocked\npci 0000:02:00.0: gpu_unlock: unlock failed (-16)\nother\n",
+        ),
+    );
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    let cards = &body["gpu_unlock"]["value"]["cards"];
+    assert_eq!(cards[0]["address"], "0000:01:00.0", "{body}");
+    assert_eq!(cards[0]["result"], "unlocked", "{body}");
+    assert!(cards[0]["line"].is_null());
+    assert_eq!(cards[1]["result"], "not_unlocked", "{body}");
+    assert_eq!(
+        cards[1]["line"],
+        "pci 0000:02:00.0: gpu_unlock: unlock failed (-16)"
+    );
+    assert_eq!(body["gpu_unlock"]["value"]["reloaded_after_boot"], false);
+    // journalctl itself keeps the matching lines and only the last of them.
+    let argv = app
+        .host
+        .argv_log()
+        .into_iter()
+        .find(|a| a[0] == "journalctl")
+        .unwrap();
+    assert_eq!(
+        argv,
+        [
+            "journalctl",
+            "-k",
+            "-b",
+            "-o",
+            "cat",
+            "--no-pager",
+            "-q",
+            "-n",
+            "100",
+            "--grep",
+            "gpu_unlock|power off first|firmware did not stop",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_boot_without_any_unlock_line_is_still_a_reading() {
+    // No line matches: journalctl exits 1 (and prints nothing with -q); the module is not loaded.
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    app.host.set_kernel_journal("NVRM: No NVIDIA GPU found.\n");
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    let cards = &body["gpu_unlock"]["value"]["cards"];
+    assert_eq!(cards[0]["result"], "not_unlocked", "{body}");
+    assert!(cards[0]["line"].is_null(), "{body}");
+}
+
+#[tokio::test]
+async fn an_update_before_the_reboot_waits_for_the_next_boot() {
+    // The update test-loaded the module without targets and this boot printed no unlock line.
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    app.host
+        .set_kernel_journal("NVRM: loading NVIDIA UNIX Open Kernel Module\n");
+    app.host
+        .put_text("/sys/module/gpu_unlock/parameters/targets", "(null)\n");
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    let cards = &body["gpu_unlock"]["value"]["cards"];
+    assert_eq!(cards[0]["result"], "next_boot", "{body}");
+    assert_eq!(cards[1]["result"], "next_boot", "{body}");
+}
+
+#[tokio::test]
+async fn a_module_without_targets_waits_for_the_next_boot() {
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    app.host
+        .put_text("/sys/module/gpu_unlock/parameters/targets", "(null)\n");
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    let cards = &body["gpu_unlock"]["value"]["cards"];
+    assert_eq!(cards[0]["result"], "next_boot", "{body}");
+    assert_eq!(cards[1]["result"], "next_boot", "{body}");
+}
+
+#[tokio::test]
+async fn an_unreadable_targets_parameter_makes_the_unlock_reading_unknown() {
+    // A loaded module whose parameter cannot be read is not "not loaded": the reading is
+    // unknown, while an absent parameter still means the module is not loaded.
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    app.host
+        .put_text("/sys/module/gpu_unlock/parameters/targets", "(null)\n");
+    app.host
+        .fail_read("/sys/module/gpu_unlock/parameters/targets");
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert_eq!(
+        body["gpu_unlock"]["unknown"]["key"], REASON_PERMISSION_DENIED,
+        "{body}"
+    );
+    assert_eq!(body["loaded_version"]["value"], "580.173.02", "{body}");
+}
+
+#[tokio::test]
+async fn a_failing_journal_makes_only_the_unlock_reading_unknown() {
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    app.host.preset(
+        "journalctl",
+        &JOURNAL,
+        FakeOutput::code(1).with_stderr("Failed to open journal"),
+    );
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert_eq!(
+        body["gpu_unlock"]["unknown"]["key"], REASON_EXIT_STATUS,
+        "{body}"
+    );
+    assert_eq!(body["loaded_version"]["value"], "580.173.02", "{body}");
+}
+
+#[tokio::test]
+async fn a_task_that_finished_after_the_boot_is_flagged() {
+    for (btime, expected) in [("1789999999", true), ("1790000100", false)] {
+        let (app, cookie) = setup().await;
+        app.host.put_text(RULE_PATH, UNLOCK_RULE);
+        app.host.put_file(
+            "/proc/stat",
+            format!("cpu 1 2\nbtime {btime}\n").into_bytes(),
+        );
+        let mut task = write_state(
+            &app.host,
+            "20260928T101530Z-3f9a0c12",
+            Status::Failed,
+            Some(Phase::Check),
+        );
+        task.created_at = 1_789_000_000_000;
+        task.finished_at = Some(1_790_000_000_000);
+        truenas_nvidia_driver_manager::task_state::write(
+            &app.host,
+            &truenas_nvidia_driver_manager::store::Paths::new(CONTAINER_DATA_DIR),
+            &task,
+        )
+        .unwrap();
+        let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+        assert_eq!(
+            body["gpu_unlock"]["value"]["reloaded_after_boot"], expected,
+            "{body}"
+        );
+    }
+}
+
+fn write_task(app: &TestApp, status: Status) {
+    let mut task = write_state(
+        &app.host,
+        "20260928T101530Z-3f9a0c12",
+        status,
+        Some(Phase::Check),
+    );
+    task.created_at = 1_789_000_000_000;
+    task.finished_at = (status != Status::Running).then_some(1_790_000_000_000);
+    truenas_nvidia_driver_manager::task_state::write(
+        &app.host,
+        &truenas_nvidia_driver_manager::store::Paths::new(CONTAINER_DATA_DIR),
+        &task,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_reload_after_boot_needs_a_boot_time_and_a_finished_task() {
+    // No boot time.
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    write_task(&app, Status::Failed);
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert_eq!(
+        body["gpu_unlock"]["value"]["reloaded_after_boot"], false,
+        "{body}"
+    );
+    // A boot time, but no task, and then a task that is still running.
+    let (app, cookie) = setup().await;
+    app.host.put_text(RULE_PATH, UNLOCK_RULE);
+    app.host
+        .put_file("/proc/stat", b"btime 1700000000\n".to_vec());
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert_eq!(
+        body["gpu_unlock"]["value"]["reloaded_after_boot"], false,
+        "{body}"
+    );
+    write_task(&app, Status::Running);
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert_eq!(
+        body["gpu_unlock"]["value"]["reloaded_after_boot"], false,
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_rule_without_its_options_line_is_unknown_and_the_rest_stays_readable() {
+    let (app, cookie) = setup().await;
+    app.host
+        .put_text(RULE_PATH, "softdep nvidia pre: vfio-pci gpu_unlock\n");
+    let (_, body) = get(&app, "/api/home", Some(&cookie)).await;
+    assert_eq!(
+        body["gpu_unlock"]["unknown"]["key"], REASON_FORMAT_UNRECOGNIZED,
+        "{body}"
+    );
+    assert_eq!(body["loaded_version"]["value"], "580.173.02", "{body}");
+    assert_eq!(body["kernel"]["value"], KERNEL, "{body}");
 }

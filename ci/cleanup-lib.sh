@@ -191,3 +191,64 @@ nvm_image_remove() { # nvm_image_remove <tag>
     echo "cleanup-lib: image ${tag} still exists after docker image rm (rc=${rm_rc}): ${out}" >&2
     return 1
 }
+
+# Leftovers of earlier runs: nvmct-* containers, volumes and networks older than
+# six hours. Listings and inspects must succeed (a failed query stops the run);
+# running containers, and every resource of a Compose project that still has a
+# running or recent container, are kept, so concurrent runs are untouched.
+nvm_stale_ls() { # nvm_stale_ls <container|volume|network>
+    case "$1" in
+        container) docker ps -aq --no-trunc ;;
+        volume) docker volume ls -q --filter name=nvmct- ;;
+        network) docker network ls -q --no-trunc --filter name=nvmct- ;;
+    esac
+}
+
+nvm_stale_old() { # nvm_stale_old <iso-time>: 0 older than 6h, 1 newer, 2 unreadable
+    node -e 'const t = Date.parse(process.argv[1]);
+        process.exit(isNaN(t) ? 2 : t < Date.now() - 216e5 ? 0 : 1)' "$1"
+}
+
+nvm_stale_cleanup() {
+    local label='{{index .Labels "com.docker.compose.project"}}' fmt kind id row ids
+    local name created state project old owned protected=" " removed=0 cands=() cand
+    for kind in container volume network; do
+        fmt="{{.Name}} {{json .Created}} - ${label}"
+        [ "${kind}" = volume ] && fmt="{{.Name}} {{json .CreatedAt}} - ${label}"
+        [ "${kind}" = container ] && fmt='{{.Name}} {{json .Created}} {{.State.Status}} {{index .Config.Labels "com.docker.compose.project"}}'
+        ids="$(nvm_stale_ls "${kind}")" || { echo "stale cleanup: ${kind} ls failed" >&2; return 1; }
+        for id in ${ids}; do
+            if ! row="$(docker "${kind}" inspect -f "${fmt}" "${id}" 2>/dev/null)"; then
+                # Concurrent jobs remove resources; only a clean listing proves it.
+                nvm_listing_absent "${id}" nvm_stale_ls "${kind}" && continue
+                echo "stale cleanup: ${kind} inspect ${id} failed" >&2; return 1
+            fi
+            read -r name created state project <<<"${row}"
+            name="${name#/}"; created="${created//\"/}"
+            owned=0; case "${name}" in nvmct-*) owned=1 ;; esac
+            [ "${kind}" = container ] || [ "${owned}" -eq 1 ] || continue
+            old=0; nvm_stale_old "${created}" || old=$?
+            if [ "${old}" -eq 2 ] && [ "${owned}" -eq 1 ]; then
+                echo "stale cleanup: ${kind} ${name} has an unreadable timestamp" >&2; return 1
+            fi
+            case "${state}" in created|exited|dead|-) state=idle ;; *) state=busy ;; esac
+            if [ "${kind}" = container ] && [ -n "${project}" ] \
+                && { [ "${state}" = busy ] || [ "${old}" -ne 0 ]; }; then
+                protected+="${project} "
+            fi
+            if [ "${owned}" -eq 1 ] && [ "${old}" -eq 0 ] && [ "${state}" = idle ]; then
+                cands+=("${kind} ${id} ${project}")
+            fi
+        done
+    done
+    for cand in ${cands[@]+"${cands[@]}"}; do
+        read -r kind id project <<<"${cand}"
+        [ -z "${project}" ] || case "${protected}" in *" ${project} "*) continue ;; esac
+        # No force: a container that started after the inspect makes rm fail.
+        docker "${kind}" rm "${id}" >/dev/null 2>&1 || true
+        nvm_listing_absent "${id}" nvm_stale_ls "${kind}" \
+            || { echo "stale cleanup: ${kind} ${id} was not removed" >&2; return 1; }
+        removed=$((removed + 1))
+    done
+    echo "stale cleanup: removed ${removed}"
+}

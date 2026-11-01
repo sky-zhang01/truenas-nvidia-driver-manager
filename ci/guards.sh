@@ -26,6 +26,35 @@ if [ -s "${work}/attributes" ]; then
     exit 1
 fi
 
+# Agent instruction files and directories never belong in the repository. Only
+# tracked paths count: documentation may name an agent's skills directory. The
+# names are assembled so this script is not a hit itself.
+agent_files='((CLAU''DE|AGENTS?|GEMINI|CO''DEX|GR''OK|QW''EN)\.md|copi''lot-instructions\.md|\.cur''sorrules|\.cline''rules)'
+agent_dirs='\.(clau''de|agents|co''dex|cur''sor|gem''ini|wind''surf|cline''rules)'
+agent_paths="(^|/)(${agent_files}$|${agent_dirs}/)"
+rc=0
+# -z keeps raw paths: the default output quotes and escapes non-ASCII and tabs.
+git ls-files -z >"${work}/tracked.z" || rc=$?
+if [ "${rc}" -ne 0 ]; then
+    echo "guards: ls-files failed (rc=${rc})" >&2
+    exit 1
+fi
+tr '\0' '\n' <"${work}/tracked.z" >"${work}/tracked"
+rc=0
+grep -iE "${agent_paths}" "${work}/tracked" >"${work}/agent-paths" || rc=$?
+case "${rc}" in
+    0)
+        echo "guards: tracked agent instruction files found:" >&2
+        cat "${work}/agent-paths" >&2
+        exit 1
+        ;;
+    1) echo "OK: no agent instruction files tracked" ;;
+    *)
+        echo "guards: agent path scan failed (rc=${rc})" >&2
+        exit 1
+        ;;
+esac
+
 # A positive tracked-file control prevents a broken scan returning only
 # 'no match' from turning a skipped worktree into a pass.
 git grep -qaF 'name = "truenas-nvidia-driver-manager"' -- Cargo.toml || {

@@ -32,6 +32,7 @@ fn archive_ctx(host: &FakeHost) -> RunCtx {
         build_timeout_minutes: 30,
         gpus: Vec::new(),
         kernel_module_type: None,
+        gpu_unlock_targets: Vec::new(),
     };
     let ctx = RunCtx {
         host: Arc::new(host.clone()),

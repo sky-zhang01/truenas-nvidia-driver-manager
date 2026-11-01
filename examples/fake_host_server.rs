@@ -41,6 +41,7 @@ use truenas_nvidia_driver_manager::web::{load_static_files, router, StaticFiles}
 
 const INDEX: &str = r#"<a href="615.71.09/">615.71.09</a>
 <a href="610.57.04/">610.57.04</a>
+<a href="610.43.03/">610.43.03</a>
 <a href="595.104.02/">595.104.02</a>
 <a href="590.48.01/">590.48.01</a>
 <a href="580.178.04/">580.178.04</a>
@@ -159,7 +160,10 @@ fn prime_common(host: &FakeHost) {
 }
 
 fn prepare(host: &FakeHost, scenario: &str) {
-    host.set_dpkg_fixture_content(matches!(scenario, "upload_files" | "upload_rejected"));
+    host.set_dpkg_fixture_content(matches!(
+        scenario,
+        "upload_files" | "upload_rejected" | "gpu_unlock" | "gpu_unlock_rtx20" | "gpu_unlock_rtx50"
+    ));
     host.remove("/var/lib/nvm/manager/secrets/web-credentials.json");
     // apply_reset wipes /run; every scene except no_link gets the link back.
     if scenario != "no_link" {
@@ -233,6 +237,31 @@ fn prepare(host: &FakeHost, scenario: &str) {
             host.add_gpu("0000:01:00.0", 0x1b80, Some("nvidia"));
             host.add_gpu("0000:02:00.0", 0x2b85, None);
         }
+        "gpu_unlock" => {
+            // An RTX 30 card (stable) and an RTX 40 card (experimental); the merged image carries
+            // the rule, and this boot unlocked the first card and found the second one not cold.
+            host.add_gpu("0000:01:00.0", 0x2504, Some("nvidia"));
+            host.add_gpu("0000:02:00.0", 0x2684, Some("nvidia"));
+            host.put_text(
+                "/usr/lib/modprobe.d/gpu-unlock.conf",
+                "softdep nvidia pre: vfio-pci gpu_unlock\noptions gpu_unlock targets=0000:01:00.0,0000:02:00.0\n",
+            );
+            host.put_text(
+                "/sys/module/gpu_unlock/parameters/targets",
+                "0000:01:00.0,0000:02:00.0\n",
+            );
+            host.set_kernel_journal(
+                "pci 0000:01:00.0: gpu_unlock: unlocked\nnvidia 0000:02:00.0: power off first\n",
+            );
+        }
+        "gpu_unlock_rtx20" => {
+            // One RTX 2080 Ti (RTX 20 series, experimental).
+            host.add_gpu("0000:01:00.0", 0x1e07, Some("nvidia"));
+        }
+        "gpu_unlock_rtx50" => {
+            // One RTX 5090 (RTX 50 series, not supported).
+            host.add_gpu("0000:01:00.0", 0x2b85, Some("nvidia"));
+        }
         "mixed_1b07_2684" => {
             host.add_gpu("0000:01:00.0", 0x1b07, Some("nvidia"));
             host.add_gpu("0000:02:00.0", 0x2684, Some("nvidia"));
@@ -287,6 +316,7 @@ fn prepare(host: &FakeHost, scenario: &str) {
                     build_timeout_minutes: 30,
                     gpus: Vec::new(),
                     kernel_module_type: None,
+                    gpu_unlock_targets: Vec::new(),
                 },
                 Phase::Check,
             );
@@ -308,6 +338,7 @@ fn prepare(host: &FakeHost, scenario: &str) {
                 expected: version.into(),
                 version_ok: true,
                 passed: true,
+                load_order: None,
             });
             task.validate().expect("valid README success fixture");
             let paths = Paths::new(HOST_DATA_DIR);
@@ -355,6 +386,7 @@ fn prepare(host: &FakeHost, scenario: &str) {
                     build_timeout_minutes: 30,
                     gpus: Vec::new(),
                     kernel_module_type: None,
+                    gpu_unlock_targets: Vec::new(),
                 },
                 truenas_nvidia_driver_manager::task_state::Phase::Download,
             );
@@ -638,9 +670,12 @@ fn apply_reset(host: &FakeHost) -> Result<(), String> {
         "/sys/bus/pci/devices".to_string(),
         "/sys/class/drm".to_string(),
         "/run/extensions/nvidia.raw".to_string(),
+        "/usr/lib/modprobe.d/gpu-unlock.conf".to_string(),
+        "/sys/module/gpu_unlock".to_string(),
     ] {
         host.remove_tree(&path);
     }
+    host.set_kernel_journal("");
     host.mkdir(&format!("{HOST_DATA_DIR}/manager/secrets"));
     host.mkdir(&format!("{HOST_DATA_DIR}/manager/state"));
     host.mkdir(&format!("{HOST_DATA_DIR}/manager/tasks"));

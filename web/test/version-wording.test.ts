@@ -24,11 +24,11 @@ test("GPU rejection has a version headline only when it has per-card details", (
     return box.textContent;
   };
   const gpus = [{ device: "2b85", name: "RTX 5090", first_branch: 570, usable_from_branch: 580 }];
-  assert.equal(render({ version: "550.163.01", gpus, conflict: false }), "错误下列显卡不支持版本 550.163.01。错误RTX 5090 从 580 驱动起支持。");
+  assert.equal(render({ version: "550.163.01", gpus, conflict: false }), "错误下列显卡不支持版本 550.163.01。错误RTX 5090 要用 580 或更新的驱动。");
   assert.equal(render({ version: "550.163.01", gpus: [], conflict: false }), "");
   assert.equal(render({ version: "550.163.01", gpus: [{ device: "2b85", usable_from_branch: null }], conflict: false }), "");
-  assert.equal(render({ version: "590.48.01", gpus: [{ device: "1b80", name: "GTX 1080", last_branch: 580, usable_from_branch: 470 }], conflict: false }), "错误下列显卡不支持版本 590.48.01。错误GTX 1080 最高支持 580 驱动。");
-  assert.equal(render({ gpus, conflict: false }), "错误RTX 5090 从 580 驱动起支持。");
+  assert.equal(render({ version: "590.48.01", gpus: [{ device: "1b80", name: "GTX 1080", last_branch: 580, usable_from_branch: 470 }], conflict: false }), "错误下列显卡不支持版本 590.48.01。错误GTX 1080 最高只能用 580 驱动。");
+  assert.equal(render({ gpus, conflict: false }), "错误RTX 5090 要用 580 或更新的驱动。");
 });
 
 for (const lang of ["zh", "en"] as const) {

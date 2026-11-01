@@ -57,6 +57,8 @@ jq . "$WORK/home.json" "$WORK/versions.json" "$WORK/drivers.json" "$WORK/tasks.j
 
 从 home 读取 `.loaded_version`、`.kernel`、`.truenas_version`、`.original_saved`、`.active_task`、`.interrupted` 和 `.update_blocked`。home 的显卡地址在 `.gpus.value.devices[].address`，读取数组前检查 `.gpus.unknown`；versions 则是平铺的 `.gpus[].address` 数组，另含 `.items`；drivers 包含 `.rows`。读数可能是 `.value`、`.not_loaded` 或带稳定 `.key`/`.params` 的 `.unknown`；未知不等于零、false 或成功。存在活动任务或任务状态不可读时先读任务详情，不发起替换，不绕过初始化或主机恢复阻断。
 
+可选的显卡全速解锁出现在三处。versions 用 `.gpus[].gpu_unlock` 标出每块支持解锁的显卡，值为 `stable`（稳定）或 `experimental`（实验性）；不支持的显卡没有这个键。支持范围按系列：RTX 30 稳定，RTX 40 和 RTX 20 实验性，RTX 50 不支持；每块卡能否解锁由服务端按 PCI 设备 ID 判断。drivers 的每一行有 `.gpu_unlock_targets`，是该行镜像会解锁的 PCI 地址数组：没有解锁时为空数组，该行记录无法读取时为 `null`。home 有 `.gpu_unlock`，只读，反映当前合并的镜像：没有解锁规则时为 `null`，无法读取时是 `.unknown` 读数，否则 `.value` 里有 `reloaded_after_boot` 和 `cards` 列表，每个目标一项（`address`、`result`，以及未解锁的卡在有内核日志时附带的 `line`）。`result` 为 `unlocked`（已解锁）、`not_cold`（需要断电后重新开机。请先关机，切断电源，再开机）、`next_boot`（解锁已装好，下次开机生效）或 `not_unlocked`（没有解锁）。`.interrupted` 有值时，其中的 `.gpu_unlock` 为 true 表示被中断的更新带解锁；此时系统里可能还留着一个什么都不做的解锁组件。下次开机会消失。
+
 ## 2. 生成所请求的计划
 
 官方来源可以使用 NVIDIA 官网目录中的任意版本，从 versions 的 `.gpus[].address` 选择目标显卡。保持请求的版本和显卡选择；服务端会核验官网目录、来源支持情况与当前主机事实。
@@ -85,6 +87,8 @@ jq . "$WORK/plan.json"
 
 使用管理员已暂存的文件时，先读 `GET /api/uploads/current`，把当前 `.group_id` 放入同一计划接口：`{"source":{"kind":"upload","group_id":"<current-group-id>","version":"<selected-upload-version>","gpus":["<gpu-address>"]}}`。本文不介绍上传文件的流程。请求解析允许省略 `version`，但计划校验要求提供：`.run.candidates` 非空时必须准确选其中一个值；为空时由管理员提供格式有效的实际驱动版本，不能从官方列表猜测。必需文件不齐、包版本不一致或 toolkit 不适用都会阻断。显卡地址必须唯一且仍属于当前主机，并排除绑定到 `vfio-pci` 的直通显卡；只有排除后没有显卡时才可传空列表。上传来源会拒绝所选显卡互相冲突，官方来源还会核验发行版本是否支持各显卡。本地来源只传 `row_id`，不传显卡列表。
 
+解锁默认关闭，只有管理员提出要求时才开。官方或上传来源，仅在管理员要求时才在 source 对象里加 `"gpu_unlock":true`，默认是 false。它只适用于 610.43.03 驱动，并且所选显卡里至少有一块带 `.gpus[].gpu_unlock`；否则计划请求会被拒绝，返回 HTTP 422 `plan.source_invalid.gpu_unlock_unsupported`。解锁目标由服务端决定：所选显卡中支持解锁的那些。本地来源不能带 `gpu_unlock`（带了请求会被拒绝），它沿用该行记录的解锁，见 `.gpu_unlock_targets`。
+
 只运行符合请求的来源代码块。若 `.result` 为 `blocked`，报告 `.failures` 和 `.gpu`，包括 `.gpu.users` 中使用者的名字与类型、不可读原因和 `.gpu.errors`。只有管理员明确确认后，才能按其自己的 TrueNAS 操作方式停止这些应用；本工具不负责停应用。确认替换驱动不自动包含停应用的授权。条件改变后重新生成计划。若 `.result` 为 `uncomputable`，先报告 `.items` 并解决不可读事实。只有 `ready` 才能进入确认。
 
 ## 3. 原样转述计划，获得确认后提交
@@ -100,8 +104,15 @@ jq . "$WORK/plan.json"
 | `confirm.how.local` | 使用已有的本地驱动，不下载也不构建。 |
 | `confirm.upload_trust` | 上传的安装包将在本机构建并加载进内核，程序不验证 NVIDIA 签名。 |
 | `confirm.community_patch` | 此驱动使用 Debian 社区兼容补丁：不支持用户 I/O 内存映射，显示热插拔行为可能不同，启用 IBT 的系统上无法加载。Kepler 上的加载、显示及 CUDA 工作负载尚未验证。 |
+| `confirm.gpu_unlock` | 显卡全速解锁：UNKNOWN，下次开机生效 |
+| `confirm.gpu_unlock_download` | 开启显卡全速解锁时，要从 NVIDIA 官网下载一个约 340 MB 的文件。第一次大约要几分钟。之后不用再下载。 |
+| `confirm.gpu_unlock_notice` | 下次开机才会解锁，而且是在驱动启动之前。解锁组件如果装不上，或者跳过某块显卡，驱动仍会照常启用。某块显卡的解锁如果做到一半失败，那块显卡可能要先关机、切断电源、再开机，才能使用。主页会写明。 |
+| `confirm.gpu_unlock_experimental` | UNKNOWN 系列的解锁仍在试验阶段，可能不稳定。 |
+| `confirm.gpu_unlock_unavailable` | UNKNOWN 现在不是这台电脑上可解锁的显卡。它可能已经不在这台电脑上，也可能已经交给虚拟机。这块显卡不会解锁。 |
 | `confirm.original.unsavable` | 无法从正式路径上的驱动文件读取驱动版本和目标内核，因此不能保存为原版驱动。 |
 | `original.skip_warning` | 不保存时，本次更新失败将没有原版驱动可恢复。 |
+
+计划带解锁时，警告按以下顺序出现：`confirm.gpu_unlock`（参数 `targets` 是 PCI 地址，`models` 是型号名），然后是适用时的 `confirm.gpu_unlock_download` 或 `confirm.gpu_unlock_unavailable`，再是 `confirm.gpu_unlock_notice`，最后是目标中每个实验性系列各一条 `confirm.gpu_unlock_experimental`（参数 `series`，如 `RTX 40`），RTX 40 在 RTX 20 之前。解锁在下次开机生效，显卡可能要完全断电后才能解锁：智能体不得自行重启或关闭主机。
 
 让管理员确认这份准确计划及保存选择；确认前不得提交。新生成或已改变的计划必须重新确认。`start` 表示原版已经保存，`save` 表示先保存再替换，`skip` 表示不保存直接替换。不能因无法保存而自行选择 `skip`，必须明确说明风险并获得管理员接受。只使用 `.dialog.confirmation.buttons` 中 `.enabled` 为 true 的按钮。
 
@@ -165,7 +176,9 @@ else
 fi
 ```
 
-按任务 `.status` 报告结果，并附实际证据。`.checks` 是数组：请求的替换按 `.checks[] | select(.pass == "update")` 选取，恢复按 `.checks[] | select(.pass == "restore")` 选取；存在多条匹配记录时使用最后一条。所请求替换成功需要成功的 `update` 检查；恢复成功需要成功的 `restore` 检查。适用检查中的 `.passed`、`.refresh_ok`、`.version_ok` 必须为 true，`.since_before.value` 和 `.since_after.value` 必须可读且不同，`.nvidia_smi.value` 和 `.proc_version.value` 必须都等于 `.expected`。再核对预期版本是否等于已确认目标，恢复时是否等于原版版本。`since_before` 和 `since_after` 的值是 Unix epoch 微秒，换成秒时除以 1000000；刷新核对须比较原始值，不能比较显示时舍入的值。报告实际读数和 `.loaded_version_end`，不能只看 `SUCCEEDED` 或进度条。缺失或矛盾的读数不支持宣称已验证成功。还须检查 `.replace[].reloaded` 中的模块重载失败与提示；驱动检查通过不表示应用和其他模块已全部恢复。
+按任务 `.status` 报告结果，并附实际证据。`.checks` 是数组：请求的替换按 `.checks[] | select(.pass == "update")` 选取，恢复按 `.checks[] | select(.pass == "restore")` 选取；存在多条匹配记录时使用最后一条。所请求替换成功需要成功的 `update` 检查；恢复成功需要成功的 `restore` 检查。适用检查中的 `.passed`、`.refresh_ok`、`.version_ok` 必须为 true，`.since_before.value` 和 `.since_after.value` 必须可读且不同，`.nvidia_smi.value` 和 `.proc_version.value` 必须都等于 `.expected`。再核对预期版本是否等于已确认目标，恢复时是否等于原版版本。`since_before` 和 `since_after` 的值是 Unix epoch 微秒，换成秒时除以 1000000；刷新核对须比较原始值，不能比较显示时舍入的值。镜像带解锁规则的更新，其 `update` 检查还带 `.load_order`：`.vfio_pci_first` 计入 `.passed`；`.gpu_unlock_before_nvidia` 为 false 表示下次开机不会解锁，驱动仍可照常使用。报告实际读数和 `.loaded_version_end`，不能只看 `SUCCEEDED` 或进度条。缺失或矛盾的读数不支持宣称已验证成功。还须检查 `.replace[].reloaded` 中的模块重载失败与提示；驱动检查通过不表示应用和其他模块已全部恢复。
+
+带解锁的更新在 `.phase` 里多两个阶段：`unlock_firmware`（构建之前；本地行不构建，没有这一阶段）和 `unlock_preload`（构建之后、替换驱动文件之前；本地行是在卸载模块之前）。成功时 `.notice` 带 `unlock` 键，值是一条消息键：`notice.gpu_unlock_installed` 表示解锁在下次开机生效；`notice.gpu_unlock_not_effective` 表示解锁设置在这台电脑上没有生效（`.gpu_unlock_before_nvidia` 为 false），下次开机不会解锁，驱动仍可照常使用。`.vfio_pci_first` 为 false 时更新检查不通过，任务以 `STOCK_RESTORED` 结束。报告实际的 `.load_order` 读数和这条提示。显卡是否真的解锁，只能在下次开机后从 home 的 `.gpu_unlock` 读到。
 
 显卡使用者查询包含 Docker 应用与 Incus 实例：先用 `container.query` 内嵌的设备列表，仅在该接口不存在时回退 `virt.instance.*`；两者都不存在视为没有实例。任务详情字段 `.nvidia_smi_gpus` 为 `{value: [{name, pci_address}]}` 或 `{unknown: {key, params}}`，`null` 表示尚未记录诊断查询。它对应最后一次替换后检查，包括恢复检查。只把它作为诊断证据；显卡列表无法读取不否定已通过的驱动检查，也不触发恢复。
 
@@ -190,6 +203,7 @@ fi
 | `plan.source_invalid.branch_unbuildable` | `.params.version` 无法在本机构建；`.params.reasons` 列出原因键，`.params.from` 为同分支的替代版本或 `null`。解释返回参数，取得重新确认的替代方案。 |
 | `plan.source_invalid.version_not_official` | HTTP 422：NVIDIA 官网没有 `.params.version`。核对版本号后生成新计划并重新确认。 |
 | `plan.source_invalid.version_unconfirmed` | HTTP 409：无法确认 NVIDIA 官网是否有 `.params.version`；`.params.unreadable` 以 `{object: "catalog", reason, raw?}` 列出目录读取失败原因。解决读取失败后生成新计划并重新确认。 |
+| `plan.source_invalid.gpu_unlock_unsupported` | HTTP 422：为 610.43.03 以外的驱动版本要求了解锁，或所选显卡都不支持解锁。问管理员是否改为不带解锁继续；计划改变后需重新确认。 |
 | `branch.extra_cflags_removed` | 内核构建脚本不再支持此版本使用的 EXTRA_CFLAGS；选择可构建版本并重新确认计划。 |
 | `branch.fb_create_format_info` | 此版本的 `nvidia-drm` 源码与当前内核头文件不匹配（例如 `fb_create` 多了一个 `drm_format_info` 参数）；选择可构建版本并重新确认计划。 |
 | `branch.follow_pfn_removed` | 内核已移除此版本驱动源码调用的函数 `follow_pfn()`；选择可构建版本并重新确认计划。 |
@@ -200,6 +214,7 @@ fi
 | `branch.nvidia_drm_not_loaded` | 主机未加载 `nvidia_drm` 模块，此版本的安装程序装完后要加载它，构建容器不允许；选择可构建版本并重新确认计划。 |
 | `SAVE_ORIGINAL_FAILED` | 保存原版失败；核对原因，不自动改成跳过保存。 |
 | `DOWNLOAD_FAILED` / `BUILD_FAILED` / `BUILD_TIMEOUT` | 下载、构建失败或超时；读取嵌套原因与输出，解决后重新确认重试。 |
+| `BUILD_FAILED`，原因为 `gpu_unlock_installer_unusable` 或 `gpu_unlock_module_rejected` | 仅限解锁。安装包给不出固定的固件文件，或试装时这台电脑拒绝装上解锁组件。驱动文件没有被替换。报告原因，未经管理员同意不要用同一个安装包重试。 |
 | `GPU_IN_USE` / `MODULE_UNLOAD_REFUSED` | 显卡被使用或模块无法卸载；报告实际使用者，停应用另需确认。 |
 | `WRITE_FAILED` / `REPLACE_DEADLINE_EXCEEDED` | 写入失败或替换超时；先读状态和恢复检查，再决定下一步。 |
 | `RESTORE_ABORTED` / `RESTORE_NOT_WRITTEN` / `RESTORE_CHECK_FAILED` / `NO_USABLE_ORIGINAL` | 恢复未完成或没有可用原版；报告恢复详情，由管理员核查主机，不能宣称已恢复或安全。 |

@@ -1,0 +1,11 @@
+# The upstream files the firmware generation follows, at the vendored commit. The scheduled
+# check (ci/gpu-unlock-upstream.sh) fails when one of them differs on upstream's default branch.
+# Columns: path, sha256 (tab-separated); the first two rows name the repository and the commit.
+repository	Zagitta/gpu-unlock
+commit	1fc6d628c49c7fba34ef3a2e7f758700d35ce890
+Makefile	b81778501f2402f0109e19d3f4d12b2fd1e0b05df114d843585ab063e2fd3b89
+firmware/fetch_artifacts.py	7a1da102cef582c12f0cf766af091340a615b9dd1b8840ab32581db27bb05574
+firmware/extract_gsp.py	90a71a1ab373c10b6d6671c3a0483afa3508608fa4118a6466a43b3a6b897f3f
+firmware/extract_boot_assets.py	d1d5ea73675ec376845aa5af9a87d026af0371af2a8dd10988d4426bd6dff321
+kernel/gpu_unlock/recipes.h	1abad67e9b38bafbe4c46dffa157aaafa984db24edd3a867de06676ffb72faef
+kernel/gpu_unlock/firmware_610.c	90e83ff478ef924dee0bec4c8e809e14cf0fe49f861936e0232c360164c98f41

@@ -42,6 +42,7 @@ fn record(kind: RowKind, version: &str, bytes: &[u8]) -> Record {
             truenas_version: TRUENAS_VERSION.into(),
         }),
         keep: (kind == RowKind::Original).then_some(false),
+        gpu_unlock_targets: Vec::new(),
     }
 }
 
