@@ -19,7 +19,7 @@ RUN cp web/index.html web/src/styles.css web/dist/ \
  && cp web/brand/*.svg web/dist/brand/
 
 # Rust static executable.
-FROM rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS rust
+FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS rust
 RUN rustup target add x86_64-unknown-linux-musl
 # Host execution requires a static executable; the dependency tree needs no C compiler.
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
