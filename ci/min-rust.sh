@@ -5,8 +5,8 @@
 #   check — cargo check of all targets plus the musl-target check (what pull
 #           requests run; it still type-checks the musl cfg paths without
 #           paying for codegen and linking)
-#   build — full build of all targets plus the musl release build (what main,
-#           tag, schedule and dispatch runs keep)
+#   build — full build of all targets plus the musl release build (what tag and
+#           dispatch runs keep)
 #
 # The version comes from Cargo.toml's rust-version key — the single source;
 # a missing, duplicated or malformed value fails.

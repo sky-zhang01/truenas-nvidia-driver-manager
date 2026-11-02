@@ -230,13 +230,13 @@ if (fs.existsSync(path.join(root, '.gitea/workflows/checks.yml'))) {
     for (const manager of managers) {
         const patterns = manager.managerFilePatterns.map(value => new RegExp(value.slice(1, -1)));
         const matches = new RegExp(manager.matchStrings[0].replace('(?<currentValue>', '('));
-        for (const file of ['checks.yml', 'release-tags.yml', 'scheduled.yml']) {
+        for (const file of ['checks.yml', 'release-tags.yml']) {
             const name = '.gitea/workflows/' + file;
             assert(patterns.some(pattern => pattern.test(name)), `${name} must receive pinned tool updates`);
             assert(matches.test(fs.readFileSync(path.join(root, name), 'utf8')), `${name} must expose its pinned tool version`);
         }
     }
-    for (const file of ['checks.yml', 'release-tags.yml', 'scheduled.yml', 'gpu-unlock.yml']) {
+    for (const file of ['checks.yml', 'release-tags.yml', 'gpu-unlock.yml']) {
         const name = '.gitea/workflows/' + file;
         const giteaVersion = workflowVersion(name, 'NODE_BOOTSTRAP_VERSION');
         assert.equal(githubVersion, giteaVersion, `${name} and GitHub Node versions must match`);

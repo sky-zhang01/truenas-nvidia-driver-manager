@@ -96,6 +96,47 @@ requireRule(merged?.includes('run: python3 .github/scripts/check_release_pr.py')
 requireRule(merged.includes('GH_TOKEN: ${{ github.token }}'), 'the PR gate uses the workflow token');
 requireRule(!/^        if:/m.test(merged), 'the merged PR gate must be unconditional');
 requireRule(release.indexOf(merged) < release.indexOf('      - name: log in to GHCR'), 'merged PR verification precedes registry credentials');
+// Event contract: each content is tested once, on its pull request.
+const trigger = source.split('\non:\n')[1]?.split(/^[a-z]/m)[0] || '';
+requireRule(!/schedule/.test(trigger) && !/\bcron\b/.test(source), 'no schedule trigger');
+requireRule(/^  push:\n    branches: \[main\]\n    tags: \["v\*"\]\n/m.test(trigger), 'push covers main and v* tags');
+requireRule(/^  pull_request:\n    branches: \[main\]\n/m.test(trigger) && /^  workflow_dispatch:\n/m.test(trigger), 'pull requests and manual runs stay');
+requireRule(!source.includes("'schedule'") && !source.includes('no-cache:'), 'no schedule-only logic remains');
+const notMain = "github.event_name != 'push' || github.ref != 'refs/heads/main'";
+const onMain = "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n";
+requireRule(job('changes').includes('    if: ' + notMain + '\n'), 'changes (and with it every suite job) skips pushes to main');
+requireRule(gate.includes('    if: always() && (' + notMain + ')\n'), 'gate skips pushes to main');
+for (const name of ['guards', 'controls', 'web', 'compose', 'rust', 'e2e', 'image', 'build-script', 'osv', 'public-leak']) {
+    requireRule(job(name).includes('    needs: changes\n'), name + ' must follow changes so pushes to main skip it');
+    requireRule(!/actions\/cache\/save|cache-to:/.test(job(name)), name + ' must not save caches');
+}
+requireRule(release.includes("    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')\n") && release.includes('    needs: gate\n'), 'tags still run the suite and the release');
+const upkeep = ['cache-rust', 'cache-e2e', 'cache-image'];
+for (const name of upkeep) {
+    const body = job(name);
+    requireRule(body?.includes(onMain), name + ' runs only on pushes to main');
+    requireRule(!/needs:/.test(body), name + ' stands alone');
+    requireRule(!/cargo fmt|cargo test --locked\n|playwright test|osv|gitleaks|ci\/container|ci\/image-assert/.test(body), name + ' must not run tests or scans');
+    requireRule(/actions\/cache\/save|cache-to:/.test(body), name + ' saves its caches');
+    for (const save of body.split(/(?=^      - (?:name:|uses:))/m).filter(value => /actions\/cache\/save/.test(value))) {
+        requireRule(/^        if: steps\.[a-z-]+\.outputs\.cache-hit != 'true'$/m.test(save), name + ' saves only on a miss');
+    }
+    for (const work of body.split(/(?=^      - (?:name:|uses:))/m).filter(value => /^        run:/m.test(value) && !/rustup|rustc -vV/.test(value))) {
+        requireRule(/^        if: steps\.[a-z-]+\.outputs\.cache-hit != 'true'$/m.test(work), name + ' works only on a miss');
+    }
+}
+// Upkeep restores with exactly the keys the pull request jobs restore.
+const keyOf = (body, id) => step(body, 'restore ' + id)?.match(/^          key: (.*)$/m)?.[1];
+const cargoKey = (name, body) => keyOf(body, 'Cargo registry and targets');
+requireRule(cargoKey('rust', job('rust')) && cargoKey('rust', job('rust')) === cargoKey('cache-rust', job('cache-rust')), 'rust cache key must match');
+requireRule(cargoKey('e2e', job('e2e')) && cargoKey('e2e', job('e2e')) === cargoKey('cache-e2e', job('cache-e2e')), 'e2e cache key must match');
+requireRule(keyOf(job('e2e'), 'Playwright browsers') && keyOf(job('e2e'), 'Playwright browsers') === keyOf(job('cache-e2e'), 'Playwright browsers'), 'browser cache key must match');
+const scopeOf = (body, tag) => body.match(new RegExp('^          ' + tag + ': (type=gha[^\\n]*scope=image-amd64-\\$\\{\\{[^\\n]*\\}\\})$', 'm'))?.[1];
+const imageHash = "hashFiles('Dockerfile', 'Cargo.toml', 'Cargo.lock', 'web/package-lock.json')";
+requireRule(scopeOf(job('image'), 'cache-from')?.includes(imageHash), 'image restores the scoped gha cache');
+requireRule(scopeOf(job('cache-image'), 'cache-from') === scopeOf(job('image'), 'cache-from'), 'image cache-from scope must match');
+requireRule(scopeOf(job('cache-image'), 'cache-to') === scopeOf(job('image'), 'cache-from').replace('type=gha,', 'type=gha,mode=max,'), 'image cache-to scope must match what the pull request restores');
+requireRule(job('cache-image').includes('image-amd64-${{ ' + imageHash + ' }}'), 'image upkeep exports under the content-hash scope');
 const dependabot = fs.readFileSync('.github/dependabot.yml', 'utf8');
 const docker = dependabot.split('  - package-ecosystem: docker\n')[1]?.split(/^  - /m)[0];
 requireRule(/      - dependency-name: node\n        update-types: \["version-update:semver-major"\]/.test(docker || ''), 'coordinate Node major upgrades across Docker and workflows');
