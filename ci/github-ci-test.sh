@@ -29,13 +29,13 @@ requireRule(leak.includes('actions/setup-node@949feb2413d6458794dcd2491c4babbbce
 const steps = leak.split(/(?=^      - (?:name:|uses:))/m);
 const index = command => steps.findIndex(step => step.includes(command));
 const install = index('bash ci/install-gitleaks.sh');
-const scan = index('bash ci/public-leak-check.sh');
-for (const command of ['bash ci/public-leak-check-test.sh', 'bash ci/install-gitleaks-test.sh', 'bash ci/github-ci-test.sh']) {
+const scan = index('gitleaks dir ');
+for (const command of ['bash ci/install-gitleaks-test.sh', 'bash ci/github-ci-test.sh']) {
     requireRule(index(command) >= 0 && index(command) < install, 'controls must precede installation');
 }
 requireRule(install >= 0 && scan > install, 'install the pinned scanner before scanning');
 requireRule(steps.every(step => !/^        if:/m.test(step)), 'public scan steps must not be conditional');
-requireRule(steps[scan].includes('--generic-only'), 'public scan must explicitly select generic rules');
+requireRule(steps[scan].includes('--config .gitleaks.toml'), 'public scan must use the repository scanner configuration');
 const body = steps[scan].split('        run: |\n')[1];
 requireRule(Boolean(body), 'public scan body is required');
 fs.writeFileSync(process.argv[2] + '/scan.sh', body.split('\n').map(line => line.replace(/^          /, '')).join('\n'));
@@ -284,8 +284,8 @@ if [ -f "${WORK}/scan.sh" ]; then
     cat >"${WORK}/inspect.js" <<'NODE'
 const fs = require('node:fs'), path = require('node:path');
 const args = process.argv.slice(2);
-if (args.length !== 4 || args[0] !== 'ci/public-leak-check.sh' || args[1] !== '--root' || args[3] !== '--generic-only') process.exit(2);
-const root = args[2], names = [];
+if (args.length !== 8 || args[0] !== 'dir' || args[2] !== '--config' || args[3] !== '.gitleaks.toml' || args[4] !== '--redact=100' || args[5] !== '--no-banner' || args[6] !== '--exit-code' || args[7] !== '1') process.exit(2);
+const root = args[1], names = [];
 function walk(dir, prefix = '') {
     for (const name of fs.readdirSync(dir)) {
         const rel = prefix + name, full = path.join(dir, name);
@@ -301,8 +301,8 @@ process.exit(Number(process.env.SCAN_CONTROL_RC || 0));
 NODE
     export SCAN_CONTROL_WORK="${WORK}" RUNNER_TEMP="${WORK}/runner"
     mkdir "${RUNNER_TEMP}"
-    bash() { node "${SCAN_CONTROL_WORK}/inspect.js" "$@"; }
-    export -f bash
+    gitleaks() { node "${SCAN_CONTROL_WORK}/inspect.js" "$@"; }
+    export -f gitleaks
     check 'scan body selects exactly HEAD files and committed bytes' /bin/bash "${WORK}/scan.sh"
     rc=0
     SCAN_CONTROL_RC=19 /bin/bash "${WORK}/scan.sh" || rc=$?

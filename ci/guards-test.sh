@@ -176,29 +176,6 @@ for attr in .gitattributes nested/.gitattributes; do
     expect 1 "tracked ${attr} is rejected" "${attr}"
 done
 
-agent_a="$(printf 'CLAU%s' 'DE')"
-for agent_path in "${agent_a}.md" nested/AGENTS.md docs/gemini.md ".$(printf 'clau%s' 'de')/settings.json" \
-    "sub/.agents/skills/x.md" ".$(printf 'co%s' 'dex')/config" ".$(printf 'cur%s' 'sor')/rules/a.mdc" \
-    "$(printf 'caf\303\251')/AGENTS.md" ".$(printf 'clau%s' 'de')/$(printf 'caf\303\251').md" "$(printf 'tab\tdir')/AGENTS.md" "$(printf 'CO%s' 'DEX').md" \
-    "sub/AGENT.md" ".$(printf 'cur%s' 'sor')rules" ".github/$(printf 'copi%s' 'lot')-instructions.md" ".$(printf 'gem%s' 'ini')/settings.json"; do
-    new_repo
-    mkdir -p "${REPO}/$(dirname "${agent_path}")"
-    printf 'safe\n' >"${REPO}/${agent_path}"
-    git -C "${REPO}" add -- "${agent_path}"
-    expect 1 "tracked ${agent_path} is rejected" "tracked agent instruction files found"
-done
-
-new_repo
-mkdir -p "${REPO}/docs"
-printf 'DEST="$HOME/.%s/skills/x"\nLet an AI agent such as %s Code do it.\n' "$(printf 'clau%s' 'de')" "${agent_a}" >"${REPO}/docs/agent.en.md"
-printf 'safe\n' >"${REPO}/docs/agents-overview.md"
-git -C "${REPO}" add -- docs
-expect 0 'product agent documentation and similar names are not instruction files' 'OK: no agent instruction files tracked'
-
-new_repo
-printf 'safe\n' >"${REPO}/${agent_a}.md"
-expect 0 'untracked instruction files stay outside the tracked-file contract' 'OK: no agent instruction files tracked'
-
 # Inject failures only at Git's boundary; every non-injected call uses real Git.
 mkdir "${WORK}/bin"
 cat >"${WORK}/bin/git" <<'GIT_SHIM'

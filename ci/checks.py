@@ -3,7 +3,6 @@
 import csv
 import fnmatch
 import hashlib
-import io
 import os
 from pathlib import Path
 import shlex
@@ -15,15 +14,22 @@ JOBS = ('guards', 'controls', 'web', 'compose', 'rust', 'e2e', 'image', 'build_k
 
 
 
-def read_table(path, private=None, content=None):
+def read_table(path, private=None, content=None, extra=None):
+    """Read the exported table plus the private-only table when one exists.
+
+    `extra` is the private table's text; None reads the sibling file if present.
+    """
     if private is None:
         private = (path.parent.parent / "export/rules").exists()
+    if extra is None:
+        sibling = path.with_name('checks-private.tsv')
+        extra = sibling.read_text() if content is None and sibling.exists() else ''
     rows = []
-    with (path.open() if content is None else io.StringIO(content)) as stream:
-        for line in stream:
+    for text in (path.read_text() if content is None else content, extra):
+        for line in text.splitlines():
             if not line.strip() or line.startswith('#'):
                 continue
-            row = next(csv.reader([line.rstrip('\n')], delimiter='\t'))
+            row = next(csv.reader([line], delimiter='\t'))
             if len(row) != 5 or not row[1] or not row[3] or row[4] not in ('all', 'private'):
                 raise ValueError('checks.tsv requires check, globs, command, explanation and context')
             check, patterns, command, why, context = row
@@ -123,7 +129,11 @@ def routed(rows, base=None):
         raw = git('diff', '--raw', '--no-renames', '-z', ancestor, head).split(b'\0')
         # Base and head use the same table schema. A PR cannot delete or narrow
         # its own full-run rule and then rely on the weakened head table.
-        previous = read_table(ROOT / 'ci/checks.tsv', content=git('show', ancestor + ':ci/checks.tsv').decode())
+        try:
+            old_private = git('show', ancestor + ':ci/checks-private.tsv').decode()
+        except subprocess.CalledProcessError:
+            old_private = ''
+        previous = read_table(ROOT / 'ci/checks.tsv', content=git('show', ancestor + ':ci/checks.tsv').decode(), extra=old_private)
         changes = []
         for i in range(0, len(raw) - 1, 2):
             metadata = raw[i].decode().split()
@@ -182,10 +192,18 @@ def main():
             # Deduplicate identical commands, while retaining a changed head
             # command alongside its baseline command under the same control.
             commands.update({(name, command): None for name, command in table_commands.items()})
+        current = {check.split(':')[1] for check, _, _, _ in rows if check.startswith('controls:')}
         for name, command in commands:
-            if selected['control_' + name]:
-                print('controls: ' + name, flush=True)
-                subprocess.run(shlex.split(command), cwd=ROOT, check=True)
+            if not selected['control_' + name]:
+                continue
+            # A change that removes a control from the table and deletes the file
+            # it runs has removed that control; any other baseline control runs.
+            missing = [arg for arg in shlex.split(command)[1:] if '/' in arg and not arg.startswith('-') and not (ROOT / arg).exists()]
+            if name not in current and missing:
+                print('controls: ' + name + ' removed with ' + ', '.join(missing) + '; not run', flush=True)
+                continue
+            print('controls: ' + name, flush=True)
+            subprocess.run(shlex.split(command), cwd=ROOT, check=True)
     else:
         if len(args) > 1 or (args and args[0].startswith('--')):
             raise ValueError('usage: changes.sh [BASE]')

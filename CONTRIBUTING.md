@@ -64,3 +64,13 @@ Do not deploy this privileged App just to run tests. For Compose changes, run
 `bash ci/check-compose-test.sh` (Docker Compose enables all rendered-config controls).
 Run `bash ci/guards.sh` for tracked-file coordinate checks; inspect new files yourself too.
 These checks do not replace reviewing logs and fixtures for sensitive data.
+
+## Writing the changelog
+
+Write `CHANGELOG.md` and `CHANGELOG.zh-CN.md` for the person who installs the app.
+
+- One bullet is one thing the user can see or must do. Put what the user must do first.
+- Use no abbreviations, hashes, check counts, stage names, retry intervals or API field names. Say plainly what has not been verified.
+- Write Chinese as Chinese, not as a word-for-word translation of the English.
+- Keep developer-only changes to one last bullet that points to `docs/agent.*`. The English section of a release is also its GitHub Release text, so it must read well on its own.
+- Sort the facts into "the user sees", "the user must do" and "developers only" first, then cut, and reword last.
