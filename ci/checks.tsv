@@ -12,11 +12,11 @@ compose	deploy/compose.yaml;README.md;README.zh-CN.md;ci/check-compose*;ci/check
 osv	Cargo.lock;web/package-lock.json;osv-scanner.toml;ci/osv-scan.sh;ci/job/osv.sh	-	Dependency scanner reads the two lockfiles and its own configuration.	all
 leak	ci/install-gitleaks*;ci/github-ci-test.sh	-	Secret scanner install and public workflow controls; all non-exempt paths additionally select leak.	all
 controls	ci/job/controls.sh	-	Changing the control runner exercises all registered controls.	all
-controls:changes	ci/checks.tsv;ci/checks.py;ci/changes.sh;ci/changes-test.sh;Dockerfile;web/tsconfig.json;ci/job/controls.sh	bash ci/changes-test.sh	Routing coverage and packaging-boundary controls.	all
+controls:changes	ci/checks.tsv;ci/changes.sh;ci/changes-test.sh;Dockerfile;web/tsconfig.json;ci/job/controls.sh	bash ci/changes-test.sh	Routing coverage and packaging-boundary controls.	all
 controls:gate	ci/gate.sh;ci/gate-test.sh;ci/job/controls.sh	bash ci/gate-test.sh	Strict result and skip controls.	all
 controls:download	tools/build-kit.sh;ci/osv-scan.sh;ci/download-test.sh;ci/test-lib.sh;ci/job/controls.sh	bash ci/download-test.sh	Pinned download behavior controls.	all
 controls:licenses	tools/third-party-licenses.py;tools/third-party-licenses-test.py;ci/job/controls.sh	python3 tools/third-party-licenses-test.py	Runtime license generator controls.	all
 controls:image_assert	ci/image-assert.py;ci/image-assert-test.sh;ci/test-lib.sh;ci/job/controls.sh	bash ci/image-assert-test.sh	Image filesystem assertion controls.	all
 controls:ghcr	.github/scripts/ghcr_release.py;.github/scripts/test_ghcr_release.py;ci/job/controls.sh	python3 -m unittest discover -s .github/scripts -p test_ghcr_release.py	Public registry policy controls.	all
 controls:github	ci/test-lib.sh;ci/job/osv.sh;ci/github-ci-test.sh;.github/dependabot.yml;.github/scripts/check_release_pr.py;.github/scripts/test_check_release_pr.py;Dockerfile;ci/job/controls.sh	bash ci/github-ci-test.sh	Public workflow and release-PR contracts.	all
-all	.github/workflows/**;ci/checks.tsv;ci/checks.py;ci/changes.sh;ci/gate.sh	-	Changes to orchestration or routing force every job; policy is fail-closed in checks.py.	all
+all	.github/workflows/**;ci/checks.tsv;ci/changes.sh;ci/gate.sh	-	Changes to orchestration or routing force every job; the fixed list in changes.sh is fail-closed.	all
