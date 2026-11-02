@@ -31,10 +31,7 @@ def case(path, expected, status='M'):
     passed += 1
 
 cases = [
- ('docs/operations.en.md', 'leak'), ('renovate.json', ''),
- ('docs/release.en.md', ''), ('tools/maintenance/local-gc.py', ''),
- ('tools/release/release.py', 'controls'), ('ci/release.sh', 'controls'),
- ('ci/nas-e2e/run.py', 'controls'), ('ci/runner/Dockerfile', ''),
+ ('docs/operations.en.md', 'leak'),
  ('README.md', 'compose leak'), ('README.zh-CN.md', 'compose leak'),
  ('docs/agent.en.md', 'web leak'), ('web/test/render.test.ts', 'web leak'),
  ('web/e2e/auth.spec.ts', 'e2e leak'), ('web/playwright.config.ts', 'e2e leak'),
@@ -56,37 +53,77 @@ cases = [
  ('deploy/compose.yaml', 'compose image leak'), ('osv-scanner.toml', 'osv leak'),
  ('ci/osv-scan.sh', 'controls osv leak'), ('ci/min-rust.sh', 'rust leak'),
  ('ci/e2e-state.sh', 'e2e leak'), ('ci/container/test.sh', 'image leak'),
- ('ci/build-script/test.sh', 'build_kit leak'), ('export/rules', 'controls leak'),
- ('ci/image-assert.py', 'controls image leak'), ('ci/post-merge.sh', 'controls leak'),
+ ('ci/build-script/test.sh', 'build_kit leak'),
+ ('ci/image-assert.py', 'controls image leak'),
  ('ci/job/web.sh', 'web leak'), ('ci/job/rust.sh', 'rust leak'),
  ('ci/job/controls.sh', 'controls leak'),
  ('ci/job/gpu-unlock.sh', 'leak'), ('ci/gpu-unlock-upstream.sh', 'leak'),
  ('third_party/gpu-unlock/UPSTREAM.tsv', 'rust image leak'),
 ]
+# Paths that exist only in the internal repository route through the private
+# table; the exported tree has neither the paths nor the table.
+private_file = root / 'ci/checks-private.tsv'
+if private_file.exists():
+    cases += [
+     ('renovate.json', ''), ('docs/release.en.md', ''), ('tools/maintenance/local-gc.py', ''),
+     ('tools/release/release.py', 'controls'), ('ci/release.sh', 'controls'),
+     ('ci/nas-e2e/run.py', 'controls'), ('ci/runner/Dockerfile', ''),
+     ('export/rules', 'controls leak'), ('ci/post-merge.sh', 'controls leak'),
+    ]
 for path, want in cases:
     case(path, want)
 all_jobs = set(checks.JOBS) - {'guards'}
 for path in ('ci/checks.tsv', 'ci/changes.sh', 'ci/gate.sh', 'ci/checks.py',
-             '.gitea/workflows/checks.yml', '.github/workflows/ci.yml',
-             'unregistered/file', 'ci/job/x.sh'):
+             '.github/workflows/ci.yml', 'unregistered/file', 'ci/job/x.sh'):
     case(path, ' '.join(sorted(all_jobs)))
-for status in ('A', 'D', 'R', 'T'):
-    case('tools/maintenance/local-gc.py', 'controls leak', status)
+if private_file.exists():
+    case('.gitea/workflows/checks.yml', ' '.join(sorted(all_jobs)))
+    # Adding, deleting, renaming or retyping an exempt path still selects leak.
+    for status in ('A', 'D', 'R', 'T'):
+        case('tools/maintenance/local-gc.py', 'controls leak', status)
+    probe(checks.select(rows, [('M', 'export/rules')])['control_release'])
 # A second path unions its inputs, and any path-set change enables leak.
-selected = checks.select(rows, [('M', 'tools/release/release.py'), ('M', 'web/test/render.test.ts')])
+selected = checks.select(rows, [('M', 'ci/gate-test.sh'), ('M', 'web/test/render.test.ts')])
 probe(selected['controls'] and selected['web'] and selected['leak'])
 # Even a head table with its rust row removed cannot judge its own table edit narrowly.
 weakened = [row for row in rows if row[0] != 'rust']
 probe(all((checks.select(weakened, [('M', 'ci/checks.tsv')])[key] for key in checks.JOBS)))
 probe(checks.select(rows, [('M', 'Dockerfile')])['control_changes'])
 probe(checks.select(rows, [('M', 'web/tsconfig.json')])['control_changes'])
-probe(checks.select(rows, [('M', 'export/rules')])['control_release'])
-probe(checks.select(rows, [('M', 'ci/release-readback.js')])['control_post_merge'])
-probe(checks.select(rows, [('M', 'ci/test-lib.sh')])['control_post_merge'])
+# The post-merge control is registered only in the private table.
+if 'control_post_merge' in checks.full(rows):
+    probe(checks.select(rows, [('M', 'ci/release-readback.js')])['control_post_merge'])
+    probe(checks.select(rows, [('M', 'ci/test-lib.sh')])['control_post_merge'])
 probe(checks.select(rows, [('M', 'ci/test-lib.sh')])['control_github'])
 checks.validate(checks.read_table(root / 'ci/checks.tsv'), checks.repository_paths(root))
 probes += 1
 print('PASS: every repository path registered and every glob matches')
+# The exported tree has no private table: it validates alone, without the
+# private-only paths and private-context rows.
+if private_file.exists():
+    private_rows = checks.read_table(root / 'ci/checks.tsv', private=True, extra=private_file.read_text())
+    only = [row for row in private_rows if row not in checks.read_table(root / 'ci/checks.tsv', private=True, extra='')]
+    probe(only and all(row[0] in ('', 'leak-skip', 'all', 'leak') or row[0].startswith('controls:') for row in only))
+    public_only_rows = checks.read_table(root / 'ci/checks.tsv', private=False, extra='')
+    private_paths = {path for path in checks.repository_paths(root)
+                     if any(checks.matches(path, row[1]) for row in only)
+                     and not any(checks.matches(path, row[1]) for row in public_only_rows)}
+    probe(private_paths)
+    public_rows = checks.read_table(root / 'ci/checks.tsv', private=False, extra='')
+    probe(private_paths and not any(checks.matches(path, row[1]) for path in private_paths for row in public_rows))
+    checks.validate(public_rows, [p for p in checks.repository_paths(root) if p not in private_paths])
+    for row in only:
+        if row[0] not in ('leak-skip', 'all'):
+            continue
+        for path in checks.repository_paths(root):
+            if not checks.matches(path, row[1]):
+                continue
+            got = checks.select(rows, [('M', path)])
+            if row[0] == 'leak-skip':
+                probe(not got['leak'], ('leak-skip edit selected leak', path))
+            else:
+                probe(all(got[key] for key in all_jobs), ('private all row did not force every job', path))
+    print('PASS: private table merges and the public table validates without it')
 # Validate the boundaries that justify web test-only routing.
 import json, shlex
 probe(json.loads((root / 'web/tsconfig.json').read_text())['include'] == ['src/**/*.ts'])
@@ -101,7 +138,7 @@ probe(web == [['COPY', '--from=web', '/build/web/dist/', '/usr/local/share/truen
 with tempfile.TemporaryDirectory() as work:
     work = pathlib.Path(work)
     fake = work/'git'
-    fake.write_text('#!/bin/sh\ncase "$1" in\nshow) cat "$TEST_ROOT/ci/checks.tsv";;\nrev-parse) printf "%s\\n" "$TEST_ROOT";;\nmerge-base) [ "$TEST_MODE" != bad-base ] || exit 1; printf "base\\n";;\ndiff) [ "$TEST_MODE" != bad-diff ] || exit 1; [ "$TEST_MODE" != empty ] || exit 0; printf ":100644 100644 a b M\\000docs/operations.en.md\\000";;\n*) exit 2;;\nesac\n')
+    fake.write_text('#!/bin/sh\ncase "$1" in\nshow) case "$2" in *private*) exit 128;; *) cat "$TEST_ROOT/ci/checks.tsv";; esac;;\nrev-parse) printf "%s\\n" "$TEST_ROOT";;\nmerge-base) [ "$TEST_MODE" != bad-base ] || exit 1; printf "base\\n";;\ndiff) [ "$TEST_MODE" != bad-diff ] || exit 1; [ "$TEST_MODE" != empty ] || exit 0; printf ":100644 100644 a b M\\000docs/operations.en.md\\000";;\n*) exit 2;;\nesac\n')
     fake.chmod(0o755)
     import os
     env = dict(os.environ, PATH=str(work)+os.pathsep+os.environ['PATH'], TEST_ROOT=str(root), GITHUB_EVENT_NAME='pull_request')
@@ -172,7 +209,7 @@ with tempfile.TemporaryDirectory() as directory:
     for name in ('checks.py','changes.sh'):
         (fixture/'ci'/name).write_bytes((root/'ci'/name).read_bytes())
     (fixture/'ci/checks.tsv').write_text(''.join(line for line in (root/'ci/checks.tsv').read_text().splitlines(keepends=True) if not line.startswith('all\t')))
-    (fixture/'git').write_text('#!/bin/sh\ncase "$1" in\nmerge-base) printf "base\\n";;\nshow) cat "$TEST_ROOT/ci/checks.tsv";;\ndiff) printf ":100644 100644 a b M\\000ci/checks.tsv\\000";;\n*) exit 2;;\nesac\n')
+    (fixture/'git').write_text('#!/bin/sh\ncase "$1" in\nmerge-base) printf "base\\n";;\nshow) case "$2" in *private*) exit 128;; *) cat "$TEST_ROOT/ci/checks.tsv";; esac;;\ndiff) printf ":100644 100644 a b M\\000ci/checks.tsv\\000";;\n*) exit 2;;\nesac\n')
     (fixture/'git').chmod(0o755)
     env=dict(os.environ,PATH=str(fixture)+os.pathsep+os.environ['PATH'],TEST_ROOT=str(root),GITHUB_EVENT_NAME='pull_request')
     for key in ('GITHUB_OUTPUT','CHANGES_SCOPE','CHANGES_BASE','CHANGES_HEAD'):
@@ -272,5 +309,22 @@ with tempfile.TemporaryDirectory() as directory:
     result=subprocess.run(['bash',str(fixture/'ci/changes.sh'),'--controls'],env=env,capture_output=True,text=True)
     probe(result.returncode != 0 and 'baseline-gate' in logfile.read_text().splitlines() and '17' in result.stderr, result)
     print('PASS: a retained baseline control failure rejects the controls run')
+    env.pop('CONTROL_FAIL')
+    # Removing a control means deleting both its row and the file it runs.
+    gate_test=(fixture/'ci/gate-test.sh').read_bytes()
+    (fixture/'ci/gate-test.sh').unlink()
+    removed=[line for line in baseline.splitlines(keepends=True) if not line.startswith(('controls:private\t','controls:gate\t'))]
+    (fixture/'ci/checks.tsv').write_text(''.join(removed))
+    logfile.write_text('')
+    result=subprocess.run(['bash',str(fixture/'ci/changes.sh'),'--controls'],env=env,capture_output=True,text=True)
+    probe(result.returncode == 0 and 'baseline-gate' not in logfile.read_text().splitlines()
+          and 'controls: gate removed with ci/gate-test.sh; not run' in result.stdout, result)
+    print('PASS: a control removed with its file is not run from the baseline')
+    kept=[line for line in baseline.splitlines(keepends=True) if not line.startswith('controls:private\t')]
+    (fixture/'ci/checks.tsv').write_text(''.join(kept))
+    result=subprocess.run(['bash',str(fixture/'ci/changes.sh'),'--controls'],env=env,capture_output=True,text=True)
+    probe(result.returncode != 0, result)
+    print('PASS: a registered control whose file is deleted fails')
+    (fixture/'ci/gate-test.sh').write_bytes(gate_test)
 print(f'changes-test: {passed} routing cases and {probes} assertions/validation probes passed')
 PY

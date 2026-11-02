@@ -2,6 +2,51 @@
 
 [简体中文](operations.zh-CN.md)
 
+## Updating a driver, step by step
+
+The short version is in the [README](../README.md#update-your-driver). This section has the details behind each step.
+
+**1. Choose GPUs and a driver.**
+
+1. Open Update driver in the menu on the left (at the bottom on a narrow screen). With more than one NVIDIA GPU, tick the GPUs that will use the driver.
+2. Open the "Official NVIDIA versions" list and pick a version. It shows the newest version of each driver series that builds on this host. For another version, choose the last item, "Other version…", and type the version number. Versions that NVIDIA's website does not have are refused before the update starts.
+3. If you are unsure, open "NVIDIA website ↗", find "Latest Production Branch", and pick that version here if it is listed.
+4. Click Check and continue.
+
+For offline use or your own files, choose Upload files manually… (see [Manual uploads](#manual-uploads-and-returning-from-confirmation)). The manager can take a driver from three places: the official NVIDIA list (the host downloads it), files you upload, or a local driver it saved before (no download).
+
+<img src="images/update-en.png" width="900" alt="The Update driver page: choose an official NVIDIA driver version and click Check and continue.">
+
+**2. Check GPU use.** While the check runs, the page lists the apps that use or request the GPU and refreshes the list by itself. Stop the apps marked "Using the GPU now"; the check then continues on its own. If the GPU is still in use after about 30 seconds, the result window shows when the list was taken. Stop the apps and choose "Check again". The manager never stops apps for you.
+
+**3. Confirm the update.** Check the source, version and system in the confirmation window. Choose "Save original driver and start" when it is offered, or "Start update" when the original is already saved.
+
+<img src="images/plan-en.png" width="900" alt="The Confirm the update window for an official NVIDIA version, with the buttons Save original driver and start, Start without saving original driver and Back to selection.">
+
+**4. Follow the task.** The task page shows the current stage, with the live log further down. Only one update runs at a time, and it keeps running if you close the browser. Downloading and building share a default limit of 30 minutes (`NVM_BUILD_TIMEOUT_MINUTES`). Building makes the driver ready for the current kernel. If the limit runs out before the driver file is replaced, the update stops and the file stays unchanged.
+
+<img src="images/running-en.png" width="900" alt="A task in progress, with the current stage.">
+
+**5. Verify the result.** The task ends as Succeeded, the post-update check shows your new version, and Home shows the same version.
+
+<img src="images/success-en.png" width="900" alt="A finished task that reports Update complete.">
+
+**6. Restart GPU apps.** Restart the GPU apps that were running before the change. Home lists affected apps under "Driver version changed". Apps that report "Driver/library version mismatch" also need a restart.
+
+## Choosing a driver for your GPU
+
+- **Which kind of driver module.** For driver versions 555 and later, the manager looks at the GPUs you ticked. If any of them needs the closed-source module (this includes Maxwell, Pascal and Volta cards), it builds the closed-source module. Otherwise it builds the open-source one. The last driver series that supports Maxwell, Pascal and Volta is 580. Those three card generations have not been tested on TrueNAS 27.
+- **Older cards.** A version in the list does not promise that it works with your GPU or apps. Read the checks and warnings before you confirm. An old GPU only sees the versions it can use.
+- **Kepler cards** (including some GTX 600 and 700 models): choose official 470.256.02. It is offered on TrueNAS 25.10 (kernel 6.12) and TrueNAS 27 (kernel 6.18). The manager downloads Debian's community compatibility patches and applies them. Patching and compiling have been tested against the kernels of TrueNAS 25.10.7 and 27.0.0-RC.1. Loading, display and CUDA (NVIDIA's software for running calculations on the GPU) on real Kepler hardware have not been verified. NVIDIA no longer maintains the 470 series or publishes security fixes for it. Use it only for GPUs that have no other supported driver.
+- **Patches apply only to the official 470.256.02 build.** Manually uploaded 470 installers do not receive them. The patch archive has to be downloaded over the network, so it cannot be placed in `manager/build-kit/` beforehand. The build packages can be.
+- **IBT.** These Debian patches make 470 refuse to load when the kernel has IBT (Indirect Branch Tracking, a CPU security feature) turned on. The patch notes name Intel 11th-generation and newer CPUs. In the TrueNAS Shell, run `grep '^flags[[:space:]]*:' /proc/cpuinfo | grep -c -w ibt` to count the lines that report `ibt`. A result of 0 only means this command found no match; it does not show that 470 can load. With no match the command also exits with status 1.
+
+## Local drivers
+
+The Local drivers page lists the drivers the manager has built or saved. You can switch to a driver that was built for the current kernel without downloading it again. Drivers built for a different kernel show "Kernel mismatch". To use one, select that version on Update driver if it is listed, or upload its installer again; the update rebuilds the driver for the current kernel. An original driver saved for a different kernel cannot be used. A driver built with the unlock shows "· with full-speed unlock" in the Source column.
+
+<img src="images/drivers-en.png" width="900" alt="The Local drivers page with the driver in use marked.">
+
 ## Return to the saved original driver
 
 In Local drivers, choose a usable Original row, click Restore this version, and confirm the plan. This uses the saved driver image without downloading or building. The original is the driver file at the permanent path when you first choose to save it for the current kernel and TrueNAS version; the manager does not determine whether TrueNAS supplied it. It requires an original compatible with the current kernel and TrueNAS version; an NVIDIA download cannot supply that saved image.
@@ -26,11 +71,17 @@ paths, credentials, cookies, tokens, and private keys. Report suspected vulnerab
 [SECURITY.md](../SECURITY.md). Keep unresolved recovery files until the manager's checks allow
 release; do not delete task directories to bypass a block.
 
+If the version list is empty or a download fails, first check that the host can reach NVIDIA's download site, Docker Hub and Debian's package archive. Check your firewall and DNS (DNS turns a site name into an address), then read the task log. The versions shown also depend on the GPUs you ticked.
+
+If the setup code is rejected, expired or missing: reload the manager page, because an expired code is replaced by a new one in the logs. Then copy the code from the newest log line that contains `SETUP CODE:` (the newest line is at the bottom). If there is no such line, restart the app from Apps → Installed, wait a minute and read the logs again. If the page says to try again later, wait the number of seconds shown; wrong codes and wrong passwords share one limit. To reset the account, see [Forgot the password](#forgot-the-password-resetting-the-administrator-account).
+
+If a tool you used before puts its own driver back at boot, a restart may replace the driver this manager installed. The manager does not change that tool's boot settings. You decide whether to turn it off.
+
 ## Manual uploads and returning from confirmation
 
 On Update driver, choose Upload files manually…. The window lists one `.run` driver
 installer and four amd64 toolkit `.deb` packages of the same version, with official download
-links beside each row. The toolkit version comes from the official index, with `1.20.1-1` used
+links beside each row. The four packages are the NVIDIA Container Toolkit, which lets apps in containers use the GPU; a `.deb` file is a Debian software package, and amd64 means it is for 64-bit Intel or AMD computers. The toolkit version comes from the official index, with `1.20.1-1` used
 when it cannot be read. Skip `-dev`, `-dbg` and checksum files. The driver version at the top
 only generates download links; the file content determines the version to install.
 

@@ -41,3 +41,13 @@ docker build --platform linux/amd64 -t truenas-nvidia-driver-manager:local .
 ```
 
 不要为了测试而部署特权 App。修改 Compose 后运行 `bash ci/check-compose-test.sh`，有 Docker Compose 时会执行全部渲染配置校验。用 `bash ci/guards.sh` 扫描 tracked 文件中的坐标，新增文件也须自行检查。这些检查不能代替对日志和 fixture 的敏感信息审查。
+
+## 撰写更新记录
+
+`CHANGELOG.md` 和 `CHANGELOG.zh-CN.md` 写给安装和使用的人看。
+
+- 一条只写一件用户能看到、或必须做的事。用户必须先做的事放最前面。
+- 不写缩写、哈希、检查数量、阶段名、重试间隔和接口字段名。没有验证过的事，直接说没有验证。
+- 中文按中文的习惯写，不逐字翻译英文。
+- 只有开发者关心的改动，合成最后一条，指向 `docs/agent.*`。每个版本的英文段落同时是 GitHub Release 的正文，所以单独读也要读得通。
+- 先把事实分成「用户能看到」「用户必须做」「只有开发者需要」三类，再删减，最后才润色文字。

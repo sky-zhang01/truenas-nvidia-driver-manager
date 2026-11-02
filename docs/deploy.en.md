@@ -80,14 +80,24 @@ original for the current host, the manager cannot offer that restoration. See
 
 Back up the data directory, record the current image tag, and wait for any task to finish before
 changing the app. Set `image:` to the desired published GHCR version and save the app. When
-tracking `latest`, use Update if TrueNAS offers it, or edit the tag to select a release.
+tracking `latest`, use Update if TrueNAS offers it (Apps → Installed, click your app, then on the Application Info card choose ⋮ → Update), or click Edit and change the tag to select a release.
 Keep the same data mount: credentials, task records, and local drivers live there.
+
+The image tag is the word after the last colon in the image address. To stay on a fixed version, change `latest` to a version number, for example `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.0`. To check that an image comes from this repository, run:
+
+```bash
+gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.0 --repo sky-zhang01/truenas-nvidia-driver-manager
+```
+
+Changing the app does not change the NVIDIA driver on the host. To get the original driver back, do that in Local drivers first.
 
 To revert the application, set `image:` to the previously recorded version tag and redeploy.
 This changes the manager application; it does not restore the NVIDIA driver. No general
 backward-readability guarantee is made for data written by a newer application; keep the
 pre-upgrade backup. Restoring a backup discards newer state, so do it only when no task is
 running and after preserving any recovery material you still need.
+
+A step-by-step guide for removing the manager is not written yet.
 
 ## 5. Offline installation and builds
 

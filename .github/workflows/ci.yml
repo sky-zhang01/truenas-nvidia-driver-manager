@@ -514,18 +514,17 @@ jobs:
           package-manager-cache: false
       - name: public scan controls
         run: |
-          bash ci/public-leak-check-test.sh
           bash ci/install-gitleaks-test.sh
           bash ci/github-ci-test.sh
       - name: install checksum-pinned secret scanner
         run: bash ci/install-gitleaks.sh "${RUNNER_TEMP}/public-leak-tools"
-      - name: scan the tracked commit with generic rules
+      - name: scan the tracked commit for secrets
         run: |
           set -Eeuo pipefail
           work="$(mktemp -d "${RUNNER_TEMP}/public-scan.XXXXXXXX")"
           trap 'rm -rf -- "${work}"' EXIT
           git archive --format=tar HEAD | tar -xf - -C "${work}"
-          PATH="${RUNNER_TEMP}/public-leak-tools:${PATH}" bash ci/public-leak-check.sh --root "${work}" --generic-only
+          PATH="${RUNNER_TEMP}/public-leak-tools:${PATH}" gitleaks dir "${work}" --config .gitleaks.toml --redact=100 --no-banner --exit-code 1
 
   release:
     timeout-minutes: 10
