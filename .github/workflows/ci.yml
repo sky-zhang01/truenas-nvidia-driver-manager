@@ -188,10 +188,13 @@ jobs:
       - name: compile with the declared minimum Rust
         run: bash ci/min-rust.sh ${{ github.event_name == 'pull_request' && 'check' || 'build' }}
 
-  e2e:
+  e2e-build:
     timeout-minutes: 20
-    # Build the release fake host server and run the complete browser suite.
+    # Build the release fake host server once; every e2e shard downloads it.
     # Release mode keeps the argon2id paths within the 7 s expect budget.
+    # The artifact name is fixed for the run: rerunning failed shards reads the
+    # build of the attempt they rerun from, and a full rerun uploads a new one.
+    # Three days of retention cover rerunning a shard after a weekend.
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: "0"
@@ -203,16 +206,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          package-manager-cache: false
-      - name: restore npm downloads
-        id: npm-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-${{ runner.arch }}-npm-${{ env.NODE_VERSION }}-${{ hashFiles('web/package-lock.json') }}
       - name: install Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -229,11 +222,55 @@ jobs:
             target
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-e2e-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'Dockerfile') }}
       - name: build the fake host server (release)
-        run: cargo build --locked --release --example fake_host_server
+        run: bash ci/job/e2e.sh server
+      - name: upload the fake host server
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-fake-host
+          path: target/release/examples/fake_host_server
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+
+  e2e:
+    timeout-minutes: 20
+    # The browser suite, split into Playwright shards that each start the
+    # prebuilt fake host. A failed build skips every shard, which the gate
+    # rejects because the e2e switch is on.
+    runs-on: ubuntu-latest
+    needs: [changes, e2e-build]
+    if: needs.changes.outputs.e2e == 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      E2E_SHARD: ${{ matrix.shard }}
+      E2E_SHARD_TOTAL: "3"
+      NVM_E2E_SERVER_BIN: target/release/examples/fake_host_server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: download the fake host server
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-fake-host
+          path: target/release/examples
+      - name: restore npm downloads
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-${{ runner.arch }}-npm-${{ env.NODE_VERSION }}-${{ hashFiles('web/package-lock.json') }}
       - name: build web/dist
-        run: |
-          npm --prefix web ci
-          npm --prefix web run build
+        run: bash ci/job/e2e.sh web
       - name: restore Playwright browsers
         id: browser-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -241,26 +278,22 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-${{ runner.arch }}-chromium-${{ hashFiles('web/package-lock.json') }}
       - name: install chromium and system dependencies
-        working-directory: web
-        run: |
-          printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/80-download-resilience >/dev/null
-          npx playwright install --with-deps chromium
+        run: bash ci/job/e2e.sh browsers
       # The hosted runner provides /dev/shm; verify tmpfs and capacity before
       # creating isolated state. The server and browser run on this host.
       - name: per-run e2e state
-        run: bash ci/e2e-state.sh
-      - name: playwright
-        working-directory: web
-        run: npx playwright test
+        run: bash ci/job/e2e.sh state
+      - name: playwright shard
+        run: bash ci/job/e2e.sh run "$E2E_SHARD" "$E2E_SHARD_TOTAL"
       - name: upload failure traces and logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-failure-attempt-${{ github.run_attempt }}
+          name: e2e-failure-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: |
             web/test-results/
             ${{ env.NVM_E2E_SERVER_LOG }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
   image:
@@ -511,7 +544,7 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-chromium-${{ hashFiles('web/package-lock.json') }}
       - name: build the fake host server (release)
         if: steps.cargo-cache.outputs.cache-hit != 'true'
-        run: cargo build --locked --release --example fake_host_server
+        run: bash ci/job/e2e.sh server
       - name: download chromium
         if: steps.browser-cache.outputs.cache-hit != 'true'
         working-directory: web

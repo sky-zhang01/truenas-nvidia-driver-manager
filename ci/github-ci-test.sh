@@ -13,7 +13,7 @@ const source = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
 if (/release\.sh --dev|^  dev-image:|REGISTRY_TOKEN|REGISTRY_HOST_VARIABLE/m.test(source)) {
     throw new Error('private dev publication must stay out of public CI');
 }
-const job = name => source.split('\n  ' + name + ':\n')[1]?.split(/^  [a-z][a-z-]*:\s*$/m)[0];
+const job = name => source.split('\n  ' + name + ':\n')[1]?.split(/^  [a-z][a-z0-9-]*:\s*$/m)[0];
 function requireRule(condition, message) {
     if (!condition) throw new Error(message);
 }
@@ -106,8 +106,8 @@ const notMain = "github.event_name != 'push' || github.ref != 'refs/heads/main'"
 const onMain = "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n";
 requireRule(job('changes').includes('    if: ' + notMain + '\n'), 'changes (and with it every suite job) skips pushes to main');
 requireRule(gate.includes('    if: always() && (' + notMain + ')\n'), 'gate skips pushes to main');
-for (const name of ['guards', 'controls', 'web', 'compose', 'rust', 'e2e', 'image', 'build-script', 'osv', 'public-leak']) {
-    requireRule(job(name).includes('    needs: changes\n'), name + ' must follow changes so pushes to main skip it');
+for (const name of ['guards', 'controls', 'web', 'compose', 'rust', 'e2e-build', 'e2e', 'image', 'build-script', 'osv', 'public-leak']) {
+    requireRule(job(name).includes(name === 'e2e' ? '    needs: [changes, e2e-build]\n' : '    needs: changes\n'), name + ' must follow changes so pushes to main skip it');
     requireRule(!/actions\/cache\/save|cache-to:/.test(job(name)), name + ' must not save caches');
 }
 requireRule(release.includes("    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')\n") && release.includes('    needs: gate\n'), 'tags still run the suite and the release');
@@ -129,8 +129,21 @@ for (const name of upkeep) {
 const keyOf = (body, id) => step(body, 'restore ' + id)?.match(/^          key: (.*)$/m)?.[1];
 const cargoKey = (name, body) => keyOf(body, 'Cargo registry and targets');
 requireRule(cargoKey('rust', job('rust')) && cargoKey('rust', job('rust')) === cargoKey('cache-rust', job('cache-rust')), 'rust cache key must match');
-requireRule(cargoKey('e2e', job('e2e')) && cargoKey('e2e', job('e2e')) === cargoKey('cache-e2e', job('cache-e2e')), 'e2e cache key must match');
+requireRule(cargoKey('e2e-build', job('e2e-build')) && cargoKey('e2e-build', job('e2e-build')) === cargoKey('cache-e2e', job('cache-e2e')), 'e2e build cache key must match');
 requireRule(keyOf(job('e2e'), 'Playwright browsers') && keyOf(job('e2e'), 'Playwright browsers') === keyOf(job('cache-e2e'), 'Playwright browsers'), 'browser cache key must match');
+// e2e: one build job, then Playwright shards that only download the binary.
+const e2eBuild = job('e2e-build'), e2eShards = job('e2e');
+for (const body of [e2eBuild, e2eShards]) requireRule(body.includes("    if: needs.changes.outputs.e2e == 'true'\n"), 'e2e jobs follow the e2e switch');
+requireRule(e2eBuild.includes('run: bash ci/job/e2e.sh server') && !/cargo build/.test(e2eBuild), 'the build job uses the shared server phase');
+requireRule(/uses: actions\/upload-artifact@[0-9a-f]{40} # v7\.0\.2\n        with:\n          name: e2e-fake-host\n          path: target\/release\/examples\/fake_host_server\n          if-no-files-found: error\n          retention-days: 3\n          overwrite: true\n/.test(e2eBuild), 'the build job uploads the binary under one name per run');
+const shardList = e2eShards.match(/^        shard: \[([0-9, ]+)\]$/m)?.[1].split(', ');
+const shardTotal = e2eShards.match(/^      E2E_SHARD_TOTAL: "([0-9]+)"$/m)?.[1];
+requireRule(shardList && shardList.length === Number(shardTotal) && shardList.every((value, index) => value === String(index + 1)), 'the matrix lists shards 1..TOTAL');
+requireRule(e2eShards.includes('      fail-fast: false\n'), 'every shard reports');
+requireRule(e2eShards.includes('      NVM_E2E_SERVER_BIN: target/release/examples/fake_host_server\n') && e2eShards.includes('name: e2e-fake-host\n          path: target/release/examples\n'), 'shards run the downloaded binary');
+for (const phase of ['web', 'browsers', 'state']) requireRule(e2eShards.includes('run: bash ci/job/e2e.sh ' + phase + '\n'), 'shards use the shared ' + phase + ' phase');
+requireRule(e2eShards.includes('run: bash ci/job/e2e.sh run "$E2E_SHARD" "$E2E_SHARD_TOTAL"\n') && !/cargo|rustup|playwright (install|test)/.test(e2eShards), 'shards run one slice and build nothing');
+requireRule(e2eShards.includes('name: e2e-failure-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}'), 'failure artifacts are named per shard');
 const scopeOf = (body, tag) => body.match(new RegExp('^          ' + tag + ': (type=gha[^\\n]*scope=image-amd64-\\$\\{\\{[^\\n]*\\}\\})$', 'm'))?.[1];
 const imageHash = "hashFiles('Dockerfile', 'Cargo.toml', 'Cargo.lock', 'web/package-lock.json')";
 requireRule(scopeOf(job('image'), 'cache-from')?.includes(imageHash), 'image restores the scoped gha cache');
@@ -350,5 +363,41 @@ NODE
     check 'scanner failure rejects the job' test "${rc}" -eq 19
     check 'temporary snapshots are removed after success and failure' test -z "$(ls -A "${RUNNER_TEMP}")"
 fi
+# The e2e run phase: no phase or a bare run starts the whole suite, SHARD TOTAL starts one slice,
+# anything else is refused before Playwright starts. A stub npx records what would run.
+mkdir "${WORK}/e2e-bin"
+cat > "${WORK}/e2e-bin/npx" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "${WORK}/npx-args"
+STUB
+chmod +x "${WORK}/e2e-bin/npx"
+E2E_SERVER_BIN=
+e2e_exit() { # e2e_exit <e2e.sh arguments...>: run the phase with the stub npx, print its exit code
+    local rc=0
+    rm -f "${WORK}/npx-args"
+    NVM_E2E_SERVER_BIN="${E2E_SERVER_BIN}" PATH="${WORK}/e2e-bin:${PATH}" bash ci/job/e2e.sh "$@" >/dev/null 2>&1 || rc=$?
+    echo "${rc}"
+}
+e2e_runs() { # e2e_runs <expected npx arguments> <e2e.sh arguments...>
+    local want="$1"; shift
+    [ "$(e2e_exit "$@")" -eq 0 ] && [ "$(cat "${WORK}/npx-args")" = "${want}" ]
+}
+e2e_refuses() { # e2e_refuses <exit code> <e2e.sh arguments...>
+    local want="$1"; shift
+    [ "$(e2e_exit "$@")" -eq "${want}" ] && [ ! -e "${WORK}/npx-args" ]
+}
+check 'e2e.sh with no phase runs the whole suite' e2e_runs 'playwright test'
+check 'e2e.sh run runs the whole suite' e2e_runs 'playwright test' run
+check 'e2e.sh run SHARD TOTAL runs one slice' e2e_runs 'playwright test --shard=2/3' run 2 3
+check 'e2e.sh refuses a shard above the total' e2e_refuses 2 run 4 3
+check 'e2e.sh refuses a shard without a total' e2e_refuses 2 run 1
+E2E_SERVER_BIN="${WORK}/missing"
+check 'e2e.sh refuses a missing prebuilt server' e2e_refuses 1 run 1 3
+printf 'x' > "${WORK}/server"
+chmod 644 "${WORK}/server"
+E2E_SERVER_BIN="${WORK}/server"
+check 'e2e.sh starts the downloaded server' e2e_runs 'playwright test --shard=1/3' run 1 3
+check 'e2e.sh makes the downloaded server executable' test -x "${WORK}/server"
+E2E_SERVER_BIN=
 check 'release tags require a merged main PR result' python3 .github/scripts/test_check_release_pr.py
 finish_tests 'public CI controls failed' "public CI controls: ${PASS} passed"
