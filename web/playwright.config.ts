@@ -6,6 +6,12 @@ import { defineConfig, devices } from "@playwright/test";
 const PORT = 18109;
 const DATA_DIR = process.env["NVM_E2E_DATA_DIR"] ?? "/tmp/nvm-e2e-data";
 const SERVER_LOG = process.env["NVM_E2E_SERVER_LOG"] ?? "/tmp/nvm-e2e-server.log";
+// A prebuilt fake host (path from the repository root) replaces `cargo run`, so CI shards
+// start the binary one job built instead of compiling it again.
+const SERVER_BIN = process.env["NVM_E2E_SERVER_BIN"];
+const SERVER_COMMAND = SERVER_BIN
+  ? `${SERVER_BIN} --port ${PORT} --data-dir ${DATA_DIR}`
+  : `cargo run --locked --release --example fake_host_server -- --port ${PORT} --data-dir ${DATA_DIR}`;
 const IN_CI = process.env["CI"] !== undefined || process.env["GITEA_ACTIONS"] !== undefined;
 
 export default defineConfig({
@@ -28,9 +34,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command:
-      `cargo run --locked --release --example fake_host_server -- --port ${PORT} --data-dir ${DATA_DIR}` +
-      (SERVER_LOG ? ` 2>&1 | tee "${SERVER_LOG}"` : ""),
+    command: SERVER_COMMAND + (SERVER_LOG ? ` 2>&1 | tee "${SERVER_LOG}"` : ""),
     cwd: "..",
     url: `http://127.0.0.1:${PORT}/api/login`,
     reuseExistingServer: !IN_CI,
