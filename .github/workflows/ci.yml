@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  OSV_SCANNER_VERSION: "v2.7.0"
-  NODE_VERSION: "24.22.1"
+  OSV_SCANNER_VERSION: "v2.7.1"
+  NODE_VERSION: "26.13.1"
   BUILDX_VERSION: "v0.37.2"
   BUILDKIT_IMAGE: moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
@@ -73,7 +73,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.22.1
+          node-version: 26.13.1
           package-manager-cache: false
       - name: guards checks
         run: bash ci/job/guards.sh
@@ -96,7 +96,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.22.1
+          node-version: 26.13.1
           package-manager-cache: false
       - name: controls checks
         run: bash ci/job/controls.sh
@@ -115,7 +115,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.22.1
+          node-version: 26.13.1
           package-manager-cache: false
       - name: web checks
         run: bash ci/job/web.sh

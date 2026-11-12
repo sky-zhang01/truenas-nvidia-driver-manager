@@ -28,15 +28,15 @@ Jump to: [Install](#install) · [Update your driver](#update-your-driver) · [If
 
 ## Does it fit your machine?
 
-- TrueNAS 25.10.7 (Community Edition) or TrueNAS 27.0.0-RC.1, on a 64-bit Intel or AMD computer. Other versions and ARM computers are untested.
+- TrueNAS 25.10.7 or 25.10.8 (Community Edition), or TrueNAS 27.0.0-RC.1, on a 64-bit Intel or AMD computer. Other versions and ARM computers are untested.
 - An NVIDIA graphics card (GPU). Older cards have limits, see [choosing a driver for your GPU](docs/operations.en.md#choosing-a-driver-for-your-gpu).
 - Internet access, to download the driver (from nvidia.com) and the build tools (from Docker Hub and Debian). Without internet you can switch to a driver saved earlier. Uploaded files also work once you have prepared the build files described in the [deployment guide](docs/deploy.en.md).
 
 ## Install
 
 1. Switch on the NVIDIA driver in TrueNAS. Home shows a notice if this switch is still off.
-   - 25.10.7: Apps → Installed → Configuration → Settings, tick Install NVIDIA Drivers, click Save.
-   - 27.0.0-RC.1: System → Advanced Settings, click Configure on the NVIDIA Drivers card, tick Enable NVIDIA GPU Support, click Save.
+   - TrueNAS 25.10: Apps → Installed → Configuration → Settings, tick Install NVIDIA Drivers, click Save.
+   - TrueNAS 27: System → Advanced Settings, click Configure on the NVIDIA Drivers card, tick Enable NVIDIA GPU Support, click Save.
 2. Create a dataset for the manager. A dataset is a folder that TrueNAS makes inside a storage pool. This is the dataset you back up later.
    1. Open Datasets, select your pool and click Add Dataset.
    2. Name it, for example `nvm`.
@@ -106,7 +106,7 @@ The code works once and stays valid for 24 hours. Restarting the app before setu
 5. In the confirmation window, click "Save original driver and start". If the original is already saved, click "Start update".
 6. Wait for the task to finish. It keeps running if you close the browser.
 7. Check that the task shows Succeeded and that Home shows the new version.
-8. Restart the GPU apps that were running before the change. This includes apps Home lists under "Driver version changed" and apps that report "Driver/library version mismatch".
+8. Restart the GPU apps that were running before the change. This includes apps the task page lists under "Driver version changed" and apps that report "Driver/library version mismatch".
 
 <img src="docs/images/plan-en.png" width="900" alt="The Confirm the update window for an official NVIDIA version, with the buttons Save original driver and start, Start without saving original driver and Back to selection.">
 
@@ -125,6 +125,7 @@ Open Home first. It shows which driver is loaded.
 - **"Interrupted" (power loss or restart).** Home shows the loaded driver version and the step that stopped. Check the version, then update again. If your apps still cannot use the GPU, restore the Original driver in Local drivers, then restart the machine in a quiet time. A restart does not always fix it.
 - **The version list is empty or a download fails.** The machine must reach the sites it downloads from (nvidia.com, Docker Hub and Debian). Check its network settings and firewall, then read the task log.
 - **The setup code is rejected, or you forgot the password.** Reload the page, copy the newest code from the app logs, or reset the account as described in the [operations guide](docs/operations.en.md#forgot-the-password-resetting-the-administrator-account).
+- **After a TrueNAS upgrade, the driver is back to the one TrueNAS ships.** An upgrade replaces the driver file with the one that ships with the new release. To install your version again, see the [operations guide](docs/operations.en.md#after-a-truenas-upgrade).
 
 Logs are on every task page. If you used another NVIDIA driver tool before, it may reinstall its own driver at every boot and undo this update; see the [operations guide](docs/operations.en.md#troubleshooting-and-reporting-a-problem).
 
@@ -139,7 +140,7 @@ Logs are on every task page. If you used another NVIDIA driver tool before, it m
 ## More documentation
 
 - [Deployment guide](docs/deploy.en.md): networks, upgrading and pinning the app version, offline install and builds.
-- [Operations guide](docs/operations.en.md): step-by-step updates, choosing a driver, uploads, local drivers, going back to the original, SSH key sign-in, password reset, backup, logs.
+- [Operations guide](docs/operations.en.md): step-by-step updates, choosing a driver, uploads, local drivers, going back to the original, after a TrueNAS upgrade, SSH key sign-in, password reset, backup, logs.
 - [Security guide](docs/security.en.md): how the manager works, the access it needs and its known limits.
 - [Agent guide](docs/agent.en.md): lets an AI agent such as Claude Code or Codex do an update. A signed-in agent has full administrator power, and the manager cannot check that it asked you first.
 - [Security reporting](SECURITY.md), [contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md).

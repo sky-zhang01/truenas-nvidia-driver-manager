@@ -2,12 +2,12 @@
 
 [简体中文](deploy.zh-CN.md)
 
-TrueNAS 25.10.7 and TrueNAS 27.0.0-RC.1 / amd64 are supported and tested; other platforms are untested. The privileged container uses `pid: host` to control the host driver. Read the [security guide](security.en.md), arrange a maintenance window and retain host console access: replacement can interrupt GPU workloads.
+TrueNAS 25.10.7, TrueNAS 25.10.8 and TrueNAS 27.0.0-RC.1 / amd64 are supported and tested; other platforms are untested. The privileged container uses `pid: host` to control the host driver. Read the [security guide](security.en.md), arrange a maintenance window and retain host console access: replacement can interrupt GPU workloads.
 
 Enable the NVIDIA driver in TrueNAS before using the manager:
 
-- 25.10.7: on Apps → Installed, click Configuration → Settings, tick Install NVIDIA Drivers and click Save.
-- 27.0.0-RC.1: open System → Advanced Settings, click Configure on the NVIDIA Drivers card, tick Enable NVIDIA GPU Support and click Save.
+- TrueNAS 25.10: on Apps → Installed, click Configuration → Settings, tick Install NVIDIA Drivers and click Save.
+- TrueNAS 27: open System → Advanced Settings, click Configure on the NVIDIA Drivers card, tick Enable NVIDIA GPU Support and click Save.
 
 ## 1. Install the app
 
@@ -83,10 +83,10 @@ changing the app. Set `image:` to the desired published GHCR version and save th
 tracking `latest`, use Update if TrueNAS offers it (Apps → Installed, click your app, then on the Application Info card choose ⋮ → Update), or click Edit and change the tag to select a release.
 Keep the same data mount: credentials, task records, and local drivers live there.
 
-The image tag is the word after the last colon in the image address. To stay on a fixed version, change `latest` to a version number, for example `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.0`. To check that an image comes from this repository, run:
+The image tag is the word after the last colon in the image address. To stay on a fixed version, change `latest` to a version number, for example `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.1`. To check that an image comes from this repository, run:
 
 ```bash
-gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.0 --repo sky-zhang01/truenas-nvidia-driver-manager
+gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.1 --repo sky-zhang01/truenas-nvidia-driver-manager
 ```
 
 Changing the app does not change the NVIDIA driver on the host. To get the original driver back, do that in Local drivers first.

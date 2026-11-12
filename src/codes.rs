@@ -172,59 +172,53 @@ pub const PROBE_FLAGS: [&str; 8] = [
 ];
 pub const MODULE_TYPE_MIN_BRANCH: u32 = 555;
 
-/// The twelve error codes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ErrorCode {
-    SaveOriginalFailed,
-    DownloadFailed,
-    BuildFailed,
-    BuildTimeout,
-    GpuInUse,
-    ModuleUnloadRefused,
-    WriteFailed,
-    ReplaceDeadlineExceeded,
-    RestoreAborted,
-    RestoreNotWritten,
-    RestoreCheckFailed,
-    NoUsableOriginal,
+macro_rules! string_codes {
+    ($(#[$meta:meta])* pub enum $name:ident {
+        $($variant:ident => $value:literal,)*
+    } $(parse $parse:ident;)?) => {
+        $(#[$meta])*
+        pub enum $name { $($variant,)* }
+
+        impl $name {
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)*];
+
+            pub fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $value,)* }
+            }
+
+            string_codes! { parser [$($parse)?] { $($variant => $value,)* } }
+        }
+    };
+    (parser [] { $($variant:ident => $value:literal,)* }) => {};
+    (parser [$parse:ident] { $($variant:ident => $value:literal,)* }) => {
+        pub fn $parse(s: &str) -> Option<Self> {
+            match s {
+                $($value => Some(Self::$variant),)*
+                _ => None,
+            }
+        }
+    };
 }
 
-impl ErrorCode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ErrorCode::SaveOriginalFailed => "SAVE_ORIGINAL_FAILED",
-            ErrorCode::DownloadFailed => "DOWNLOAD_FAILED",
-            ErrorCode::BuildFailed => "BUILD_FAILED",
-            ErrorCode::BuildTimeout => "BUILD_TIMEOUT",
-            ErrorCode::GpuInUse => "GPU_IN_USE",
-            ErrorCode::ModuleUnloadRefused => "MODULE_UNLOAD_REFUSED",
-            ErrorCode::WriteFailed => "WRITE_FAILED",
-            ErrorCode::ReplaceDeadlineExceeded => "REPLACE_DEADLINE_EXCEEDED",
-            ErrorCode::RestoreAborted => "RESTORE_ABORTED",
-            ErrorCode::RestoreNotWritten => "RESTORE_NOT_WRITTEN",
-            ErrorCode::RestoreCheckFailed => "RESTORE_CHECK_FAILED",
-            ErrorCode::NoUsableOriginal => "NO_USABLE_ORIGINAL",
-        }
+string_codes! {
+    /// The twelve error codes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+    pub enum ErrorCode {
+        SaveOriginalFailed => "SAVE_ORIGINAL_FAILED",
+        DownloadFailed => "DOWNLOAD_FAILED",
+        BuildFailed => "BUILD_FAILED",
+        BuildTimeout => "BUILD_TIMEOUT",
+        GpuInUse => "GPU_IN_USE",
+        ModuleUnloadRefused => "MODULE_UNLOAD_REFUSED",
+        WriteFailed => "WRITE_FAILED",
+        ReplaceDeadlineExceeded => "REPLACE_DEADLINE_EXCEEDED",
+        RestoreAborted => "RESTORE_ABORTED",
+        RestoreNotWritten => "RESTORE_NOT_WRITTEN",
+        RestoreCheckFailed => "RESTORE_CHECK_FAILED",
+        NoUsableOriginal => "NO_USABLE_ORIGINAL",
     }
-
-    pub fn parse(s: &str) -> Option<ErrorCode> {
-        Some(match s {
-            "SAVE_ORIGINAL_FAILED" => ErrorCode::SaveOriginalFailed,
-            "DOWNLOAD_FAILED" => ErrorCode::DownloadFailed,
-            "BUILD_FAILED" => ErrorCode::BuildFailed,
-            "BUILD_TIMEOUT" => ErrorCode::BuildTimeout,
-            "GPU_IN_USE" => ErrorCode::GpuInUse,
-            "MODULE_UNLOAD_REFUSED" => ErrorCode::ModuleUnloadRefused,
-            "WRITE_FAILED" => ErrorCode::WriteFailed,
-            "REPLACE_DEADLINE_EXCEEDED" => ErrorCode::ReplaceDeadlineExceeded,
-            "RESTORE_ABORTED" => ErrorCode::RestoreAborted,
-            "RESTORE_NOT_WRITTEN" => ErrorCode::RestoreNotWritten,
-            "RESTORE_CHECK_FAILED" => ErrorCode::RestoreCheckFailed,
-            "NO_USABLE_ORIGINAL" => ErrorCode::NoUsableOriginal,
-            _ => return None,
-        })
-    }
+    parse parse;
 }
 
 // ---- Reason keys -----------------------------------------
@@ -307,6 +301,27 @@ pub const BUILD_KERNEL_MODULE_INSTALL_FAILED: &str = "kernel_module_install_fail
 pub const BUILD_GPU_UNLOCK_MODULE_BUILD_FAILED: &str = "gpu_unlock_module_build_failed";
 pub const BUILD_GPU_UNLOCK_INSTALL_FAILED: &str = "gpu_unlock_install_failed";
 
+pub const BUILD_SCRIPT_REASONS: &[&str] = &[
+    BUILD_RUN_CHECK_FAILED,
+    BUILD_MODULES_COPY_FAILED,
+    BUILD_KERNEL_GCC_UNKNOWN,
+    BUILD_EXTRACT_FAILED,
+    BUILD_OPTIONS_UNREADABLE,
+    BUILD_KERNEL_MODULE_TYPE_UNSUPPORTED,
+    BUILD_INSTALLER_FAILED,
+    BUILD_INSTALLER_USERSPACE_FAILED,
+    BUILD_INSTALLER_KERNEL_MODULE_FAILED,
+    BUILD_DEPMOD_FAILED,
+    BUILD_CAPTURE_EMPTY,
+    BUILD_STAGE_COPY_FAILED,
+    BUILD_GPU_UNLOCK_MODULE_BUILD_FAILED,
+    BUILD_GPU_UNLOCK_INSTALL_FAILED,
+    BUILD_RELEASE_WRITE_FAILED,
+    BUILD_MKSQUASHFS_FAILED,
+    BUILD_RESULT_WRITE_FAILED,
+    BUILD_KERNEL_MODULE_BUILD_FAILED,
+];
+
 // The firmware stage of an update with the unlock: the installer does not give the pinned
 // firmware, or the files cannot be written below the data directory.
 pub const GPU_UNLOCK_INSTALLER_UNUSABLE: &str = "gpu_unlock_installer_unusable";
@@ -355,207 +370,110 @@ pub const BUILD_STEP_NAMES: [&str; 16] = [
     "result",
 ];
 
-/// Log line keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogKey {
-    PhaseEnter,
-    Cmd,
-    LoadedVersion,
-    LoadedVersionNone,
-    LoadedVersionUnknown,
-    OriginalExists,
-    OriginalSaved,
-    BuildDeadlineSet,
-    ToolkitSelected,
-    FileDownloaded,
-    BuildKitCache,
-    BuildContainer,
-    BuildStep,
-    BuildCompiler,
-    BuildInstallMode,
-    BuildFlagUnsupported,
-    BuildTimeout,
-    UnlockFirmwareReused,
-    UnlockFirmwareGenerated,
-    UnlockPreloaded,
-    UnlockPreloadSkipped,
-    UnlockPreloadFailed,
-    UnlockLoadOrder,
-    ArtifactChecked,
-    ArtifactCheckFailed,
-    RowCreated,
-    Occupancy,
-    OccupancyWait,
-    ReloadTargetDefault,
-    ModuleUnloaded,
-    ModuleUnloadRefused,
-    ModuleUnloadWait,
-    RwMountConfirmed,
-    TempVerified,
-    DeadlineOk,
-    DeadlineExceeded,
-    WriteStopped,
-    CanonicalWritten,
-    Readback,
-    ReadonlyRestored,
-    Since,
-    ModuleReloaded,
-    ModuleReloadFailed,
-    CheckItem,
-    RestoreStart,
-    RestoreNone,
-    GpuUsers,
-    Cleanup,
-    CleanupFailed,
-    Finished,
-}
-
-impl LogKey {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LogKey::PhaseEnter => "log.phase_enter",
-            LogKey::Cmd => "log.cmd",
-            LogKey::LoadedVersion => "log.loaded_version",
-            LogKey::LoadedVersionNone => "log.loaded_version_none",
-            LogKey::LoadedVersionUnknown => "log.loaded_version_unknown",
-            LogKey::OriginalExists => "log.original_exists",
-            LogKey::OriginalSaved => "log.original_saved",
-            LogKey::BuildDeadlineSet => "log.build_deadline_set",
-            LogKey::ToolkitSelected => "log.toolkit_selected",
-            LogKey::FileDownloaded => "log.file_downloaded",
-            LogKey::BuildKitCache => "log.build_kit_cache",
-            LogKey::BuildContainer => "log.build_container",
-            LogKey::BuildStep => "log.build_step",
-            LogKey::BuildCompiler => "log.build_compiler",
-            LogKey::BuildInstallMode => "log.build_install_mode",
-            LogKey::BuildFlagUnsupported => "log.build_flag_unsupported",
-            LogKey::BuildTimeout => "log.build_timeout",
-            LogKey::UnlockFirmwareReused => "log.unlock_firmware_reused",
-            LogKey::UnlockFirmwareGenerated => "log.unlock_firmware_generated",
-            LogKey::UnlockPreloaded => "log.unlock_preloaded",
-            LogKey::UnlockPreloadSkipped => "log.unlock_preload_skipped",
-            LogKey::UnlockPreloadFailed => "log.unlock_preload_failed",
-            LogKey::UnlockLoadOrder => "log.unlock_load_order",
-            LogKey::ArtifactChecked => "log.artifact_checked",
-            LogKey::ArtifactCheckFailed => "log.artifact_check_failed",
-            LogKey::RowCreated => "log.row_created",
-            LogKey::Occupancy => "log.occupancy",
-            LogKey::OccupancyWait => "log.occupancy_wait",
-            LogKey::ReloadTargetDefault => "log.reload_target_default",
-            LogKey::ModuleUnloaded => "log.module_unloaded",
-            LogKey::ModuleUnloadRefused => "log.module_unload_refused",
-            LogKey::ModuleUnloadWait => "log.module_unload_wait",
-            LogKey::RwMountConfirmed => "log.rw_mount_confirmed",
-            LogKey::TempVerified => "log.temp_verified",
-            LogKey::DeadlineOk => "log.deadline_ok",
-            LogKey::DeadlineExceeded => "log.deadline_exceeded",
-            LogKey::WriteStopped => "log.write_stopped",
-            LogKey::CanonicalWritten => "log.canonical_written",
-            LogKey::Readback => "log.readback",
-            LogKey::ReadonlyRestored => "log.readonly_restored",
-            LogKey::Since => "log.since",
-            LogKey::ModuleReloaded => "log.module_reloaded",
-            LogKey::ModuleReloadFailed => "log.module_reload_failed",
-            LogKey::CheckItem => "log.check_item",
-            LogKey::RestoreStart => "log.restore_start",
-            LogKey::RestoreNone => "log.restore_none",
-            LogKey::GpuUsers => "log.gpu_users",
-            LogKey::Cleanup => "log.cleanup",
-            LogKey::CleanupFailed => "log.cleanup_failed",
-            LogKey::Finished => "log.finished",
-        }
+string_codes! {
+    /// Log line keys.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum LogKey {
+        PhaseEnter => "log.phase_enter",
+        Cmd => "log.cmd",
+        LoadedVersion => "log.loaded_version",
+        LoadedVersionNone => "log.loaded_version_none",
+        LoadedVersionUnknown => "log.loaded_version_unknown",
+        OriginalExists => "log.original_exists",
+        OriginalSaved => "log.original_saved",
+        BuildDeadlineSet => "log.build_deadline_set",
+        ToolkitSelected => "log.toolkit_selected",
+        FileDownloaded => "log.file_downloaded",
+        BuildKitCache => "log.build_kit_cache",
+        BuildContainer => "log.build_container",
+        BuildStep => "log.build_step",
+        BuildCompiler => "log.build_compiler",
+        BuildInstallMode => "log.build_install_mode",
+        BuildFlagUnsupported => "log.build_flag_unsupported",
+        BuildTimeout => "log.build_timeout",
+        UnlockFirmwareReused => "log.unlock_firmware_reused",
+        UnlockFirmwareGenerated => "log.unlock_firmware_generated",
+        UnlockPreloaded => "log.unlock_preloaded",
+        UnlockPreloadSkipped => "log.unlock_preload_skipped",
+        UnlockPreloadFailed => "log.unlock_preload_failed",
+        UnlockLoadOrder => "log.unlock_load_order",
+        ArtifactChecked => "log.artifact_checked",
+        ArtifactCheckFailed => "log.artifact_check_failed",
+        RowCreated => "log.row_created",
+        Occupancy => "log.occupancy",
+        OccupancyWait => "log.occupancy_wait",
+        ReloadTargetDefault => "log.reload_target_default",
+        ModuleUnloaded => "log.module_unloaded",
+        ModuleUnloadRefused => "log.module_unload_refused",
+        ModuleUnloadWait => "log.module_unload_wait",
+        RwMountConfirmed => "log.rw_mount_confirmed",
+        TempVerified => "log.temp_verified",
+        DeadlineOk => "log.deadline_ok",
+        DeadlineExceeded => "log.deadline_exceeded",
+        WriteStopped => "log.write_stopped",
+        CanonicalWritten => "log.canonical_written",
+        Readback => "log.readback",
+        ReadonlyRestored => "log.readonly_restored",
+        Since => "log.since",
+        ModuleReloaded => "log.module_reloaded",
+        ModuleReloadFailed => "log.module_reload_failed",
+        CheckItem => "log.check_item",
+        RestoreStart => "log.restore_start",
+        RestoreNone => "log.restore_none",
+        GpuUsers => "log.gpu_users",
+        Cleanup => "log.cleanup",
+        CleanupFailed => "log.cleanup_failed",
+        Finished => "log.finished",
     }
 }
 
-/// `docker logs` events written by the web process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
-    Starting,
-    SettingUnknown,
-    SettingInvalid,
-    PortFallback,
-    DataDirsFailed,
-    StartupCheckFailed,
-    StartupChecksPassed,
-    CredentialsCreated,
-    SetupCodeIssued,
-    SetupCodeRejected,
-    CredentialsUnreadable,
-    CredentialsUnsaved,
-    Listening,
-    ListenFailed,
-    LoginSucceeded,
-    LoginFailed,
-    LoginRateLimited,
-    Logout,
-    PasswordChanged,
-    CatalogQueryFailed,
-    KernelHeadersUnreadable,
-    GpusUnreadable,
-    RunnerCopyFailed,
-    TaskSubmitted,
-    TaskSubmitFailed,
-    TaskInterrupted,
-    TaskReleased,
-    StateFileKept,
-    TaskCleanup,
-    HostReset,
-    TaskCleanupStepFailed,
-    UnitQueryFailed,
-    UploadRejected,
-    DriversDeleted,
-    SshLoginSucceeded,
-    SshLoginFailed,
-    SshKeyAdded,
-    SshKeyRemoved,
-    AdmissionBlocked,
+string_codes! {
+    /// `docker logs` events written by the web process.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Event {
+        Starting => "starting",
+        SettingUnknown => "setting_unknown",
+        SettingInvalid => "setting_invalid",
+        PortFallback => "port_fallback",
+        DataDirsFailed => "data_dirs_failed",
+        StartupCheckFailed => "startup_check_failed",
+        StartupChecksPassed => "startup_checks_passed",
+        CredentialsCreated => "credentials_created",
+        SetupCodeIssued => "setup_code_issued",
+        SetupCodeRejected => "setup_code_rejected",
+        CredentialsUnreadable => "credentials_unreadable",
+        CredentialsUnsaved => "credentials_unsaved",
+        Listening => "listening",
+        ListenFailed => "listen_failed",
+        LoginSucceeded => "login_succeeded",
+        LoginFailed => "login_failed",
+        LoginRateLimited => "login_rate_limited",
+        Logout => "logout",
+        PasswordChanged => "password_changed",
+        CatalogQueryFailed => "catalog_query_failed",
+        KernelHeadersUnreadable => "kernel_headers_unreadable",
+        GpusUnreadable => "gpus_unreadable",
+        RunnerCopyFailed => "runner_copy_failed",
+        TaskSubmitted => "task_submitted",
+        TaskSubmitFailed => "task_submit_failed",
+        TaskInterrupted => "task_interrupted",
+        TaskReleased => "task_released",
+        StateFileKept => "state_file_kept",
+        TaskCleanup => "task_cleanup",
+        HostReset => "host_reset",
+        TaskCleanupStepFailed => "task_cleanup_step_failed",
+        UnitQueryFailed => "unit_query_failed",
+        UploadRejected => "upload_rejected",
+        DriversDeleted => "drivers_deleted",
+        SshLoginSucceeded => "ssh_login_succeeded",
+        SshLoginFailed => "ssh_login_failed",
+        SshKeyAdded => "ssh_key_added",
+        SshKeyRemoved => "ssh_key_removed",
+        AdmissionBlocked => "admission_blocked",
+    }
 }
 
 impl Event {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Event::Starting => "starting",
-            Event::SettingUnknown => "setting_unknown",
-            Event::SettingInvalid => "setting_invalid",
-            Event::PortFallback => "port_fallback",
-            Event::DataDirsFailed => "data_dirs_failed",
-            Event::StartupCheckFailed => "startup_check_failed",
-            Event::StartupChecksPassed => "startup_checks_passed",
-            Event::CredentialsCreated => "credentials_created",
-            Event::SetupCodeIssued => "setup_code_issued",
-            Event::SetupCodeRejected => "setup_code_rejected",
-            Event::CredentialsUnreadable => "credentials_unreadable",
-            Event::CredentialsUnsaved => "credentials_unsaved",
-            Event::Listening => "listening",
-            Event::ListenFailed => "listen_failed",
-            Event::LoginSucceeded => "login_succeeded",
-            Event::LoginFailed => "login_failed",
-            Event::LoginRateLimited => "login_rate_limited",
-            Event::Logout => "logout",
-            Event::PasswordChanged => "password_changed",
-            Event::CatalogQueryFailed => "catalog_query_failed",
-            Event::KernelHeadersUnreadable => "kernel_headers_unreadable",
-            Event::GpusUnreadable => "gpus_unreadable",
-            Event::RunnerCopyFailed => "runner_copy_failed",
-            Event::TaskSubmitted => "task_submitted",
-            Event::TaskSubmitFailed => "task_submit_failed",
-            Event::TaskInterrupted => "task_interrupted",
-            Event::TaskReleased => "task_released",
-            Event::StateFileKept => "state_file_kept",
-            Event::TaskCleanup => "task_cleanup",
-            Event::HostReset => "host_reset",
-            Event::TaskCleanupStepFailed => "task_cleanup_step_failed",
-            Event::UnitQueryFailed => "unit_query_failed",
-            Event::UploadRejected => "upload_rejected",
-            Event::DriversDeleted => "drivers_deleted",
-            Event::SshLoginSucceeded => "ssh_login_succeeded",
-            Event::SshLoginFailed => "ssh_login_failed",
-            Event::AdmissionBlocked => "admission_blocked",
-            Event::SshKeyAdded => "ssh_key_added",
-            Event::SshKeyRemoved => "ssh_key_removed",
-        }
-    }
-
     pub fn msg(self) -> &'static str {
         match self {
             Event::Starting => "starting truenas-nvidia-driver-manager",
@@ -631,3 +549,16 @@ pub enum CleanupStep {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const SHORT_NAME: &str = "nvm";
+
+#[cfg(test)]
+mod tests {
+    use super::ErrorCode;
+
+    #[test]
+    fn error_codes_round_trip_and_match_serde() {
+        for &code in ErrorCode::ALL {
+            assert_eq!(ErrorCode::parse(code.as_str()), Some(code));
+            assert_eq!(serde_json::to_value(code).unwrap(), code.as_str());
+        }
+    }
+}

@@ -70,89 +70,9 @@ pub fn save(ctx: &mut RunCtx) -> Result<(), SaveFailure> {
         });
     }
     let dest = row_dir.join("nvidia.raw");
-    let copied = {
-        let mut src = match ctx.host.open(std::path::Path::new(CANONICAL_PATH)) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = ctx.host.remove_dir_all(&row_dir);
-                return Err(SaveFailure {
-                    reason: SAVE_CANONICAL_UNREADABLE,
-                    params: json!({}),
-                    raw: Some(e.to_string()),
+    let copied = copy_original(ctx, &row_dir, &dest)?;
 
-                    ..SaveFailure::default()
-                });
-            }
-        };
-        let mut dst = match ctx.host.create(&dest, Create::New, 0o644) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = ctx.host.remove_dir_all(&row_dir);
-                return Err(SaveFailure {
-                    reason: SAVE_WRITE_FAILED,
-                    params: json!({}),
-                    raw: Some(e.to_string()),
-
-                    ..SaveFailure::default()
-                });
-            }
-        };
-        let result =
-            store::copy_hashed(
-                &mut *src,
-                &mut *dst,
-                |_| std::ops::ControlFlow::Continue(()),
-            );
-        match result {
-            Ok(copied) => {
-                if let Err(e) = dst.sync_all() {
-                    let _ = ctx.host.remove_dir_all(&row_dir);
-                    return Err(SaveFailure {
-                        reason: SAVE_WRITE_FAILED,
-                        params: json!({}),
-                        raw: Some(e.to_string()),
-
-                        ..SaveFailure::default()
-                    });
-                }
-                copied
-            }
-            Err(e) => {
-                let _ = ctx.host.remove_dir_all(&row_dir);
-                return Err(SaveFailure {
-                    reason: SAVE_WRITE_FAILED,
-                    params: json!({}),
-                    raw: Some(e.to_string()),
-
-                    ..SaveFailure::default()
-                });
-            }
-        }
-    };
-
-    match store::hash_file(ctx.host.as_ref(), &dest) {
-        Ok(back) if back.sha256 == copied.sha256 && back.size == copied.size => {}
-        Ok(_) => {
-            let _ = ctx.host.remove_dir_all(&row_dir);
-            return Err(SaveFailure {
-                reason: SAVE_READBACK_MISMATCH,
-                params: json!({}),
-                raw: None,
-
-                ..SaveFailure::default()
-            });
-        }
-        Err(e) => {
-            let _ = ctx.host.remove_dir_all(&row_dir);
-            return Err(SaveFailure {
-                reason: SAVE_WRITE_FAILED,
-                params: json!({}),
-                raw: Some(e.to_string()),
-
-                ..SaveFailure::default()
-            });
-        }
-    }
+    verify_original_readback(ctx, &row_dir, &dest, &copied)?;
 
     // read the version and target kernel from the copy. The command goes through
     // `RunCtx::cmd`, so the task log carries its `log.cmd` line and the failure carries the
@@ -203,10 +123,122 @@ pub fn save(ctx: &mut RunCtx) -> Result<(), SaveFailure> {
         keep: Some(true),
         gpu_unlock_targets: Vec::new(),
     };
+    publish_original_record(ctx, &row_dir, &record)?;
+    ctx.log(
+        LogKey::OriginalSaved,
+        json!({
+            "version": version,
+            "target_kernel": target_kernel,
+            "checksum": copied.sha256,
+        }),
+    );
+    Ok(())
+}
+
+fn copy_original(
+    ctx: &RunCtx,
+    row_dir: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<store::Copied, SaveFailure> {
+    let mut src = match ctx.host.open(std::path::Path::new(CANONICAL_PATH)) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = ctx.host.remove_dir_all(row_dir);
+            return Err(SaveFailure {
+                reason: SAVE_CANONICAL_UNREADABLE,
+                params: json!({}),
+                raw: Some(e.to_string()),
+
+                ..SaveFailure::default()
+            });
+        }
+    };
+    let mut dst = match ctx.host.create(dest, Create::New, 0o644) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = ctx.host.remove_dir_all(row_dir);
+            return Err(SaveFailure {
+                reason: SAVE_WRITE_FAILED,
+                params: json!({}),
+                raw: Some(e.to_string()),
+
+                ..SaveFailure::default()
+            });
+        }
+    };
+    let result = store::copy_hashed(
+        &mut *src,
+        &mut *dst,
+        |_| std::ops::ControlFlow::Continue(()),
+    );
+    match result {
+        Ok(copied) => {
+            if let Err(e) = dst.sync_all() {
+                let _ = ctx.host.remove_dir_all(row_dir);
+                return Err(SaveFailure {
+                    reason: SAVE_WRITE_FAILED,
+                    params: json!({}),
+                    raw: Some(e.to_string()),
+
+                    ..SaveFailure::default()
+                });
+            }
+            Ok(copied)
+        }
+        Err(e) => {
+            let _ = ctx.host.remove_dir_all(row_dir);
+            Err(SaveFailure {
+                reason: SAVE_WRITE_FAILED,
+                params: json!({}),
+                raw: Some(e.to_string()),
+
+                ..SaveFailure::default()
+            })
+        }
+    }
+}
+
+fn verify_original_readback(
+    ctx: &RunCtx,
+    row_dir: &std::path::Path,
+    dest: &std::path::Path,
+    copied: &store::Copied,
+) -> Result<(), SaveFailure> {
+    match store::hash_file(ctx.host.as_ref(), dest) {
+        Ok(back) if back.sha256 == copied.sha256 && back.size == copied.size => {}
+        Ok(_) => {
+            let _ = ctx.host.remove_dir_all(row_dir);
+            return Err(SaveFailure {
+                reason: SAVE_READBACK_MISMATCH,
+                params: json!({}),
+                raw: None,
+
+                ..SaveFailure::default()
+            });
+        }
+        Err(e) => {
+            let _ = ctx.host.remove_dir_all(row_dir);
+            return Err(SaveFailure {
+                reason: SAVE_WRITE_FAILED,
+                params: json!({}),
+                raw: Some(e.to_string()),
+
+                ..SaveFailure::default()
+            });
+        }
+    }
+    Ok(())
+}
+
+fn publish_original_record(
+    ctx: &RunCtx,
+    row_dir: &std::path::Path,
+    record: &drivers::Record,
+) -> Result<(), SaveFailure> {
     let record_bytes = match serde_json::to_vec_pretty(&record) {
         Ok(b) => b,
         Err(e) => {
-            let _ = ctx.host.remove_dir_all(&row_dir);
+            let _ = ctx.host.remove_dir_all(row_dir);
             return Err(SaveFailure {
                 reason: SAVE_WRITE_FAILED,
                 params: json!({}),
@@ -218,7 +250,7 @@ pub fn save(ctx: &mut RunCtx) -> Result<(), SaveFailure> {
     };
     let record_path = row_dir.join("record.json");
     if let Err(e) = store::write_atomic(ctx.host.as_ref(), &record_path, &record_bytes, 0o644) {
-        let _ = ctx.host.remove_dir_all(&row_dir);
+        let _ = ctx.host.remove_dir_all(row_dir);
         return Err(SaveFailure {
             reason: SAVE_WRITE_FAILED,
             params: json!({}),
@@ -228,8 +260,8 @@ pub fn save(ctx: &mut RunCtx) -> Result<(), SaveFailure> {
         });
     }
     let row_id = format!("{}-original", ctx.id);
-    if let Err(e) = drivers::publish(ctx.host.as_ref(), &ctx.paths, &row_dir, &row_id) {
-        let _ = ctx.host.remove_dir_all(&row_dir);
+    if let Err(e) = drivers::publish(ctx.host.as_ref(), &ctx.paths, row_dir, &row_id) {
+        let _ = ctx.host.remove_dir_all(row_dir);
         return Err(SaveFailure {
             reason: SAVE_WRITE_FAILED,
             params: json!({}),
@@ -238,14 +270,6 @@ pub fn save(ctx: &mut RunCtx) -> Result<(), SaveFailure> {
             ..SaveFailure::default()
         });
     }
-    ctx.log(
-        LogKey::OriginalSaved,
-        json!({
-            "version": version,
-            "target_kernel": target_kernel,
-            "checksum": copied.sha256,
-        }),
-    );
     Ok(())
 }
 

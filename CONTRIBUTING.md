@@ -60,10 +60,55 @@ To build the application image locally with Docker:
 docker build --platform linux/amd64 -t truenas-nvidia-driver-manager:local .
 ```
 
-Do not deploy this privileged App just to run tests. For Compose changes, run
+To run the container tests against that image:
+
+```bash
+NVM_IMAGE=truenas-nvidia-driver-manager:local NVM_CURL_IMAGE=<image with curl> bash ci/container/test.sh
+```
+
+The script starts the image from `deploy/compose.yaml` on the current Docker daemon. The
+startup check treats PID 1 of the daemon's PID namespace as the TrueNAS host; with a rootful
+daemon that is the machine itself, checked as it is. A rootless daemon, whether plain rootless
+Docker or rootless Docker-in-Docker, must run RootlessKit in its own PID, UTS and IPC namespaces
+(`DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS="--pidns --utsns --ipcns"`); before the tests the script
+adds `/usr/bin/docker` and `/var/run/docker.sock` inside that daemon's namespace, and the curl
+image then also needs `nsenter`.
+
+Apart from the VM test below, do not deploy this privileged App just to run tests. For Compose changes, run
 `bash ci/check-compose-test.sh` (Docker Compose enables all rendered-config controls).
 Run `bash ci/guards.sh` for tracked-file coordinate checks; inspect new files yourself too.
 These checks do not replace reviewing logs and fixtures for sensitive data.
+
+## GPU unlock test in a TrueNAS VM
+
+`tests/gpu_unlock_vm.rs` deploys the application as an app in a TrueNAS test VM and runs
+updates with the optional GPU unlock through the program's own tasks: the build and test load,
+the load order kmod uses, a reboot, GPU isolation, and the switch back to a saved original. The
+checks are the rows of `tests/fixtures/gpu-unlock-vm.tsv`; the case column says whether a row
+runs with GPU isolation configured, without it, both, or once for the VM. The VM has no NVIDIA
+GPU. While a plan is made, the test mounts a copy of `/sys/bus/pci/devices` with one extra
+entry, an RTX 3090 at `0000:00:1f.7`, so the program plans the unlock for an address where the
+kernel has no device.
+
+The test needs a disposable TrueNAS 25.10 or 27 VM with a pool, Apps enabled, Internet access
+and an SSH account with passwordless sudo. It deletes and recreates its own app and data
+directory, replaces the VM's NVIDIA driver, reboots the VM and turns its NVIDIA switch off and
+on. Never run it against a NAS in use. Build the image, load it in the VM, then run the test
+from the repository root:
+
+```bash
+docker build --platform linux/amd64 -t truenas-nvidia-driver-manager:local .
+docker save truenas-nvidia-driver-manager:local | ssh <vm> sudo docker load
+NVM_VM_SSH='ssh -o BatchMode=yes -o ServerAliveInterval=10 <vm>' \
+  NVM_VM_IMAGE=truenas-nvidia-driver-manager:local \
+  NVM_VM_DATA=/mnt/<pool>/nvm-vm-test NVM_VM_OUT="$HOME/nvm-vm-evidence" \
+  cargo test --locked --test gpu_unlock_vm -- --ignored --nocapture
+```
+
+`NVM_VM_DATA` must be a plain directory, not a dataset, that does not exist yet or that this test
+created earlier. Run the test once per TrueNAS version. One run, with three builds, nine tasks
+and four reboots, took 15 to 20 minutes on the test VMs. `NVM_VM_OUT` receives every task
+record, the readings behind each check and `results.tsv`.
 
 ## Writing the changelog
 

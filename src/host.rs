@@ -24,13 +24,21 @@ use crate::codes::CONTAINER_DATA_DIR;
 use crate::facts::MountLine;
 
 /// Where a command runs.
+///
+/// Production code cannot bypass the host namespace mode:
+///
+/// ```compile_fail
+/// use truenas_nvidia_driver_manager::host::At as CommandLocation;
+/// let _ = CommandLocation::Here;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum At {
     /// On the host. In the web process this is wrapped in the binary's own
     /// namespace mode ([`enter_host_namespaces`]); in the runner it runs
     /// directly.
     Host,
-    /// In the caller's own environment (the container for the web process).
+    /// In the unit test's own environment, without entering host namespaces.
+    #[cfg(test)]
     Here,
 }
 
@@ -598,48 +606,14 @@ fn run_monitored(
     };
     let stdout_all = Arc::new(Mutex::new(Vec::<u8>::new()));
     let stderr_all = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let spawn_reader = |stream: Stream,
-                        mut src: Box<dyn Read + Send>,
-                        tx: Option<mpsc::Sender<(Stream, Vec<u8>)>>,
-                        all: Arc<Mutex<Vec<u8>>>|
-     -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
-            let mut line = Vec::new();
-            loop {
-                match src.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if let Ok(mut a) = all.lock() {
-                            a.extend_from_slice(&buf[..n]);
-                        }
-                        if let Some(tx) = tx.as_ref() {
-                            for &b in &buf[..n] {
-                                if b == b'\n' {
-                                    let _ = tx.send((stream, std::mem::take(&mut line)));
-                                } else {
-                                    line.push(b);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
-                }
-            }
-            if let (Some(tx), false) = (tx.as_ref(), line.is_empty()) {
-                let _ = tx.send((stream, line));
-            }
-        })
-    };
     let out_thread = child
         .stdout
         .take()
-        .map(|s| spawn_reader(Stream::Stdout, Box::new(s), tx.clone(), stdout_all.clone()));
+        .map(|s| spawn_output_reader(Stream::Stdout, Box::new(s), tx.clone(), stdout_all.clone()));
     let err_thread = child
         .stderr
         .take()
-        .map(|s| spawn_reader(Stream::Stderr, Box::new(s), tx.clone(), stderr_all.clone()));
+        .map(|s| spawn_output_reader(Stream::Stderr, Box::new(s), tx.clone(), stderr_all.clone()));
     drop(tx);
 
     let mut next_tick = started + every;
@@ -670,6 +644,71 @@ fn run_monitored(
         }
         std::thread::sleep(Duration::from_millis(5));
     };
+    let forced = finish_output_readers(
+        &mut child,
+        deadline,
+        exit,
+        out_thread,
+        err_thread,
+        rx.as_ref(),
+        &mut w,
+    );
+    let stdout = stdout_all.lock().map(|v| v.clone()).unwrap_or_default();
+    let stderr = stderr_all.lock().map(|v| v.clone()).unwrap_or_default();
+    let exit = if forced { Exit::TimedOut } else { exit };
+    Output {
+        exit,
+        stdout,
+        stderr,
+        elapsed: started.elapsed(),
+    }
+}
+
+fn spawn_output_reader(
+    stream: Stream,
+    mut src: Box<dyn Read + Send>,
+    tx: Option<mpsc::Sender<(Stream, Vec<u8>)>>,
+    all: Arc<Mutex<Vec<u8>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        let mut line = Vec::new();
+        loop {
+            match src.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Ok(mut a) = all.lock() {
+                        a.extend_from_slice(&buf[..n]);
+                    }
+                    if let Some(tx) = tx.as_ref() {
+                        for &b in &buf[..n] {
+                            if b == b'\n' {
+                                let _ = tx.send((stream, std::mem::take(&mut line)));
+                            } else {
+                                line.push(b);
+                            }
+                        }
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        if let (Some(tx), false) = (tx.as_ref(), line.is_empty()) {
+            let _ = tx.send((stream, line));
+        }
+    })
+}
+
+fn finish_output_readers(
+    child: &mut std::process::Child,
+    deadline: Instant,
+    exit: Exit,
+    out_thread: Option<std::thread::JoinHandle<()>>,
+    err_thread: Option<std::thread::JoinHandle<()>>,
+    rx: Option<&mpsc::Receiver<(Stream, Vec<u8>)>>,
+    w: &mut Option<&mut dyn Watch>,
+) -> bool {
     // The child is gone; the readers may still be delivering buffered data,
     // and a descendant holding the pipe can keep them alive. Waiting for the
     // readers ends at the deadline. After a forced kill the drains end at one
@@ -683,7 +722,7 @@ fn run_monitored(
             break;
         }
         if Instant::now() >= deadline {
-            kill_process_group(&mut child);
+            kill_process_group(child);
             let _ = child.wait();
             forced = true;
             break;
@@ -693,8 +732,8 @@ fn run_monitored(
     let killed = forced || matches!(exit, Exit::TimedOut | Exit::SpawnFailed);
     if killed {
         let grace = Instant::now() + Duration::from_millis(500);
-        if let Some(rx) = rx.as_ref() {
-            while deliver_pending(rx, &mut w) && Instant::now() < grace {}
+        if let Some(rx) = rx {
+            while deliver_pending(rx, w) && Instant::now() < grace {}
         }
         if let Some(t) = out_thread {
             let _ = wait_reader_until(t, grace);
@@ -702,8 +741,8 @@ fn run_monitored(
         if let Some(t) = err_thread {
             let _ = wait_reader_until(t, grace);
         }
-        if let Some(rx) = rx.as_ref() {
-            while deliver_pending(rx, &mut w) && Instant::now() < grace {}
+        if let Some(rx) = rx {
+            while deliver_pending(rx, w) && Instant::now() < grace {}
         }
     } else {
         // Both readers have ended, so every sender is gone and the channel
@@ -714,19 +753,11 @@ fn run_monitored(
         if let Some(t) = err_thread {
             let _ = t.join();
         }
-        if let Some(rx) = rx.as_ref() {
-            while deliver_pending(rx, &mut w) {}
+        if let Some(rx) = rx {
+            while deliver_pending(rx, w) {}
         }
     }
-    let stdout = stdout_all.lock().map(|v| v.clone()).unwrap_or_default();
-    let stderr = stderr_all.lock().map(|v| v.clone()).unwrap_or_default();
-    let exit = if forced { Exit::TimedOut } else { exit };
-    Output {
-        exit,
-        stdout,
-        stderr,
-        elapsed: started.elapsed(),
-    }
+    forced
 }
 
 fn read_dir_real(p: &Path) -> io::Result<Vec<OsString>> {

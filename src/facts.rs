@@ -808,43 +808,7 @@ pub fn parse_unsquashfs_lls(s: &str) -> Result<Vec<ImageEntry>, ParseError> {
             .next()
             .ok_or_else(|| ParseError(format!("line {line_no}: no owner")))?;
 
-        // Scan forward to the date field, remembering its byte offset. The
-        // scan stops when only whitespace is left; every step moves past the
-        // token it just read, so the loop always advances.
-        let mut offset = mode_end;
-        let total = raw.len();
-        let mut date_end = None;
-        while offset < total {
-            let Some(rel) = raw[offset..].find(|c: char| !c.is_whitespace()) else {
-                break;
-            };
-            let start = offset + rel;
-            let end = raw[start..]
-                .find(char::is_whitespace)
-                .map(|i| start + i)
-                .unwrap_or(total);
-            if is_date_token(&raw[start..end]) {
-                date_end = Some(end);
-                break;
-            }
-            offset = end;
-        }
-        let Some(date_end) = date_end else {
-            return Err(ParseError(format!("line {line_no}: no date field")));
-        };
-        // The time field follows the date.
-        let Some(rel) = raw[date_end..].find(|c: char| !c.is_whitespace()) else {
-            return Err(ParseError(format!("line {line_no}: no time field")));
-        };
-        let time_start = date_end + rel;
-        let time_end = raw[time_start..]
-            .find(char::is_whitespace)
-            .map(|i| time_start + i)
-            .ok_or_else(|| ParseError(format!("line {line_no}: no time field")))?;
-        let time = &raw[time_start..time_end];
-        if !is_time_token(time) {
-            return Err(ParseError(format!("line {line_no}: bad time field")));
-        }
+        let time_end = listing_path_offset(raw, mode_end, line_no)?;
         let mut path = raw[time_end..].trim_start().to_string();
         if path.is_empty() {
             return Err(ParseError(format!("line {line_no}: no path")));
@@ -884,6 +848,47 @@ pub fn parse_unsquashfs_lls(s: &str) -> Result<Vec<ImageEntry>, ParseError> {
         });
     }
     Ok(out)
+}
+
+fn listing_path_offset(raw: &str, mode_end: usize, line_no: usize) -> Result<usize, ParseError> {
+    // Scan forward to the date field, remembering its byte offset. The
+    // scan stops when only whitespace is left; every step moves past the
+    // token it just read, so the loop always advances.
+    let mut offset = mode_end;
+    let total = raw.len();
+    let mut date_end = None;
+    while offset < total {
+        let Some(rel) = raw[offset..].find(|c: char| !c.is_whitespace()) else {
+            break;
+        };
+        let start = offset + rel;
+        let end = raw[start..]
+            .find(char::is_whitespace)
+            .map(|i| start + i)
+            .unwrap_or(total);
+        if is_date_token(&raw[start..end]) {
+            date_end = Some(end);
+            break;
+        }
+        offset = end;
+    }
+    let Some(date_end) = date_end else {
+        return Err(ParseError(format!("line {line_no}: no date field")));
+    };
+    // The time field follows the date.
+    let Some(rel) = raw[date_end..].find(|c: char| !c.is_whitespace()) else {
+        return Err(ParseError(format!("line {line_no}: no time field")));
+    };
+    let time_start = date_end + rel;
+    let time_end = raw[time_start..]
+        .find(char::is_whitespace)
+        .map(|i| time_start + i)
+        .ok_or_else(|| ParseError(format!("line {line_no}: no time field")))?;
+    let time = &raw[time_start..time_end];
+    if !is_time_token(time) {
+        return Err(ParseError(format!("line {line_no}: bad time field")));
+    }
+    Ok(time_end)
 }
 
 fn is_date_token(token: &str) -> bool {
@@ -1120,37 +1125,40 @@ pub fn read_gpus_within(
         if vendor != 0x10de || (class >> 8 != 0x0300 && class >> 8 != 0x0302) {
             continue;
         }
-        let device_path = base.join("device");
-        let device = h.read(&device_path).map_err(|e| GpusUnreadable {
-            reason: io_reason(&e),
-            path: format!("{PCI_DEVICES_PATH}/{name}/device"),
-        })?;
-        let device = parse_sysfs_hex(&String::from_utf8_lossy(&device), 4).ok_or_else(|| {
-            GpusUnreadable {
-                reason: REASON_FORMAT_UNRECOGNIZED,
-                path: format!("{PCI_DEVICES_PATH}/{name}/device"),
-            }
-        })?;
-        let driver = match h.read_link(&base.join("driver")) {
-            Ok(target) => target.file_name().map(|n| n.to_string_lossy().into_owned()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                return Err(GpusUnreadable {
-                    reason: io_reason(&e),
-                    path: format!("{PCI_DEVICES_PATH}/{name}/driver"),
-                })
-            }
-        };
-        out.push(HostGpu {
-            address: name,
-            device: device as u16,
-            driver,
-        });
+        out.push(read_gpu_device(h, &base, name)?);
     }
     if deadline_hit(h) {
         return Err(gpus_timed_out());
     }
     Ok(out)
+}
+
+fn read_gpu_device(h: &dyn Host, base: &Path, name: String) -> Result<HostGpu, GpusUnreadable> {
+    let device_path = base.join("device");
+    let device = h.read(&device_path).map_err(|e| GpusUnreadable {
+        reason: io_reason(&e),
+        path: format!("{PCI_DEVICES_PATH}/{name}/device"),
+    })?;
+    let device =
+        parse_sysfs_hex(&String::from_utf8_lossy(&device), 4).ok_or_else(|| GpusUnreadable {
+            reason: REASON_FORMAT_UNRECOGNIZED,
+            path: format!("{PCI_DEVICES_PATH}/{name}/device"),
+        })?;
+    let driver = match h.read_link(&base.join("driver")) {
+        Ok(target) => target.file_name().map(|n| n.to_string_lossy().into_owned()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(GpusUnreadable {
+                reason: io_reason(&e),
+                path: format!("{PCI_DEVICES_PATH}/{name}/driver"),
+            })
+        }
+    };
+    Ok(HostGpu {
+        address: name,
+        device: device as u16,
+        driver,
+    })
 }
 
 /// GPUs counted for the driver: everything not bound to `vfio-pci`.

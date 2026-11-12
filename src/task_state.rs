@@ -613,6 +613,114 @@ impl TaskState {
         }
     }
 
+    fn validate_replacements(&self) -> Result<(), String> {
+        for replace in &self.replace {
+            for m in &replace.unloaded {
+                if !crate::facts::DRIVER_MODULES.contains(&m.as_str()) {
+                    return Err("unknown unloaded module".into());
+                }
+            }
+            for wait in &replace.unload_waits {
+                if !crate::facts::DRIVER_MODULES.contains(&wait.module.as_str()) {
+                    return Err("unknown unload wait module".into());
+                }
+            }
+            if let Some(correction) = &replace.module_correction {
+                for module in correction
+                    .modules_before
+                    .iter()
+                    .chain(correction.unloads.iter().map(|a| &a.module))
+                {
+                    if !crate::facts::DRIVER_MODULES.contains(&module.as_str()) {
+                        return Err("unknown correction module".into());
+                    }
+                }
+                for attempt in &correction.unloads {
+                    let ok = attempt.exit.get("code").and_then(Value::as_i64) == Some(0);
+                    if ok != attempt.reason.is_none() {
+                        return Err("correction unload reason must match exit".into());
+                    }
+                }
+                for wait in &correction.waits {
+                    if !crate::facts::DRIVER_MODULES.contains(&wait.module.as_str()) {
+                        return Err("unknown unload wait module".into());
+                    }
+                }
+            }
+            for r in replace
+                .reloaded
+                .iter()
+                .chain(replace.module_correction.iter().flat_map(|c| &c.reloaded))
+            {
+                if !crate::facts::DRIVER_MODULES.contains(&r.module.as_str()) {
+                    return Err("unknown reloaded module".into());
+                }
+                if r.ok != r.reason.is_none() {
+                    return Err("reload reason must match ok".into());
+                }
+                if matches!(&r.reason, Some(ReasonJson::Stderr { stderr }) if stderr.is_empty()) {
+                    return Err("empty stderr reload reason".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_outcome(&self) -> Result<(), String> {
+        if let Some(error) = &self.error {
+            if !error.params.is_object() {
+                return Err("error params must be an object".into());
+            }
+        }
+        if let Some(restore) = &self.restore {
+            match restore.decision {
+                RestoreDecision::Restore => {
+                    if restore.reason.is_some()
+                        || restore.read_reason.is_some()
+                        || restore.original.is_none()
+                    {
+                        return Err("bad restore record".into());
+                    }
+                }
+                RestoreDecision::None => {
+                    if restore.reason.as_deref().unwrap_or("").is_empty() {
+                        return Err("restore none without reason".into());
+                    }
+                    if restore.original.is_some() {
+                        return Err("restore none with original".into());
+                    }
+                }
+            }
+        }
+        self.load_orders_ok()?;
+        // SUCCEEDED and STOCK_RESTORED must carry both check readings.
+        match self.status {
+            Status::Succeeded => {
+                let Some(last) = self.checks.last() else {
+                    return Err("SUCCEEDED without checks".into());
+                };
+                if last.pass != Pass::Update || !last.passed {
+                    return Err("SUCCEEDED without a passing update check".into());
+                }
+                require_check_readings(last)?;
+            }
+            Status::StockRestored => {
+                if !self.checks.iter().any(|c| c.pass == Pass::Update) {
+                    return Err("STOCK_RESTORED without an update check".into());
+                }
+                let Some(last) = self.checks.last() else {
+                    return Err("STOCK_RESTORED without checks".into());
+                };
+                if last.pass != Pass::Restore || !last.passed {
+                    return Err("STOCK_RESTORED without a passing restore check".into());
+                }
+                require_check_readings(last)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// The load-order item belongs to an update check, and a check that failed it has not passed.
     fn load_orders_ok(&self) -> Result<(), String> {
         for check in &self.checks {
@@ -844,107 +952,8 @@ impl Validate for TaskState {
                 return Err("bad build environment image".into());
             }
         }
-        for replace in &self.replace {
-            for m in &replace.unloaded {
-                if !crate::facts::DRIVER_MODULES.contains(&m.as_str()) {
-                    return Err("unknown unloaded module".into());
-                }
-            }
-            for wait in &replace.unload_waits {
-                if !crate::facts::DRIVER_MODULES.contains(&wait.module.as_str()) {
-                    return Err("unknown unload wait module".into());
-                }
-            }
-            if let Some(correction) = &replace.module_correction {
-                for module in correction
-                    .modules_before
-                    .iter()
-                    .chain(correction.unloads.iter().map(|a| &a.module))
-                {
-                    if !crate::facts::DRIVER_MODULES.contains(&module.as_str()) {
-                        return Err("unknown correction module".into());
-                    }
-                }
-                for attempt in &correction.unloads {
-                    let ok = attempt.exit.get("code").and_then(Value::as_i64) == Some(0);
-                    if ok != attempt.reason.is_none() {
-                        return Err("correction unload reason must match exit".into());
-                    }
-                }
-                for wait in &correction.waits {
-                    if !crate::facts::DRIVER_MODULES.contains(&wait.module.as_str()) {
-                        return Err("unknown unload wait module".into());
-                    }
-                }
-            }
-            for r in replace
-                .reloaded
-                .iter()
-                .chain(replace.module_correction.iter().flat_map(|c| &c.reloaded))
-            {
-                if !crate::facts::DRIVER_MODULES.contains(&r.module.as_str()) {
-                    return Err("unknown reloaded module".into());
-                }
-                if r.ok != r.reason.is_none() {
-                    return Err("reload reason must match ok".into());
-                }
-                if matches!(&r.reason, Some(ReasonJson::Stderr { stderr }) if stderr.is_empty()) {
-                    return Err("empty stderr reload reason".into());
-                }
-            }
-        }
-        if let Some(error) = &self.error {
-            if !error.params.is_object() {
-                return Err("error params must be an object".into());
-            }
-        }
-        if let Some(restore) = &self.restore {
-            match restore.decision {
-                RestoreDecision::Restore => {
-                    if restore.reason.is_some()
-                        || restore.read_reason.is_some()
-                        || restore.original.is_none()
-                    {
-                        return Err("bad restore record".into());
-                    }
-                }
-                RestoreDecision::None => {
-                    if restore.reason.as_deref().unwrap_or("").is_empty() {
-                        return Err("restore none without reason".into());
-                    }
-                    if restore.original.is_some() {
-                        return Err("restore none with original".into());
-                    }
-                }
-            }
-        }
-        self.load_orders_ok()?;
-        // SUCCEEDED and STOCK_RESTORED must carry both check readings.
-        match self.status {
-            Status::Succeeded => {
-                let Some(last) = self.checks.last() else {
-                    return Err("SUCCEEDED without checks".into());
-                };
-                if last.pass != Pass::Update || !last.passed {
-                    return Err("SUCCEEDED without a passing update check".into());
-                }
-                require_check_readings(last)?;
-            }
-            Status::StockRestored => {
-                if !self.checks.iter().any(|c| c.pass == Pass::Update) {
-                    return Err("STOCK_RESTORED without an update check".into());
-                }
-                let Some(last) = self.checks.last() else {
-                    return Err("STOCK_RESTORED without checks".into());
-                };
-                if last.pass != Pass::Restore || !last.passed {
-                    return Err("STOCK_RESTORED without a passing restore check".into());
-                }
-                require_check_readings(last)?;
-            }
-            _ => {}
-        }
-        Ok(())
+        self.validate_replacements()?;
+        self.validate_outcome()
     }
 }
 

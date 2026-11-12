@@ -324,7 +324,12 @@ fn execute(ctx: &mut RunCtx, prepared: Option<build_env::BuildEnv>) -> Result<()
         stage_build(ctx, prepared, compiler.as_deref().unwrap())?;
     }
 
-    let unlock_rule = stage_unlock_preload(ctx, &plan_source)?;
+    stage_apply(ctx, &plan_source)
+}
+
+/// Apply the prepared image, then restore the saved original if its checks fail.
+fn stage_apply(ctx: &mut RunCtx, plan_source: &task_state::PlanSource) -> Result<(), FlowStop> {
+    let unlock_rule = stage_unlock_preload(ctx, plan_source)?;
     let update = replace::unload(ctx, Pass::Update).or_else(|e| module_error(ctx, e))?;
     replace::write(ctx, &update, None).or_else(|e| module_error(ctx, e))?;
     let readings = replace::refresh(ctx, &update);
@@ -551,6 +556,34 @@ fn finish_terminal(ctx: &mut RunCtx, terminal: Option<Status>) -> Result<(), ()>
     // the persisted state must remain RUNNING with no finished_at.
     ctx.state.status = Status::Running;
     ctx.enter(Phase::ReadLoadedVersionEnd);
+    read_loaded_version_end(ctx);
+
+    record_terminal_gpu_users(ctx);
+
+    if ctx.state.finished_at.is_none() {
+        ctx.state.finished_at = Some(ctx.host.wall_ms());
+    }
+    ctx.state.status = terminal.unwrap_or(if ctx.state.error.is_some() {
+        Status::Failed
+    } else {
+        Status::Running
+    });
+    if ctx.state.phase != Some(Phase::ReadLoadedVersionEnd) {
+        ctx.state.phase = Some(Phase::ReadLoadedVersionEnd);
+    }
+    ctx.state.waiting_gpu = None;
+    let written = ctx.write_state();
+    if written {
+        ctx.log(
+            LogKey::Finished,
+            json!({"status": ctx.state.status.as_str()}),
+        );
+    }
+
+    cleanup_terminal(ctx, written)
+}
+
+fn read_loaded_version_end(ctx: &mut RunCtx) {
     let modules = match ctx.host.read(std::path::Path::new(PROC_MODULES_PATH)) {
         Ok(bytes) => match facts::parse_proc_modules(&String::from_utf8_lossy(&bytes)) {
             Ok(m) => Some(Reading::Value(m)),
@@ -571,7 +604,9 @@ fn finish_terminal(ctx: &mut RunCtx, terminal: Option<Status>) -> Result<(), ()>
             ctx.state.loaded_version_end = Some(crate::task_state::ReadingJson::unknown(reason));
         }
     }
+}
 
+fn record_terminal_gpu_users(ctx: &mut RunCtx) {
     // The GPU user list is needed for GPU occupancy, unload/restore failures and version-change notices.
     let needs_users = matches!(
         ctx.state.error.as_ref().map(|e| ErrorCode::parse(&e.code)),
@@ -636,27 +671,9 @@ fn finish_terminal(ctx: &mut RunCtx, terminal: Option<Status>) -> Result<(), ()>
                 .collect(),
         });
     }
+}
 
-    if ctx.state.finished_at.is_none() {
-        ctx.state.finished_at = Some(ctx.host.wall_ms());
-    }
-    ctx.state.status = terminal.unwrap_or(if ctx.state.error.is_some() {
-        Status::Failed
-    } else {
-        Status::Running
-    });
-    if ctx.state.phase != Some(Phase::ReadLoadedVersionEnd) {
-        ctx.state.phase = Some(Phase::ReadLoadedVersionEnd);
-    }
-    ctx.state.waiting_gpu = None;
-    let written = ctx.write_state();
-    if written {
-        ctx.log(
-            LogKey::Finished,
-            json!({"status": ctx.state.status.as_str()}),
-        );
-    }
-
+fn cleanup_terminal(ctx: &RunCtx, written: bool) -> Result<(), ()> {
     // Cleanup. A task whose driver-changing responsibility is not proven settled keeps its
     // task directory, state, rootfs and unique inputs: a green cleanup does not prove the
     // host is safe to discard. `written` must be true, otherwise the record does not even

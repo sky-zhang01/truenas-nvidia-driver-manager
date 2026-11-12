@@ -705,8 +705,27 @@ pub fn reconcile(h: &dyn Host, p: &Paths) -> Reconciled {
     facts.task_dirs = task_dirs_result.unwrap_or_default();
     let settled = settle_tasks(h, p, &facts, &preserved, &mut tasks, &recovered_rootfs);
 
+    let active = reconciled_active(&facts, &tasks, &settled);
+    let collection_complete = facts.unit_query_error.is_none()
+        && facts.state_dir_unreadable.is_none()
+        && facts.task_dirs_unreadable.is_none()
+        && settled.unexplained.is_empty();
+    let mut cleanup_pending = settled.cleanup_pending;
+    cleanup_pending.sort();
+    cleanup_pending.dedup();
+    Reconciled {
+        unit_query_error: facts.unit_query_error,
+        tasks,
+        active,
+        collection_complete,
+        cleanup_pending,
+        host_residue: settled.host_residue,
+    }
+}
+
+fn reconciled_active(facts: &Facts, tasks: &[ReconciledTask], settled: &Settled) -> ActiveState {
     // "Is there an unfinished task?"
-    let active = if !facts.running.is_empty() {
+    if !facts.running.is_empty() {
         let mut ids: Vec<String> = facts.running.iter().cloned().collect();
         ids.sort();
         ActiveState::Running { task_ids: ids }
@@ -774,22 +793,6 @@ pub fn reconcile(h: &dyn Host, p: &Paths) -> Reconciled {
         }
     } else {
         ActiveState::None
-    };
-
-    let collection_complete = facts.unit_query_error.is_none()
-        && facts.state_dir_unreadable.is_none()
-        && facts.task_dirs_unreadable.is_none()
-        && settled.unexplained.is_empty();
-    let mut cleanup_pending = settled.cleanup_pending;
-    cleanup_pending.sort();
-    cleanup_pending.dedup();
-    Reconciled {
-        unit_query_error: facts.unit_query_error,
-        tasks,
-        active,
-        collection_complete,
-        cleanup_pending,
-        host_residue: settled.host_residue,
     }
 }
 
@@ -815,33 +818,7 @@ fn read_state_files(
         let unit_running = facts.running.contains(id);
         match read {
             JsonRead::Ok(state) => {
-                if !facts.query_failed
-                    && facts.may_change
-                    && state.status == Status::Running
-                    && !unit_running
-                {
-                    let mut updated = state.clone();
-                    updated.status = Status::Interrupted;
-                    updated.finished_at = Some(facts.now);
-                    updated.waiting_gpu = None;
-                    if task_state::write(h, p, &updated).is_ok() {
-                        crate::log::info(
-                            Event::TaskInterrupted,
-                            &[
-                                ("task_id", id.as_str()),
-                                (
-                                    "phase",
-                                    updated.phase.map(|p| p.as_str()).unwrap_or("UNKNOWN"),
-                                ),
-                            ],
-                        );
-                        tasks.push(ReconciledTask::with_state(id, updated));
-                    } else {
-                        tasks.push(ReconciledTask::with_state(id, state));
-                    }
-                } else {
-                    tasks.push(ReconciledTask::with_state(id, state));
-                }
+                tasks.push(read_known_state(h, p, id, facts, state, unit_running));
             }
             other => {
                 let state_read_error = store::state_read_error_key(&other)
@@ -923,6 +900,39 @@ fn read_state_files(
     (tasks, recovered_rootfs)
 }
 
+fn read_known_state(
+    h: &dyn Host,
+    p: &Paths,
+    id: &str,
+    facts: &Facts,
+    state: TaskState,
+    unit_running: bool,
+) -> ReconciledTask {
+    if !facts.query_failed && facts.may_change && state.status == Status::Running && !unit_running {
+        let mut updated = state.clone();
+        updated.status = Status::Interrupted;
+        updated.finished_at = Some(facts.now);
+        updated.waiting_gpu = None;
+        if task_state::write(h, p, &updated).is_ok() {
+            crate::log::info(
+                Event::TaskInterrupted,
+                &[
+                    ("task_id", id),
+                    (
+                        "phase",
+                        updated.phase.map(|p| p.as_str()).unwrap_or("UNKNOWN"),
+                    ),
+                ],
+            );
+            ReconciledTask::with_state(id, updated)
+        } else {
+            ReconciledTask::with_state(id, state)
+        }
+    } else {
+        ReconciledTask::with_state(id, state)
+    }
+}
+
 /// Rewrite a fresh record for a task directory whose state file is gone, reset
 /// the host a kept record still owes, and remove the task directories whose
 /// driver-changing responsibility is settled.
@@ -935,86 +945,7 @@ fn settle_tasks(
     recovered_rootfs: &BTreeMap<String, crate::task_state::Rootfs>,
 ) -> Settled {
     let mut cleanup_pending: Vec<String> = Vec::new();
-    // Missing state file but a task directory remains. Only a successful unit query and a
-    // readable `manager/state/` may mutate anything here. A failed task-directory listing is
-    // not an empty set: nothing is created, and the latest-task read stays unknown. A
-    // reconstruction writes a new record: it may only happen while the execution lock is
-    // really held and the host was confirmed idle twice.
-    if facts.may_change
-        && facts.state_dir_unreadable.is_none()
-        && facts.unit_query_error.is_none()
-        && facts.task_dirs_unreadable.is_none()
-    {
-        for id in &facts.task_dirs {
-            if tasks.iter().any(|t| t.id == *id) || facts.running.contains(id) {
-                continue;
-            }
-            // The protected material of this id may be the only evidence of
-            // the read-only property it needs restored: the proven rootfs is
-            // persisted with the reconstructed record, never dropped.
-            let recovered = preserved
-                .rootfs
-                .get(id)
-                .cloned()
-                .filter(|r| r.valid())
-                .or_else(|| recovered_rootfs.get(id).cloned());
-            // Whatever bytes really exist for this id (a bad file or the protected material
-            // the store would restore into it) are the only evidence of what the task did:
-            // they are kept under the permanent sidecar name before a fresh record may
-            // supersede them, and a refused keep leaves the bytes exactly as they are.
-            let material: Option<Vec<u8>> = h
-                .read(&p.state(id))
-                .ok()
-                .or_else(|| recovery_materials(h, p, id).into_iter().next());
-            let kept_name = format!("{id}.json.unreadable");
-            let mut kept_as: Option<String> = None;
-            let mut keep_refused = false;
-            if let Some(bytes) = material {
-                match h.read(&p.state_unreadable(id)) {
-                    Ok(have) if have == bytes => kept_as = Some(kept_name.clone()),
-                    Ok(_) => keep_refused = true,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        if store::write_atomic(h, &p.state_unreadable(id), &bytes, 0o644)
-                            .and_then(|()| h.read(&p.state_unreadable(id)))
-                            .map(|kept| kept == bytes)
-                            .unwrap_or(false)
-                        {
-                            kept_as = Some(kept_name.clone());
-                        } else {
-                            keep_refused = true;
-                        }
-                    }
-                    Err(_) => keep_refused = true,
-                }
-            }
-            if keep_refused {
-                // The only copy cannot be protected: no fresh record is written
-                // over it, the id is reported UNKNOWN and nothing is deleted.
-                tasks.push(ReconciledTask::unknown(id, "missing"));
-                continue;
-            }
-            let note = crate::task_state::StateNote {
-                state_read_error: "missing".to_string(),
-                kept_as: kept_as.clone(),
-            };
-            let fresh = TaskState::interrupted_stub(id, facts.now, recovered, note.clone());
-            if task_state::write(h, p, &fresh).is_ok() {
-                if let Some(name) = &kept_as {
-                    crate::log::info(
-                        Event::StateFileKept,
-                        &[("task_id", id.as_str()), ("file", name.as_str())],
-                    );
-                }
-                tasks.push(ReconciledTask::interrupted(
-                    id,
-                    fresh,
-                    "missing".to_string(),
-                    note,
-                ));
-            }
-        }
-    }
-
+    rebuild_missing_states(h, p, facts, preserved, tasks, recovered_rootfs);
     tasks.sort_by(|a, b| a.id.cmp(&b.id));
 
     // Re-read units, jobs and records immediately before cleanup to protect inputs from a stale snapshot.
@@ -1101,6 +1032,95 @@ fn settle_tasks(
         cleanup_pending,
         host_residue,
         unexplained,
+    }
+}
+
+fn rebuild_missing_states(
+    h: &dyn Host,
+    p: &Paths,
+    facts: &Facts,
+    preserved: &RecoveryUnion,
+    tasks: &mut Vec<ReconciledTask>,
+    recovered_rootfs: &BTreeMap<String, crate::task_state::Rootfs>,
+) {
+    // Missing state file but a task directory remains. Only a successful unit query and a
+    // readable `manager/state/` may mutate anything here. A failed task-directory listing is
+    // not an empty set: nothing is created, and the latest-task read stays unknown. A
+    // reconstruction writes a new record: it may only happen while the execution lock is
+    // really held and the host was confirmed idle twice.
+    if facts.may_change
+        && facts.state_dir_unreadable.is_none()
+        && facts.unit_query_error.is_none()
+        && facts.task_dirs_unreadable.is_none()
+    {
+        for id in &facts.task_dirs {
+            if tasks.iter().any(|t| t.id == *id) || facts.running.contains(id) {
+                continue;
+            }
+            // The protected material of this id may be the only evidence of
+            // the read-only property it needs restored: the proven rootfs is
+            // persisted with the reconstructed record, never dropped.
+            let recovered = preserved
+                .rootfs
+                .get(id)
+                .cloned()
+                .filter(|r| r.valid())
+                .or_else(|| recovered_rootfs.get(id).cloned());
+            // Whatever bytes really exist for this id (a bad file or the protected material
+            // the store would restore into it) are the only evidence of what the task did:
+            // they are kept under the permanent sidecar name before a fresh record may
+            // supersede them, and a refused keep leaves the bytes exactly as they are.
+            let material: Option<Vec<u8>> = h
+                .read(&p.state(id))
+                .ok()
+                .or_else(|| recovery_materials(h, p, id).into_iter().next());
+            let kept_name = format!("{id}.json.unreadable");
+            let mut kept_as: Option<String> = None;
+            let mut keep_refused = false;
+            if let Some(bytes) = material {
+                match h.read(&p.state_unreadable(id)) {
+                    Ok(have) if have == bytes => kept_as = Some(kept_name.clone()),
+                    Ok(_) => keep_refused = true,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        if store::write_atomic(h, &p.state_unreadable(id), &bytes, 0o644)
+                            .and_then(|()| h.read(&p.state_unreadable(id)))
+                            .map(|kept| kept == bytes)
+                            .unwrap_or(false)
+                        {
+                            kept_as = Some(kept_name.clone());
+                        } else {
+                            keep_refused = true;
+                        }
+                    }
+                    Err(_) => keep_refused = true,
+                }
+            }
+            if keep_refused {
+                // The only copy cannot be protected: no fresh record is written
+                // over it, the id is reported UNKNOWN and nothing is deleted.
+                tasks.push(ReconciledTask::unknown(id, "missing"));
+                continue;
+            }
+            let note = crate::task_state::StateNote {
+                state_read_error: "missing".to_string(),
+                kept_as: kept_as.clone(),
+            };
+            let fresh = TaskState::interrupted_stub(id, facts.now, recovered, note.clone());
+            if task_state::write(h, p, &fresh).is_ok() {
+                if let Some(name) = &kept_as {
+                    crate::log::info(
+                        Event::StateFileKept,
+                        &[("task_id", id.as_str()), ("file", name.as_str())],
+                    );
+                }
+                tasks.push(ReconciledTask::interrupted(
+                    id,
+                    fresh,
+                    "missing".to_string(),
+                    note,
+                ));
+            }
+        }
     }
 }
 
@@ -1232,7 +1252,63 @@ fn step_failed(step: CleanupStep, e: impl ToString) -> StepResult {
 /// Every step is idempotent: a second run on an already reset host passes.
 pub fn restore_host(h: &dyn Host, rootfs: Option<&crate::task_state::Rootfs>) -> Vec<StepResult> {
     let mut out = Vec::new();
+    restore_writable_mount(h, rootfs, &mut out);
+    if let Some(rootfs) = rootfs {
+        // Compare observed values so an idempotent reset does not claim a change.
+        let query = Cmd::new(At::Host, "zfs", HOST_CMD_TIMEOUT)
+            .arg("get")
+            .arg("-H")
+            .arg("-o")
+            .arg("value")
+            .arg("readonly")
+            .arg(&rootfs.dataset);
+        let before = h.run(&query);
+        // The `zfs set` result is intentionally not part of the judgement: run it, then
+        // decide from the `zfs get` readback below.
+        let _ = h.run(
+            &Cmd::new(At::Host, "zfs", HOST_CMD_TIMEOUT)
+                .arg("set")
+                .arg(format!("readonly={}", rootfs.readonly_before))
+                .arg(&rootfs.dataset),
+        );
+        let get = h.run(&query);
+        // The judgement is the post-state reading, not the exit code. A `zfs get` that failed
+        // or reads back a value other than the recorded `readonly_before` is a failed step,
+        // with the error and the full readback kept; the `zfs set` exit code and text are
+        // only recorded.
+        let reading = get.stdout_text().trim().to_string();
+        if get.exit.ok() && reading == rootfs.readonly_before {
+            let mut r = step_ok(CleanupStep::RestoreReadonly);
+            let previous = before.stdout_text();
+            r.changed = before.exit.ok()
+                && matches!(previous.trim(), "on" | "off")
+                && previous.trim() != reading;
+            r.reading = Some(reading);
+            out.push(r);
+        } else {
+            let mut r = if !get.exit.ok() {
+                step_failed_cmd(CleanupStep::RestoreReadonly, &get, HOST_CMD_TIMEOUT)
+            } else {
+                step_failed(
+                    CleanupStep::RestoreReadonly,
+                    format!(
+                        "readonly reads back as {reading}, not {}",
+                        rootfs.readonly_before
+                    ),
+                )
+            };
+            r.reading = Some(reading);
+            out.push(r);
+        }
+    }
+    out
+}
 
+fn restore_writable_mount(
+    h: &dyn Host,
+    rootfs: Option<&crate::task_state::Rootfs>,
+    out: &mut Vec<StepResult>,
+) {
     // only the writable view of this /usr dataset belongs to this
     // cleanup. A mount of another source at the fixed path is not ours.
     match h.mount_table() {
@@ -1291,128 +1367,65 @@ pub fn restore_host(h: &dyn Host, rootfs: Option<&crate::task_state::Rootfs>) ->
                     let deleted = delete.ok;
                     out.push(delete);
                     if deleted {
-                        let umount =
-                            h.run(&Cmd::new(At::Host, "umount", HOST_CMD_TIMEOUT).arg(RW_MOUNT));
-                        if !umount.exit.ok() {
-                            out.push(step_failed_cmd(
-                                CleanupStep::UnmountWritableMount,
-                                &umount,
-                                HOST_CMD_TIMEOUT,
-                            ));
-                        } else {
-                            match h.mount_table() {
-                                Ok(after)
-                                    if after.iter().any(|m| {
-                                        Path::new(&m.mount_point).starts_with(RW_MOUNT)
-                                    }) =>
-                                {
-                                    out.push(step_failed(
-                                        CleanupStep::UnmountWritableMount,
-                                        "writable mount remains after umount",
-                                    ));
-                                }
-                                Err(error) => {
-                                    out.push(step_failed_io(
-                                        CleanupStep::UnmountWritableMount,
-                                        error,
-                                    ));
-                                }
-                                Ok(_) => {
-                                    let dir = h.view(Path::new(RW_MOUNT));
-                                    let parent =
-                                        h.view(Path::new("/run/truenas-nvidia-driver-manager"));
-                                    let mut unmount = step_ok(CleanupStep::UnmountWritableMount);
-                                    match h.remove_dir_all(&dir) {
-                                        Ok(()) => {}
-                                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                                        Err(e) => {
-                                            unmount =
-                                                step_failed_io(CleanupStep::UnmountWritableMount, e)
-                                        }
-                                    }
-                                    if unmount.ok {
-                                        match h.read_dir(&parent) {
-                                            Ok(names) if names.is_empty() => {
-                                                if let Err(e) = h.remove_dir_all(&parent) {
-                                                    if e.kind() != std::io::ErrorKind::NotFound {
-                                                        unmount = step_failed_io(
-                                                            CleanupStep::UnmountWritableMount,
-                                                            e,
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                            Ok(_) => {}
-                                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                                            Err(e) => {
-                                                unmount = step_failed_io(
-                                                    CleanupStep::UnmountWritableMount,
-                                                    e,
-                                                )
-                                            }
-                                        }
-                                    }
-                                    unmount.changed = true;
-                                    out.push(unmount);
-                                }
-                            }
-                        }
+                        unmount_writable(h, out);
                     }
                 }
             }
         }
     }
+}
 
-    if let Some(rootfs) = rootfs {
-        // Compare observed values so an idempotent reset does not claim a change.
-        let query = Cmd::new(At::Host, "zfs", HOST_CMD_TIMEOUT)
-            .arg("get")
-            .arg("-H")
-            .arg("-o")
-            .arg("value")
-            .arg("readonly")
-            .arg(&rootfs.dataset);
-        let before = h.run(&query);
-        // The `zfs set` result is intentionally not part of the judgement: run it, then
-        // decide from the `zfs get` readback below.
-        let _ = h.run(
-            &Cmd::new(At::Host, "zfs", HOST_CMD_TIMEOUT)
-                .arg("set")
-                .arg(format!("readonly={}", rootfs.readonly_before))
-                .arg(&rootfs.dataset),
-        );
-        let get = h.run(&query);
-        // The judgement is the post-state reading, not the exit code. A `zfs get` that failed
-        // or reads back a value other than the recorded `readonly_before` is a failed step,
-        // with the error and the full readback kept; the `zfs set` exit code and text are
-        // only recorded.
-        let reading = get.stdout_text().trim().to_string();
-        if get.exit.ok() && reading == rootfs.readonly_before {
-            let mut r = step_ok(CleanupStep::RestoreReadonly);
-            let previous = before.stdout_text();
-            r.changed = before.exit.ok()
-                && matches!(previous.trim(), "on" | "off")
-                && previous.trim() != reading;
-            r.reading = Some(reading);
-            out.push(r);
-        } else {
-            let mut r = if !get.exit.ok() {
-                step_failed_cmd(CleanupStep::RestoreReadonly, &get, HOST_CMD_TIMEOUT)
-            } else {
-                step_failed(
-                    CleanupStep::RestoreReadonly,
-                    format!(
-                        "readonly reads back as {reading}, not {}",
-                        rootfs.readonly_before
-                    ),
-                )
-            };
-            r.reading = Some(reading);
-            out.push(r);
+fn unmount_writable(h: &dyn Host, out: &mut Vec<StepResult>) {
+    let umount = h.run(&Cmd::new(At::Host, "umount", HOST_CMD_TIMEOUT).arg(RW_MOUNT));
+    if !umount.exit.ok() {
+        out.push(step_failed_cmd(
+            CleanupStep::UnmountWritableMount,
+            &umount,
+            HOST_CMD_TIMEOUT,
+        ));
+    } else {
+        match h.mount_table() {
+            Ok(after)
+                if after
+                    .iter()
+                    .any(|m| Path::new(&m.mount_point).starts_with(RW_MOUNT)) =>
+            {
+                out.push(step_failed(
+                    CleanupStep::UnmountWritableMount,
+                    "writable mount remains after umount",
+                ));
+            }
+            Err(error) => {
+                out.push(step_failed_io(CleanupStep::UnmountWritableMount, error));
+            }
+            Ok(_) => {
+                let dir = h.view(Path::new(RW_MOUNT));
+                let parent = h.view(Path::new("/run/truenas-nvidia-driver-manager"));
+                let mut unmount = step_ok(CleanupStep::UnmountWritableMount);
+                match h.remove_dir_all(&dir) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => unmount = step_failed_io(CleanupStep::UnmountWritableMount, e),
+                }
+                if unmount.ok {
+                    match h.read_dir(&parent) {
+                        Ok(names) if names.is_empty() => {
+                            if let Err(e) = h.remove_dir_all(&parent) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    unmount = step_failed_io(CleanupStep::UnmountWritableMount, e);
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => unmount = step_failed_io(CleanupStep::UnmountWritableMount, e),
+                    }
+                }
+                unmount.changed = true;
+                out.push(unmount);
+            }
         }
     }
-
-    out
 }
 
 /// Log observed host changes and each failure, then one completion only when
@@ -1634,34 +1647,9 @@ fn release_kept_record(
     }
     let mut mismatch = String::new();
     for later in later {
-        let proof = proofs.entry(later.task_id.clone()).or_insert_with(|| {
-            let last = later
-                .replace
-                .last()
-                .expect("the candidate has a replace pass");
-            let target = match last.pass {
-                crate::task_state::Pass::Restore => later
-                    .restore
-                    .as_ref()
-                    .and_then(|restore| restore.original.as_ref())
-                    .map(|original| original.version.as_str()),
-                crate::task_state::Pass::Update => {
-                    later.plan.as_ref().map(|plan| plan.version.as_str())
-                }
-            }
-            .ok_or("the later task has no target version")?;
-            // Cheap physical reads precede both image hashes. A different live
-            // version cannot release anything, regardless of image sizes.
-            match facts::loaded_version(h, None) {
-                facts::LoadedVersion::Value(current) if current.text() == target => {}
-                _ => return Err("the loaded kernel driver version is not the target".into()),
-            }
-            match facts::nvidia_smi_version_now(h) {
-                facts::Reading::Value(current) if current == target => {}
-                _ => return Err("nvidia-smi does not report the target version".into()),
-            }
-            canonical_proof(h, p, later, last, false)
-        });
+        let proof = proofs
+            .entry(later.task_id.clone())
+            .or_insert_with(|| later_task_proof(h, p, later));
         if let Err(reason) = proof {
             mismatch.clone_from(reason);
             continue;
@@ -1680,6 +1668,33 @@ fn release_kept_record(
     Err(ReleaseRefusal::detail("release.driver_mismatch", mismatch))
 }
 
+fn later_task_proof(h: &dyn Host, p: &Paths, later: &TaskState) -> Result<(), String> {
+    let last = later
+        .replace
+        .last()
+        .expect("the candidate has a replace pass");
+    let target = match last.pass {
+        crate::task_state::Pass::Restore => later
+            .restore
+            .as_ref()
+            .and_then(|restore| restore.original.as_ref())
+            .map(|original| original.version.as_str()),
+        crate::task_state::Pass::Update => later.plan.as_ref().map(|plan| plan.version.as_str()),
+    }
+    .ok_or("the later task has no target version")?;
+    // Cheap physical reads precede both image hashes. A different live
+    // version cannot release anything, regardless of image sizes.
+    match facts::loaded_version(h, None) {
+        facts::LoadedVersion::Value(current) if current.text() == target => {}
+        _ => return Err("the loaded kernel driver version is not the target".into()),
+    }
+    match facts::nvidia_smi_version_now(h) {
+        facts::Reading::Value(current) if current == target => {}
+        _ => return Err("nvidia-smi does not report the target version".into()),
+    }
+    canonical_proof(h, p, later, last, false)
+}
+
 /// The shared cleanup.
 pub fn cleanup(
     h: &dyn Host,
@@ -1689,63 +1704,7 @@ pub fn cleanup(
 ) -> Vec<StepResult> {
     let mut out = restore_host(h, rootfs);
     let mut keep_task_dir = out.iter().any(|r| !r.ok);
-
-    // remove the build container. The judgement is a complete exact
-    // listing, never the `docker rm` exit code: a removal that reports failure
-    // because the container is already gone is a success, and a listing that
-    // cannot be trusted is a failure. The command's own exit classification is
-    // still kept as the reason when the container really is still there.
-    let name = build_container_name(id);
-    match list_container_names(h) {
-        Ok(mut names) => {
-            let mut listing_failed = false;
-            let mut removal: Option<Output> = None;
-            if names.contains(&name) {
-                removal = Some(
-                    h.run(
-                        &Cmd::new(At::Host, "docker", HOST_CMD_TIMEOUT)
-                            .arg("rm")
-                            .arg("-f")
-                            .arg(&name),
-                    ),
-                );
-                match list_container_names(h) {
-                    Ok(after) => names = after,
-                    Err(e) => {
-                        out.push(step_failed_io(CleanupStep::RemoveBuildContainer, e));
-                        keep_task_dir = true;
-                        listing_failed = true;
-                    }
-                }
-            }
-            if !listing_failed {
-                if names.contains(&name) {
-                    match removal {
-                        // A failed removal keeps the command's exit classification and its
-                        // raw text.
-                        Some(rm) if !rm.exit.ok() => out.push(step_failed_cmd(
-                            CleanupStep::RemoveBuildContainer,
-                            &rm,
-                            HOST_CMD_TIMEOUT,
-                        )),
-                        _ => out.push(step_failed(
-                            CleanupStep::RemoveBuildContainer,
-                            "the build container still exists after removal",
-                        )),
-                    }
-                    keep_task_dir = true;
-                } else {
-                    // Either it was already gone, or the removal reported a
-                    // failure because it was gone: the listing is the proof.
-                    out.push(step_ok(CleanupStep::RemoveBuildContainer));
-                }
-            }
-        }
-        Err(e) => {
-            out.push(step_failed_io(CleanupStep::RemoveBuildContainer, e));
-            keep_task_dir = true;
-        }
-    }
+    keep_task_dir |= cleanup_build_container(h, id, &mut out);
 
     // delete the state file's temporary files. A refused removal or an unreadable
     // state directory is a failed step, not a success.
@@ -1822,6 +1781,67 @@ pub fn cleanup(
         Err(e) => out.push(step_failed_io(CleanupStep::DeleteTaskDir, e)),
     }
     out
+}
+
+fn cleanup_build_container(h: &dyn Host, id: &str, out: &mut Vec<StepResult>) -> bool {
+    let mut keep_task_dir = false;
+    // remove the build container. The judgement is a complete exact
+    // listing, never the `docker rm` exit code: a removal that reports failure
+    // because the container is already gone is a success, and a listing that
+    // cannot be trusted is a failure. The command's own exit classification is
+    // still kept as the reason when the container really is still there.
+    let name = build_container_name(id);
+    match list_container_names(h) {
+        Ok(mut names) => {
+            let mut listing_failed = false;
+            let mut removal: Option<Output> = None;
+            if names.contains(&name) {
+                removal = Some(
+                    h.run(
+                        &Cmd::new(At::Host, "docker", HOST_CMD_TIMEOUT)
+                            .arg("rm")
+                            .arg("-f")
+                            .arg(&name),
+                    ),
+                );
+                match list_container_names(h) {
+                    Ok(after) => names = after,
+                    Err(e) => {
+                        out.push(step_failed_io(CleanupStep::RemoveBuildContainer, e));
+                        keep_task_dir = true;
+                        listing_failed = true;
+                    }
+                }
+            }
+            if !listing_failed {
+                if names.contains(&name) {
+                    match removal {
+                        // A failed removal keeps the command's exit classification and its
+                        // raw text.
+                        Some(rm) if !rm.exit.ok() => out.push(step_failed_cmd(
+                            CleanupStep::RemoveBuildContainer,
+                            &rm,
+                            HOST_CMD_TIMEOUT,
+                        )),
+                        _ => out.push(step_failed(
+                            CleanupStep::RemoveBuildContainer,
+                            "the build container still exists after removal",
+                        )),
+                    }
+                    keep_task_dir = true;
+                } else {
+                    // Either it was already gone, or the removal reported a
+                    // failure because it was gone: the listing is the proof.
+                    out.push(step_ok(CleanupStep::RemoveBuildContainer));
+                }
+            }
+        }
+        Err(e) => {
+            out.push(step_failed_io(CleanupStep::RemoveBuildContainer, e));
+            keep_task_dir = true;
+        }
+    }
+    keep_task_dir
 }
 
 #[cfg(test)]
@@ -2348,21 +2368,95 @@ fn canonical_proof(
     last: &crate::task_state::ReplaceRecord,
     bind_merge_time: bool,
 ) -> Result<(), String> {
-    use crate::task_state::{Pass, PlanSource, ReadingJson, RestoreDecision, RowKind};
+    use crate::task_state::{Pass, ReadingJson};
+    let (row_id, version, kind, fingerprint, saved_at, planned_sha) =
+        canonical_target(state, last)?;
+    // The target row, read by its exact id through the existing row path.
+    let record_path = p.row_dir(&row_id).join("record.json");
+    let record = match store::read_json::<crate::drivers::Record>(h, &record_path) {
+        JsonRead::Ok(record) if record.kind_matches(&row_id) => record,
+        _ => return Err("the target driver record is missing or unreadable".to_string()),
+    };
+    if record.version != version
+        || record.kind != kind
+        || record.fingerprint != fingerprint
+        || saved_at.is_some_and(|saved| record.created_at != saved)
+        || planned_sha.is_some_and(|sha| record.sha256 != sha)
+    {
+        return Err("the target driver record differs from the recorded intent".to_string());
+    }
+    // The target image itself must still hash and measure as its record says.
+    let row_path = p.row_dir(&row_id).join("nvidia.raw");
+    match store::hash_file(h, &row_path) {
+        Ok(copied) if copied.sha256 == record.sha256 && copied.size == record.size => {}
+        Ok(_) => return Err("the target driver image differs from its record".to_string()),
+        Err(_) => return Err("the target driver image is unreadable".to_string()),
+    }
+    // The permanent image must be exactly that verified target.
+    match facts::canonical_sha256(h) {
+        facts::Reading::Value(sha) if sha == record.sha256 => {}
+        _ => return Err("the permanent image is not the verified target".to_string()),
+    }
 
+    canonical_live_driver(h, state, &record)?;
+
+    // The effective pass's own check: a confirmed refresh with two different
+    // merge times, and the current extension merge time is exactly the second
+    // one.
+    let check = state
+        .checks
+        .iter()
+        .rfind(|c| c.pass == last.pass)
+        .ok_or("the effective pass has no check record")?;
+    if !check.refresh_ok || check.expected != record.version {
+        return Err("the effective pass did not confirm the target version".to_string());
+    }
+    if last.pass == Pass::Restore && !check.passed {
+        // A restore is proven by its own passing check; the decision, the original row and a
+        // refresh alone are not success.
+        return Err("the restore pass has no passing check record".to_string());
+    }
+    let (ReadingJson::Value { value: before }, ReadingJson::Value { value: after }) =
+        (&check.since_before, &check.since_after)
+    else {
+        return Err("the refresh merge times are not both readings".to_string());
+    };
+    if before == after {
+        return Err("the two merge times are identical".to_string());
+    }
+    // A normally closed later task already proved its refresh. Releasing an earlier
+    // task needs the same image and live driver, even after a reboot re-merged it.
+    if !bind_merge_time {
+        return Ok(());
+    }
+    match facts::sysext_nvidia_since_now(h) {
+        facts::Reading::Value(current) if current == *after => Ok(()),
+        _ => Err("the current extension merge time is not the recorded one".to_string()),
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn canonical_target(
+    state: &TaskState,
+    last: &crate::task_state::ReplaceRecord,
+) -> Result<
+    (
+        String,
+        String,
+        crate::task_state::RowKind,
+        Option<String>,
+        Option<u64>,
+        Option<String>,
+    ),
+    String,
+> {
+    use crate::task_state::{Pass, PlanSource, RestoreDecision, RowKind};
     let plan = state
         .plan
         .as_ref()
         .expect("the trust precondition checked it");
     // The effective last intent, not every historical pass.
-    let target: (
-        String,
-        String,
-        RowKind,
-        Option<String>,
-        Option<u64>,
-        Option<String>,
-    ) = match last.pass {
+    let target = match last.pass {
         Pass::Restore => {
             let restore = state
                 .restore
@@ -2416,35 +2510,14 @@ fn canonical_proof(
             ),
         },
     };
-    let (row_id, version, kind, fingerprint, saved_at, planned_sha) = target;
+    Ok(target)
+}
 
-    // The target row, read by its exact id through the existing row path.
-    let record_path = p.row_dir(&row_id).join("record.json");
-    let record = match store::read_json::<crate::drivers::Record>(h, &record_path) {
-        JsonRead::Ok(record) if record.kind_matches(&row_id) => record,
-        _ => return Err("the target driver record is missing or unreadable".to_string()),
-    };
-    if record.version != version
-        || record.kind != kind
-        || record.fingerprint != fingerprint
-        || saved_at.is_some_and(|saved| record.created_at != saved)
-        || planned_sha.is_some_and(|sha| record.sha256 != sha)
-    {
-        return Err("the target driver record differs from the recorded intent".to_string());
-    }
-    // The target image itself must still hash and measure as its record says.
-    let row_path = p.row_dir(&row_id).join("nvidia.raw");
-    match store::hash_file(h, &row_path) {
-        Ok(copied) if copied.sha256 == record.sha256 && copied.size == record.size => {}
-        Ok(_) => return Err("the target driver image differs from its record".to_string()),
-        Err(_) => return Err("the target driver image is unreadable".to_string()),
-    }
-    // The permanent image must be exactly that verified target.
-    match facts::canonical_sha256(h) {
-        facts::Reading::Value(sha) if sha == record.sha256 => {}
-        _ => return Err("the permanent image is not the verified target".to_string()),
-    }
-
+fn canonical_live_driver(
+    h: &dyn Host,
+    state: &TaskState,
+    record: &crate::drivers::Record,
+) -> Result<(), String> {
     // The persisted reload target set must be valid and currently loaded.
     let modules = match facts::proc_modules_now(h) {
         facts::Reading::Value(modules) => modules,
@@ -2475,38 +2548,5 @@ fn canonical_proof(
         facts::Reading::Value(current) if current == record.version => {}
         _ => return Err("nvidia-smi does not report the target version".to_string()),
     }
-
-    // The effective pass's own check: a confirmed refresh with two different
-    // merge times, and the current extension merge time is exactly the second
-    // one.
-    let check = state
-        .checks
-        .iter()
-        .rfind(|c| c.pass == last.pass)
-        .ok_or("the effective pass has no check record")?;
-    if !check.refresh_ok || check.expected != record.version {
-        return Err("the effective pass did not confirm the target version".to_string());
-    }
-    if last.pass == Pass::Restore && !check.passed {
-        // A restore is proven by its own passing check; the decision, the original row and a
-        // refresh alone are not success.
-        return Err("the restore pass has no passing check record".to_string());
-    }
-    let (ReadingJson::Value { value: before }, ReadingJson::Value { value: after }) =
-        (&check.since_before, &check.since_after)
-    else {
-        return Err("the refresh merge times are not both readings".to_string());
-    };
-    if before == after {
-        return Err("the two merge times are identical".to_string());
-    }
-    // A normally closed later task already proved its refresh. Releasing an earlier
-    // task needs the same image and live driver, even after a reboot re-merged it.
-    if !bind_merge_time {
-        return Ok(());
-    }
-    match facts::sysext_nvidia_since_now(h) {
-        facts::Reading::Value(current) if current == *after => Ok(()),
-        _ => Err("the current extension merge time is not the recorded one".to_string()),
-    }
+    Ok(())
 }

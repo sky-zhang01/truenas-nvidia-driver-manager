@@ -31,7 +31,7 @@ For offline use or your own files, choose Upload files manually… (see [Manual 
 
 <img src="images/success-en.png" width="900" alt="A finished task that reports Update complete.">
 
-**6. Restart GPU apps.** Restart the GPU apps that were running before the change. Home lists affected apps under "Driver version changed". Apps that report "Driver/library version mismatch" also need a restart.
+**6. Restart GPU apps.** Restart the GPU apps that were running before the change. The task page lists affected apps under "Driver version changed". Apps that report "Driver/library version mismatch" also need a restart.
 
 ## Choosing a driver for your GPU
 
@@ -55,6 +55,28 @@ The automatic restore path runs after a replacement's driver check fails, when a
 copy exists. It does not cover every download, build, unload, or write failure, and restoration
 can fail too. With `STOCK_RESTORED`, the original driver is back and the requested update failed.
 Inspect task check records and loaded versions; app availability must be checked separately.
+
+## After a TrueNAS upgrade
+
+Every TrueNAS upgrade, including a minor one such as 25.10.7 to 25.10.8, installs a new copy of the system called a boot environment. The previous one stays so you can go back; TrueNAS deletes it during an upgrade only when the boot pool is short of space and the old environment is not set to "Keep". The driver file is part of the system, so the upgrade replaces it with the one that ships with the new TrueNAS release, and the driver you installed with the manager stays in the previous boot environment. Your account, task history and saved drivers are on your storage pool, in the folder you set up for the manager when you installed it, so they are still there after the upgrade. You do not need to restore the original driver before you upgrade.
+
+**1. After the upgrade, open Home and check these items.**
+
+- "TrueNAS version" shows the release you upgraded to. "Current kernel" may or may not change; some upgrades keep the same kernel.
+- "Loaded driver version" usually shows the driver that ships with the new release. That driver may not support your graphics card. For example, the driver in TrueNAS 25.10 does not support Maxwell, Pascal or Volta cards, so apps cannot use such a card. In that case, install a version that supports your card as in step 2.
+- "Original driver for the current kernel and TrueNAS version" shows "Not saved". The manager keeps one original for each combination of kernel and TrueNAS version, and the upgrade changed that combination, so you save a new one.
+- If the kernel changed, drivers built for the old kernel show "Kernel mismatch" on Local drivers, and you cannot switch to them directly.
+
+**2. Decide whether to change the driver.** The release notes of the new TrueNAS version say which driver it ships. If that driver suits your graphics card and apps, there is nothing to do. To change it, first stop every app that uses the GPU. Besides media servers that transcode, monitoring tools that keep nvidia-smi running in the background also hold the GPU; while such a tool is running, the check waits about 30 seconds and then shows "Cannot update: GPU in use". Then pick the case that fits:
+
+- The kernel did not change and Local drivers has a driver you built for this kernel. It shows "Available". Choose it and click "Check this version and continue". Nothing is downloaded or built.
+- Otherwise, follow [Updating a driver, step by step](#updating-a-driver-step-by-step) again and choose the version you used before or a newer one. The manager builds the driver for the current kernel.
+
+When the confirmation window offers "Save original driver and start", choose it. This keeps the driver that ships with the new release, so you can go back to it later. When the task succeeds, check the driver version on Home, then start the apps you stopped. Also restart the apps listed under "Driver version changed" on the task page.
+
+After an upgrade you do not need to touch the NVIDIA driver switch in the TrueNAS settings.
+
+**Going back to the previous TrueNAS release.** In TrueNAS, open System → Boot, choose "Activate" for the previous boot environment and restart. You are back on the previous release, with the driver you installed there. System settings go back to what that boot environment had, and changes you made after the upgrade do not come with you. The data on your storage pools and your apps do not go back to their state before the upgrade. Any security problems that the previous release had not fixed come back too. The TrueNAS documentation recommends going back only in two cases: a storage pool upgrade in the new release causes a problem, or the configuration is broken and you cannot reach the system console.
 
 ## Troubleshooting and reporting a problem
 
@@ -248,7 +270,7 @@ This optional feature lifts the half-rate limit GeForce cards put on FP16, BF16 
 
 **Targets.** The targets are the ticked GPUs that support the unlock. They are written as PCI addresses into the image's rule (`options gpu_unlock targets=…`); the page shows models, not addresses. A GPU isolated for a virtual machine is never a target. If you move a card to another slot, its address changes, it is no longer a target, and Home shows it as not unlocked; build again.
 
-**What the image gains.** The image carries `usr/lib/modules/<kernel>/extra/gpu_unlock.ko`, the module indexes from depmod, `usr/lib/modprobe.d/gpu-unlock.conf` (the rule `softdep nvidia pre: vfio-pci gpu_unlock` and the `options gpu_unlock targets=…` line), 16 firmware files under `usr/lib/firmware/gpu-unlock/610.43.03/`, and licenses under `usr/share/licenses/gpu-unlock*/`. The 16 firmware files total about 114 MB uncompressed (113,940,488 bytes). The size increase of the compressed `nvidia.raw` has not been measured yet; it will be measured in the first-layer VM test and is not stated here.
+**What the image gains.** The image carries `usr/lib/modules/<kernel>/extra/gpu_unlock.ko`, the module indexes from depmod, `usr/lib/modprobe.d/gpu-unlock.conf` (the rule `softdep nvidia pre: vfio-pci gpu_unlock` and the `options gpu_unlock targets=…` line), 16 firmware files under `usr/lib/firmware/gpu-unlock/610.43.03/`, and licenses under `usr/share/licenses/gpu-unlock*/`. The 16 firmware files total about 114 MB uncompressed (113,940,488 bytes), but `nvidia.raw` grows far less: the two large ones, `gsp_ga10x.bin` and `gsp_tu10x.bin`, are the same files driver 610.43.03 already installs under `usr/lib/firmware/nvidia/610.43.03/`, and the image stores identical files once. In the VM test, 610.43.03 built with the unlock was 237,568 bytes (about 0.24 MB) larger than without it, on both TrueNAS 25.10.7 and 27.0.0-RC.1.
 
 **Firmware.** The program does not ship firmware. It generates the files on the host, in process, from the NVIDIA 610.43.03 installer. With the current table an unlock update always installs 610.43.03, so the task uses its own installer (downloaded or uploaded) and downloads nothing extra. The output is checked against 17 fixed SHA-256 values (16 firmware files and NVIDIA-LICENSE) and cached in `<data-directory>/manager/gpu-unlock/firmware/610.43.03/`; later updates reuse it. If the file cannot give the fixed files, the task fails with `gpu_unlock_installer_unusable` ("this file cannot be used to turn on the unlock") and the driver is untouched. The firmware stage counts toward `NVM_BUILD_TIMEOUT_MINUTES`.
 
@@ -278,7 +300,7 @@ After a driver reload since the boot, a note adds "The driver was loaded again a
 
 **Limits.**
 
-- Turning the NVIDIA driver switch off and on in the TrueNAS settings puts TrueNAS's own `nvidia.raw` back at the permanent path. The unlock is gone until you update with it again.
+- Turning the NVIDIA driver switch off and on in the TrueNAS settings does not remove the unlock. TrueNAS deletes and re-creates the link `/run/extensions/nvidia.raw` and restarts Docker, but the file at the permanent path stays as it is. To remove the unlock, update to a driver without it (see "Removing the unlock" above).
 - The module is unsigned, like the program's `nvidia.ko`. With enforced module signatures neither loads.
 
 ## Interrupted tasks

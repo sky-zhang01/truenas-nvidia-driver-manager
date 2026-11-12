@@ -205,6 +205,22 @@ expect 1 'negative canaries reject an engine that always matches' 'canary failed
 expect 1 'tracked scan failure is not a clean result' 'scan failed (rc=2)' \
     "PATH=${WORK}/bin:${PATH}" GUARDS_TEST_MODE=scan
 
+# Maintainer source trees validate registrations without policy keys or gitleaks.
+new_repo
+mkdir -p "${REPO}/export" "${REPO}/ci"
+printf '# maintainer policy marker\n' >"${REPO}/export/rules"
+cat >"${REPO}/ci/public-leak-check.sh" <<'CHECKER'
+#!/usr/bin/env bash
+set -eu
+[ "$1" = --root ] && [ "$2" = "$PWD" ] && [ "$3" = --allowlist ] &&
+    [ "$4" = "$PWD/ci/public-leak-allowlist.json" ] && [ "$5" = --registrations-only ] || exit 97
+printf 'registration-check-reached\n'
+exit "${GUARDS_REGISTRATION_RC:-0}"
+CHECKER
+git -C "${REPO}" add -- .
+expect 0 'maintainer guards validate registrations before returning success' 'registration-check-reached'
+expect 23 'registration errors fail the normal guards entry point' 'registration-check-reached' GUARDS_REGISTRATION_RC=23
+
 # Keep workflow runtimes aligned with the image's web build stage.
 CHECKS=$((CHECKS + 1))
 if node - "${SCRIPT_DIR}/.." <<'NODE'

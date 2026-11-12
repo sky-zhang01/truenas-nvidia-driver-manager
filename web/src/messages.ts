@@ -3080,8 +3080,8 @@ export const MESSAGES: Record<string, Message> = {
   },
 
   "extension.missing": {
-    "zh": "error|未检测到 TrueNAS 的 NVIDIA 驱动扩展。请先在 TrueNAS 的应用设置中启用 NVIDIA 驱动。",
-    "en": "error|TrueNAS NVIDIA driver extension not found. Enable the NVIDIA driver in the TrueNAS Apps settings first.",
+    "zh": "error|未检测到 TrueNAS 的 NVIDIA 驱动扩展。TrueNAS 25.10：打开应用 → 已安装 → 配置 → 设置，勾选安装 NVIDIA 驱动程序，点保存。TrueNAS 27：打开系统 → 高级设置，在 NVIDIA Drivers 卡片点配置，勾选 Enable NVIDIA GPU Support，点保存。",
+    "en": "error|TrueNAS NVIDIA driver extension not found. TrueNAS 25.10: Apps → Installed → Configuration → Settings, tick Install NVIDIA Drivers, click Save. TrueNAS 27: System → Advanced Settings, click Configure on the NVIDIA Drivers card, tick Enable NVIDIA GPU Support, click Save.",
   },
 
   "driver.kernel_mismatch": {

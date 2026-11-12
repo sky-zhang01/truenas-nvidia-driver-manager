@@ -530,11 +530,24 @@ fn release_module(
     deadline: Option<Instant>,
     place: WaitPlace,
 ) -> Result<Release, ReleaseError> {
-    let (mut cmd, mut out) = match one_rmmod(ctx, index, module, deadline, place)? {
-        Attempt::Unloaded => return Ok(Release::Unloaded),
-        Attempt::Stop(stop) => return Ok(Release::Stop(stop)),
-        Attempt::InUse(cmd, out) => (cmd, out),
-    };
+    match one_rmmod(ctx, index, module, deadline, place)? {
+        Attempt::Unloaded => Ok(Release::Unloaded),
+        Attempt::Stop(stop) => Ok(Release::Stop(stop)),
+        Attempt::InUse(cmd, out) => {
+            wait_for_module_release(ctx, index, module, deadline, place, cmd, out)
+        }
+    }
+}
+
+fn wait_for_module_release(
+    ctx: &mut RunCtx,
+    index: usize,
+    module: &str,
+    deadline: Option<Instant>,
+    place: WaitPlace,
+    mut cmd: Cmd,
+    mut out: Output,
+) -> Result<Release, ReleaseError> {
     let started = ctx.host.now();
     let mut retries = 0u64;
     loop {
@@ -600,29 +613,9 @@ fn release_module(
                     }
                     Attempt::Stop(stop) => {
                         retries += 1;
-                        // A timed-out or signaled rmmod may already have unloaded the module.
-                        // On the pre-write path that fact has to reach the existing rollback
-                        // even when this wait record cannot be saved.
-                        let uncertain = (place == WaitPlace::First
-                            && matches!(stop, Stop::TimedOut { .. } | Stop::Signal { .. }))
-                        .then(|| module.to_string());
-                        if let Err(error) = record_wait(
-                            ctx,
-                            index,
-                            place,
-                            module,
-                            started,
-                            retries,
-                            UnloadWaitResult::Other,
-                        ) {
-                            return Err(match error {
-                                ModuleError::StateNotPersisted => {
-                                    ReleaseError::NotPersisted { uncertain }
-                                }
-                                other => ReleaseError::Other(other),
-                            });
-                        }
-                        return Ok(Release::Stop(stop));
+                        return record_stopped_retry(
+                            ctx, index, module, place, started, retries, stop,
+                        );
                     }
                     Attempt::InUse(next_cmd, next_out) => {
                         retries += 1;
@@ -632,20 +625,61 @@ fn release_module(
                 },
             },
         }
-        let now = ctx.host.now();
-        let left_limit = UNLOAD_WAIT_LIMIT.saturating_sub(now.saturating_duration_since(started));
-        let left_deadline = deadline
-            .map(|deadline| deadline.saturating_duration_since(now))
-            .unwrap_or(Duration::MAX);
-        let slice = UNLOAD_WAIT_POLL.min(left_limit).min(left_deadline);
-        if slice.is_zero() {
-            continue;
-        }
-        if now.saturating_duration_since(started) >= GPU_WAIT_NOTICE && !mark_waiting_gpu(ctx) {
-            return Err(ReleaseError::NotPersisted { uncertain: None });
-        }
-        ctx.host.wait(slice);
+        pause_unload_wait(ctx, deadline, started)?;
     }
+}
+
+fn record_stopped_retry(
+    ctx: &mut RunCtx,
+    index: usize,
+    module: &str,
+    place: WaitPlace,
+    started: Instant,
+    retries: u64,
+    stop: Stop,
+) -> Result<Release, ReleaseError> {
+    // A timed-out or signaled rmmod may already have unloaded the module.
+    // On the pre-write path that fact has to reach the existing rollback
+    // even when this wait record cannot be saved.
+    let uncertain = (place == WaitPlace::First
+        && matches!(stop, Stop::TimedOut { .. } | Stop::Signal { .. }))
+    .then(|| module.to_string());
+    if let Err(error) = record_wait(
+        ctx,
+        index,
+        place,
+        module,
+        started,
+        retries,
+        UnloadWaitResult::Other,
+    ) {
+        return Err(match error {
+            ModuleError::StateNotPersisted => ReleaseError::NotPersisted { uncertain },
+            other => ReleaseError::Other(other),
+        });
+    }
+    Ok(Release::Stop(stop))
+}
+
+fn pause_unload_wait(
+    ctx: &mut RunCtx,
+    deadline: Option<Instant>,
+    started: Instant,
+) -> Result<(), ReleaseError> {
+    let now = ctx.host.now();
+    let left_limit = UNLOAD_WAIT_LIMIT.saturating_sub(now.saturating_duration_since(started));
+    let left_deadline = deadline
+        .map(|deadline| deadline.saturating_duration_since(now))
+        .unwrap_or(Duration::MAX);
+    let slice = UNLOAD_WAIT_POLL.min(left_limit).min(left_deadline);
+    if slice.is_zero() {
+        return Ok(());
+    }
+    if now.saturating_duration_since(started) >= GPU_WAIT_NOTICE && !mark_waiting_gpu(ctx) {
+        return Err(ReleaseError::NotPersisted { uncertain: None });
+    }
+    ctx.host.wait(slice);
+    Ok(())
 }
 
 fn correction_stop_reason(stop: &Stop) -> Option<ReasonJson> {
@@ -725,7 +759,20 @@ pub fn unload(ctx: &mut RunCtx, pass: Pass) -> Result<ModulePass, ModuleError> {
         return stop_at_deadline(ctx, &current, None, None, None);
     }
 
-    for module in facts::unload_plan(&modules) {
+    unload_planned_modules(ctx, current, &modules)
+}
+
+fn unload_planned_modules(
+    ctx: &mut RunCtx,
+    current: ModulePass,
+    modules: &[facts::ModuleLine],
+) -> Result<ModulePass, ModuleError> {
+    let ModulePass {
+        pass,
+        record_index: index,
+        deadline,
+    } = current;
+    for module in facts::unload_plan(modules) {
         let released = match release_module(ctx, index, module, Some(deadline), WaitPlace::First) {
             Ok(released) => released,
             Err(ReleaseError::NotPersisted { uncertain }) => {
@@ -737,64 +784,7 @@ pub fn unload(ctx: &mut RunCtx, pass: Pass) -> Result<ModulePass, ModuleError> {
             }
             Err(ReleaseError::Other(error)) => return Err(error),
         };
-        match released {
-            Release::Unloaded => {
-                // A waited unload already recorded this module before its wait result was saved.
-                let already = ctx.state.replace[index]
-                    .unloaded
-                    .iter()
-                    .any(|name| name == module);
-                if !already {
-                    ctx.state.replace[index].unloaded.push(module.to_string());
-                    if !ctx.write_state() {
-                        rollback_unloaded(ctx, &current);
-                        return Err(ModuleError::StateNotPersisted);
-                    }
-                }
-                ctx.log(LogKey::ModuleUnloaded, json!({"module": module}));
-            }
-            Release::Stop(Stop::TimedOut { cmd, out }) => {
-                return stop_at_deadline(
-                    ctx,
-                    &current,
-                    Some((cmd.argv(), out.exit)),
-                    command_raw(&out),
-                    Some(module),
-                );
-            }
-            Release::Stop(Stop::Signal { cmd, out }) => {
-                let reason = command_reason(&out, cmd.timeout);
-                return after_rollback(
-                    ctx,
-                    &current,
-                    refusal_failure(pass, module, &reason, &cmd, &out, false),
-                    Some(module),
-                );
-            }
-            Release::Stop(Stop::Refused { cmd, out }) => {
-                let reason = command_reason(&out, cmd.timeout);
-                let waited_in_use = ctx.state.replace[index]
-                    .unload_waits
-                    .iter()
-                    .any(|wait| wait.module == module && wait.result == UnloadWaitResult::Refused);
-                let failure = refusal_failure(pass, module, &reason, &cmd, &out, waited_in_use);
-                return after_rollback(ctx, &current, failure, None);
-            }
-            Release::Stop(Stop::Unreadable(reason)) => {
-                ctx.log(
-                    LogKey::Occupancy,
-                    json!({
-                        "usage_result": "unreadable",
-                        "module_readings": {"key": "log.usage.unreadable", "params": {}},
-                    }),
-                );
-                rollback_unloaded(ctx, &current);
-                return Err(ModuleError::Failure(occupancy_failure(pass, Some(reason))));
-            }
-            Release::Stop(Stop::Deadline) => {
-                return stop_at_deadline(ctx, &current, None, None, None);
-            }
-        }
+        record_unload_result(ctx, &current, module, released)?;
         if ctx.host.now() >= deadline {
             return stop_at_deadline(ctx, &current, None, None, None);
         }
@@ -813,6 +803,78 @@ pub fn unload(ctx: &mut RunCtx, pass: Pass) -> Result<ModulePass, ModuleError> {
         }
     }
     Ok(current)
+}
+
+fn record_unload_result(
+    ctx: &mut RunCtx,
+    current: &ModulePass,
+    module: &str,
+    released: Release,
+) -> Result<ModulePass, ModuleError> {
+    let ModulePass {
+        pass,
+        record_index: index,
+        ..
+    } = *current;
+    match released {
+        Release::Unloaded => {
+            // A waited unload already recorded this module before its wait result was saved.
+            let already = ctx.state.replace[index]
+                .unloaded
+                .iter()
+                .any(|name| name == module);
+            if !already {
+                ctx.state.replace[index].unloaded.push(module.to_string());
+                if !ctx.write_state() {
+                    rollback_unloaded(ctx, current);
+                    return Err(ModuleError::StateNotPersisted);
+                }
+            }
+            ctx.log(LogKey::ModuleUnloaded, json!({"module": module}));
+        }
+        Release::Stop(Stop::TimedOut { cmd, out }) => {
+            return stop_at_deadline(
+                ctx,
+                current,
+                Some((cmd.argv(), out.exit)),
+                command_raw(&out),
+                Some(module),
+            );
+        }
+        Release::Stop(Stop::Signal { cmd, out }) => {
+            let reason = command_reason(&out, cmd.timeout);
+            return after_rollback(
+                ctx,
+                current,
+                refusal_failure(pass, module, &reason, &cmd, &out, false),
+                Some(module),
+            );
+        }
+        Release::Stop(Stop::Refused { cmd, out }) => {
+            let reason = command_reason(&out, cmd.timeout);
+            let waited_in_use = ctx.state.replace[index]
+                .unload_waits
+                .iter()
+                .any(|wait| wait.module == module && wait.result == UnloadWaitResult::Refused);
+            let failure = refusal_failure(pass, module, &reason, &cmd, &out, waited_in_use);
+            return after_rollback(ctx, current, failure, None);
+        }
+        Release::Stop(Stop::Unreadable(reason)) => {
+            ctx.log(
+                LogKey::Occupancy,
+                json!({
+                    "usage_result": "unreadable",
+                    "module_readings": {"key": "log.usage.unreadable", "params": {}},
+                }),
+            );
+            rollback_unloaded(ctx, current);
+            return Err(ModuleError::Failure(occupancy_failure(pass, Some(reason))));
+        }
+        Release::Stop(Stop::Deadline) => {
+            return stop_at_deadline(ctx, current, None, None, None);
+        }
+    }
+    Ok(*current)
 }
 
 fn after_rollback(
@@ -968,7 +1030,21 @@ pub fn align_modules(
         LogKey::PhaseEnter,
         json!({"phase": ctx.state.phase.unwrap().as_str()}),
     );
-    let mut unload_ok = false;
+    let planned = correction_unload_plan(ctx, index)?;
+    run_correction(ctx, index, planned, targets)?;
+    let end = module_version_text(ctx);
+    ctx.state.replace[index]
+        .module_correction
+        .as_mut()
+        .unwrap()
+        .version_after = Some(end);
+    persist_correction(ctx)
+}
+
+fn correction_unload_plan(
+    ctx: &mut RunCtx,
+    index: usize,
+) -> Result<Option<Vec<&'static str>>, ModuleError> {
     let planned = match wait_for_gpu(ctx, None) {
         facts::OccupancyDecision::Idle(modules) => {
             log_occupancy(ctx, "not_in_use", &modules);
@@ -1020,6 +1096,16 @@ pub fn align_modules(
         }
         facts::OccupancyDecision::NotPersisted => return Err(ModuleError::StateNotPersisted),
     };
+    Ok(planned)
+}
+
+fn run_correction(
+    ctx: &mut RunCtx,
+    index: usize,
+    planned: Option<Vec<&'static str>>,
+    targets: Vec<String>,
+) -> Result<(), ModuleError> {
+    let mut unload_ok = false;
     if let Some(planned) = planned {
         if ctx.state.replace[index]
             .module_correction
@@ -1086,13 +1172,7 @@ pub fn align_modules(
             }
         }
     }
-    let end = module_version_text(ctx);
-    ctx.state.replace[index]
-        .module_correction
-        .as_mut()
-        .unwrap()
-        .version_after = Some(end);
-    persist_correction(ctx)
+    Ok(())
 }
 
 struct Input {
@@ -1322,228 +1402,203 @@ fn stopped(
     Err(ModuleError::Failure(failure))
 }
 
-/// Success means `mv -T` has written the canonical file; failures
-/// before it restore the mount and actual unloads.
-pub fn write(
-    ctx: &mut RunCtx,
-    current: &ModulePass,
-    original: Option<&OriginalRow>,
-) -> Result<(), ModuleError> {
-    ctx.enter(match current.pass {
-        Pass::Update => Phase::Write,
-        Pass::Restore => Phase::RestoreWrite,
-    });
-    let mut temp_created = false;
-    let mut mounted = false;
-    let mut rename_uncertain = false;
-    let attempt = (|| -> Result<Input, ModuleError> {
-        let input = input(ctx, current.pass, original)
-            .map_err(|raw| write_failure(current.pass, WRITE_SOURCE_UNREADABLE, Some(raw), None))?;
-        if ctx.state.rootfs.is_none() {
-            let dataset = mount_lines(ctx)
-                .and_then(|lines| {
-                    let mut matches = lines
-                        .into_iter()
-                        .filter(|line| line.fstype == "zfs" && line.mount_point == "/usr");
-                    let first = matches.next()?;
-                    matches.next().is_none().then_some(first.source)
-                })
-                .ok_or_else(|| write_failure(current.pass, WRITE_DATASET_UNKNOWN, None, None))?;
-            let cmd = Cmd::new(At::Host, "zfs", remaining(ctx, current)?)
-                .args(["get", "-H", "-o", "value", "readonly", &dataset]);
-            let out = ctx.cmd(&cmd);
-            if out.exit == Exit::TimedOut {
-                return Err(timed_command_failure(ctx, current, &cmd, &out).into());
-            }
-            let value = out.stdout_text().trim().to_string();
-            if !out.exit.ok() || (value != "on" && value != "off") {
-                return Err(write_failure(
-                    current.pass,
-                    WRITE_READONLY_UNREADABLE,
-                    command_raw(&out),
-                    (!out.exit.ok()).then(|| (cmd.argv(), out.exit)),
-                )
-                .into());
-            }
-            ctx.state.rootfs = Some(Rootfs {
-                dataset,
-                readonly_before: value,
-            });
-            if !ctx.write_state() {
-                return Err(ModuleError::StateNotPersisted);
-            }
-        }
-        let rootfs = ctx.state.rootfs.as_ref().unwrap().clone();
-        // A leftover or foreign mount at this fixed path is not this pass's
-        // writable view. Never write through it or tear it down here.
-        if mount_lines(ctx)
-            .is_none_or(|lines| lines.iter().any(|line| line.mount_point == RW_MOUNT))
-        {
-            return Err(
-                write_failure(current.pass, WRITE_RW_MOUNT_NOT_CONFIRMED, None, None).into(),
-            );
-        }
-        let set = Cmd::new(At::Host, "zfs", remaining(ctx, current)?).args([
-            "set",
-            "readonly=off",
-            &rootfs.dataset,
-        ]);
-        let out = ctx.cmd(&set);
+fn prepare_rootfs(ctx: &mut RunCtx, current: &ModulePass) -> Result<(), ModuleError> {
+    if ctx.state.rootfs.is_none() {
+        let dataset = mount_lines(ctx)
+            .and_then(|lines| {
+                let mut matches = lines
+                    .into_iter()
+                    .filter(|line| line.fstype == "zfs" && line.mount_point == "/usr");
+                let first = matches.next()?;
+                matches.next().is_none().then_some(first.source)
+            })
+            .ok_or_else(|| write_failure(current.pass, WRITE_DATASET_UNKNOWN, None, None))?;
+        let cmd = Cmd::new(At::Host, "zfs", remaining(ctx, current)?)
+            .args(["get", "-H", "-o", "value", "readonly", &dataset]);
+        let out = ctx.cmd(&cmd);
         if out.exit == Exit::TimedOut {
-            return Err(timed_command_failure(ctx, current, &set, &out).into());
+            return Err(timed_command_failure(ctx, current, &cmd, &out).into());
         }
-        ctx.host
-            .create_dir(Path::new(RW_MOUNT), 0o755)
-            .map_err(|e| {
-                write_failure(
-                    current.pass,
-                    WRITE_RW_MOUNT_NOT_CONFIRMED,
-                    Some(e.to_string()),
-                    None,
-                )
-            })?;
-        let mount = Cmd::new(At::Host, "mount", remaining(ctx, current)?).args([
-            "-t",
-            "zfs",
-            "-o",
-            "zfsutil,rw",
-            &rootfs.dataset,
-            RW_MOUNT,
-        ]);
-        let out = ctx.cmd(&mount);
-        if out.exit == Exit::TimedOut {
-            mounted = mount_lines(ctx).unwrap_or_default().iter().any(|line| {
-                line.mount_point == RW_MOUNT
-                    && line.fstype == "zfs"
-                    && line.source == rootfs.dataset
-            });
-            return Err(timed_command_failure(ctx, current, &mount, &out).into());
-        }
-        let lines = mount_lines(ctx).unwrap_or_default();
-        mounted = lines.iter().any(|line| {
-            line.mount_point == RW_MOUNT && line.fstype == "zfs" && line.source == rootfs.dataset
-        });
-        let confirmed = lines.iter().any(|line| {
-            line.mount_point == RW_MOUNT
-                && line.is_rw()
-                && line.fstype == "zfs"
-                && line.source == rootfs.dataset
-        });
-        if !confirmed {
+        let value = out.stdout_text().trim().to_string();
+        if !out.exit.ok() || (value != "on" && value != "off") {
             return Err(write_failure(
                 current.pass,
-                WRITE_RW_MOUNT_NOT_CONFIRMED,
+                WRITE_READONLY_UNREADABLE,
                 command_raw(&out),
-                (!out.exit.ok()).then(|| (mount.argv(), out.exit)),
+                (!out.exit.ok()).then(|| (cmd.argv(), out.exit)),
             )
             .into());
         }
-        ctx.state.replace[current.record_index].file_changed =
-            store::hash_file(ctx.host.as_ref(), Path::new(RW_CANONICAL_PATH))
-                .ok()
-                .map(|before| before.sha256 != input.sha256);
-        ctx.log(
-            LogKey::RwMountConfirmed,
-            json!({"dataset": rootfs.dataset, "value": rootfs.readonly_before}),
-        );
+        ctx.state.rootfs = Some(Rootfs {
+            dataset,
+            readonly_before: value,
+        });
+        if !ctx.write_state() {
+            return Err(ModuleError::StateNotPersisted);
+        }
+    }
+    Ok(())
+}
 
-        let mut src = ctx.host.open(&input.path).map_err(|e| {
-            write_failure(
-                current.pass,
-                WRITE_SOURCE_UNREADABLE,
-                Some(e.to_string()),
-                None,
-            )
-        })?;
-        let mut dst = ctx
-            .host
-            .create(Path::new(RW_TMP_PATH), Create::Truncate, 0o644)
-            .map_err(|e| {
-                write_failure(current.pass, WRITE_TEMP_FAILED, Some(e.to_string()), None)
-            })?;
-        temp_created = true;
-        let mut expired = false;
-        let mut source = SourceRead {
-            file: &mut src,
-            failed: false,
-        };
-        let copied = store::copy_hashed(&mut source, &mut dst, |_| {
-            expired = ctx.host.now() >= current.deadline;
-            if expired {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })
+fn prepare_rw_mount(
+    ctx: &mut RunCtx,
+    current: &ModulePass,
+    input: &Input,
+    mounted: &mut bool,
+) -> Result<(), ModuleError> {
+    let rootfs = ctx.state.rootfs.as_ref().unwrap().clone();
+    // A leftover or foreign mount at this fixed path is not this pass's
+    // writable view. Never write through it or tear it down here.
+    if mount_lines(ctx).is_none_or(|lines| lines.iter().any(|line| line.mount_point == RW_MOUNT)) {
+        return Err(write_failure(current.pass, WRITE_RW_MOUNT_NOT_CONFIRMED, None, None).into());
+    }
+    let set = Cmd::new(At::Host, "zfs", remaining(ctx, current)?).args([
+        "set",
+        "readonly=off",
+        &rootfs.dataset,
+    ]);
+    let out = ctx.cmd(&set);
+    if out.exit == Exit::TimedOut {
+        return Err(timed_command_failure(ctx, current, &set, &out).into());
+    }
+    ctx.host
+        .create_dir(Path::new(RW_MOUNT), 0o755)
         .map_err(|e| {
             write_failure(
                 current.pass,
-                if source.failed {
-                    WRITE_SOURCE_UNREADABLE
-                } else {
-                    WRITE_TEMP_FAILED
-                },
+                WRITE_RW_MOUNT_NOT_CONFIRMED,
                 Some(e.to_string()),
                 None,
             )
         })?;
-        if expired || ctx.host.now() >= current.deadline {
-            return Err(remaining(ctx, current).unwrap_err().into());
+    let mount = Cmd::new(At::Host, "mount", remaining(ctx, current)?).args([
+        "-t",
+        "zfs",
+        "-o",
+        "zfsutil,rw",
+        &rootfs.dataset,
+        RW_MOUNT,
+    ]);
+    let out = ctx.cmd(&mount);
+    if out.exit == Exit::TimedOut {
+        *mounted = mount_lines(ctx).unwrap_or_default().iter().any(|line| {
+            line.mount_point == RW_MOUNT && line.fstype == "zfs" && line.source == rootfs.dataset
+        });
+        return Err(timed_command_failure(ctx, current, &mount, &out).into());
+    }
+    let lines = mount_lines(ctx).unwrap_or_default();
+    *mounted = lines.iter().any(|line| {
+        line.mount_point == RW_MOUNT && line.fstype == "zfs" && line.source == rootfs.dataset
+    });
+    let confirmed = lines.iter().any(|line| {
+        line.mount_point == RW_MOUNT
+            && line.is_rw()
+            && line.fstype == "zfs"
+            && line.source == rootfs.dataset
+    });
+    if !confirmed {
+        return Err(write_failure(
+            current.pass,
+            WRITE_RW_MOUNT_NOT_CONFIRMED,
+            command_raw(&out),
+            (!out.exit.ok()).then(|| (mount.argv(), out.exit)),
+        )
+        .into());
+    }
+    ctx.state.replace[current.record_index].file_changed =
+        store::hash_file(ctx.host.as_ref(), Path::new(RW_CANONICAL_PATH))
+            .ok()
+            .map(|before| before.sha256 != input.sha256);
+    ctx.log(
+        LogKey::RwMountConfirmed,
+        json!({"dataset": rootfs.dataset, "value": rootfs.readonly_before}),
+    );
+
+    Ok(())
+}
+
+fn verify_and_rename_temp(
+    ctx: &RunCtx,
+    current: &ModulePass,
+    input: &Input,
+    source: &mut SourceRead<'_>,
+    dst: &mut (dyn crate::host::SyncWrite + Send),
+    expired: &mut bool,
+    rename_uncertain: &mut bool,
+) -> Result<(), ModuleError> {
+    let copied = store::copy_hashed(source, dst, |_| {
+        *expired = ctx.host.now() >= current.deadline;
+        if *expired {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
         }
-        dst.sync_all().map_err(|e| {
-            write_failure(current.pass, WRITE_TEMP_FAILED, Some(e.to_string()), None)
-        })?;
-        if copied.sha256 != input.sha256 || copied.size != input.size {
-            return Err(write_failure(current.pass, WRITE_TEMP_MISMATCH, None, None).into());
-        }
-        ctx.log(
-            LogKey::TempVerified,
-            json!({"checksum": copied.sha256, "bytes": copied.size}),
-        );
-        let left = remaining(ctx, current)?;
-        ctx.log(LogKey::DeadlineOk, json!({"seconds": left.as_secs()}));
-        let mv = Cmd::new(At::Host, "mv", left).args(["-T", RW_TMP_PATH, RW_CANONICAL_PATH]);
-        let out = ctx.cmd(&mv);
-        if matches!(out.exit, Exit::TimedOut | Exit::Signal(_)) {
-            match ctx.host.lstat(Path::new(RW_TMP_PATH)) {
-                Ok(_) => {
-                    return Err(if out.exit == Exit::TimedOut {
-                        timed_command_failure(ctx, current, &mv, &out)
-                    } else {
-                        write_failure(
-                            current.pass,
-                            WRITE_RENAME_FAILED,
-                            command_raw(&out),
-                            Some((mv.argv(), out.exit)),
-                        )
-                    }
-                    .into())
+    })
+    .map_err(|e| {
+        write_failure(
+            current.pass,
+            if source.failed {
+                WRITE_SOURCE_UNREADABLE
+            } else {
+                WRITE_TEMP_FAILED
+            },
+            Some(e.to_string()),
+            None,
+        )
+    })?;
+    if *expired || ctx.host.now() >= current.deadline {
+        return Err(remaining(ctx, current).unwrap_err().into());
+    }
+    dst.sync_all()
+        .map_err(|e| write_failure(current.pass, WRITE_TEMP_FAILED, Some(e.to_string()), None))?;
+    if copied.sha256 != input.sha256 || copied.size != input.size {
+        return Err(write_failure(current.pass, WRITE_TEMP_MISMATCH, None, None).into());
+    }
+    ctx.log(
+        LogKey::TempVerified,
+        json!({"checksum": copied.sha256, "bytes": copied.size}),
+    );
+    let left = remaining(ctx, current)?;
+    ctx.log(LogKey::DeadlineOk, json!({"seconds": left.as_secs()}));
+    let mv = Cmd::new(At::Host, "mv", left).args(["-T", RW_TMP_PATH, RW_CANONICAL_PATH]);
+    let out = ctx.cmd(&mv);
+    if matches!(out.exit, Exit::TimedOut | Exit::Signal(_)) {
+        match ctx.host.lstat(Path::new(RW_TMP_PATH)) {
+            Ok(_) => {
+                return Err(if out.exit == Exit::TimedOut {
+                    timed_command_failure(ctx, current, &mv, &out)
+                } else {
+                    write_failure(
+                        current.pass,
+                        WRITE_RENAME_FAILED,
+                        command_raw(&out),
+                        Some((mv.argv(), out.exit)),
+                    )
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(_) => rename_uncertain = true,
+                .into())
             }
-        } else if !out.exit.ok() {
-            return Err(write_failure(
-                current.pass,
-                WRITE_RENAME_FAILED,
-                command_raw(&out),
-                Some((mv.argv(), out.exit)),
-            )
-            .into());
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => *rename_uncertain = true,
         }
-        Ok(input)
-    })();
-    let input = match attempt {
-        Ok(input) => input,
-        Err(ModuleError::Failure(failure)) => {
-            return stopped(ctx, current, failure, temp_created, mounted);
-        }
-        Err(ModuleError::StateNotPersisted) => {
-            rollback_unloaded(ctx, current);
-            return Err(ModuleError::StateNotPersisted);
-        }
-        Err(other) => return Err(other),
-    };
+    } else if !out.exit.ok() {
+        return Err(write_failure(
+            current.pass,
+            WRITE_RENAME_FAILED,
+            command_raw(&out),
+            Some((mv.argv(), out.exit)),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn finish_write(
+    ctx: &mut RunCtx,
+    current: &ModulePass,
+    input: &Input,
+    mounted: bool,
+    rename_uncertain: bool,
+) -> Result<(), ModuleError> {
     if !rename_uncertain {
         ctx.log(LogKey::CanonicalWritten, json!({}));
     }
@@ -1586,6 +1641,71 @@ pub fn write(
         return Err(ModuleError::WriteOutcomeUnknown);
     }
     Ok(())
+}
+
+/// Success means `mv -T` has written the canonical file; failures
+/// before it restore the mount and actual unloads.
+pub fn write(
+    ctx: &mut RunCtx,
+    current: &ModulePass,
+    original: Option<&OriginalRow>,
+) -> Result<(), ModuleError> {
+    ctx.enter(match current.pass {
+        Pass::Update => Phase::Write,
+        Pass::Restore => Phase::RestoreWrite,
+    });
+    let mut temp_created = false;
+    let mut mounted = false;
+    let mut rename_uncertain = false;
+    let attempt = (|| -> Result<Input, ModuleError> {
+        let input = input(ctx, current.pass, original)
+            .map_err(|raw| write_failure(current.pass, WRITE_SOURCE_UNREADABLE, Some(raw), None))?;
+        prepare_rootfs(ctx, current)?;
+        prepare_rw_mount(ctx, current, &input, &mut mounted)?;
+
+        let mut src = ctx.host.open(&input.path).map_err(|e| {
+            write_failure(
+                current.pass,
+                WRITE_SOURCE_UNREADABLE,
+                Some(e.to_string()),
+                None,
+            )
+        })?;
+        let mut dst = ctx
+            .host
+            .create(Path::new(RW_TMP_PATH), Create::Truncate, 0o644)
+            .map_err(|e| {
+                write_failure(current.pass, WRITE_TEMP_FAILED, Some(e.to_string()), None)
+            })?;
+        temp_created = true;
+        let mut expired = false;
+        let mut source = SourceRead {
+            file: &mut src,
+            failed: false,
+        };
+        verify_and_rename_temp(
+            ctx,
+            current,
+            &input,
+            &mut source,
+            dst.as_mut(),
+            &mut expired,
+            &mut rename_uncertain,
+        )?;
+        Ok(input)
+    })();
+    let input = match attempt {
+        Ok(input) => input,
+        Err(ModuleError::Failure(failure)) => {
+            return stopped(ctx, current, failure, temp_created, mounted);
+        }
+        Err(ModuleError::StateNotPersisted) => {
+            rollback_unloaded(ctx, current);
+            return Err(ModuleError::StateNotPersisted);
+        }
+        Err(other) => return Err(other),
+    };
+    finish_write(ctx, current, &input, mounted, rename_uncertain)
 }
 
 /// Confirm an unmerge, then always attempt one merge. The confirmation constrains

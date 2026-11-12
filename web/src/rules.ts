@@ -1,7 +1,7 @@
 import type { CheckRecord, GpuReading, LoadOrderRecord, ReasonField, TaskDetail, Unreadable, Reading } from "./api.js";
 import { isUnknown } from "./api.js";
 import { expandText, formatDate, formatDateMicros, type Params, type ReasonLike } from "./dom.js";
-import type { Lang } from "./messages.js";
+import { MESSAGES, type Lang } from "./messages.js";
 
 export const VERSION_PATTERN = /^[0-9]{1,9}(\.[0-9]{1,9}){1,3}$/;
 
@@ -202,32 +202,9 @@ export function joinReasons(reasons: ReasonLike[], lang: Lang): string {
   return reasons.map((r) => expandText(r.key, (r.params ?? {}) as Params, lang)).join(sep);
 }
 
-const BUILD_PLAIN: readonly string[] = [
-  "run_check_failed",
-  "modules_copy_failed",
-  "kernel_gcc_unknown",
-  "extract_failed",
-  "options_unreadable",
-  "kernel_module_type_unsupported",
-  "installer_failed",
-  "installer_userspace_failed",
-  "installer_kernel_module_failed",
-  "kernel_module_build_failed",
-  "depmod_failed",
-  "docker_run_failed",
-  "container_exit",
-  "gpu_unlock_installer_unusable",
-  "gpu_unlock_firmware_failed",
-  "gpu_unlock_module_build_failed",
-  "gpu_unlock_install_failed",
-  "gpu_unlock_module_rejected",
-];
-
 const BUILD_SAME_TEXT: Record<string, string> = {
   capture_empty: "build.capture_failed",
   stage_copy_failed: "build.capture_failed",
-  release_write_failed: "build.release_write_failed",
-  mksquashfs_failed: "build.mksquashfs_failed",
   result_write_failed: "build.mksquashfs_failed",
 };
 
@@ -256,10 +233,11 @@ export function normalizeReason(code: string, params: Params = {}): ReasonField 
   if (/^unexpected:[0-9]+$/.test(code)) {
     return { key: "build.unexpected", params: { line: code.slice("unexpected:".length) } };
   }
-  if (code.startsWith("artifact.")) {
-    return { key: `build.${code}`, params };
+  // Bare parameterized reasons cannot supply the fields their messages require.
+  if (/^(compiler_missing|deb_extract_failed|unexpected|community_patch_failed|kernel_module_missing|kernel_module_install_failed)$/.test(code)) {
+    return { key: code, params };
   }
-  if (BUILD_PLAIN.includes(code)) {
+  if (Object.hasOwn(MESSAGES, `build.${code}`)) {
     return { key: `build.${code}`, params };
   }
   if (BUILD_SAME_TEXT[code]) {

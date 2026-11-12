@@ -2,12 +2,12 @@
 
 [English](deploy.en.md)
 
-支持并实测 TrueNAS 25.10.7 与 TrueNAS 27.0.0-RC.1 / amd64；其他平台未经测试。特权容器使用 `pid: host` 控制主机驱动。安装前请读[安全说明](security.zh-CN.md)，安排维护窗口并保留主机控制台访问方式；替换可能中断显卡工作负载。
+支持并实测 TrueNAS 25.10.7、25.10.8 与 TrueNAS 27.0.0-RC.1 / amd64；其他平台未经测试。特权容器使用 `pid: host` 控制主机驱动。安装前请读[安全说明](security.zh-CN.md)，安排维护窗口并保留主机控制台访问方式；替换可能中断显卡工作负载。
 
 使用程序前，先在 TrueNAS 启用 NVIDIA 驱动：
 
-- 25.10.7：在应用 → 已安装页面点配置 → 设置，勾选安装 NVIDIA 驱动程序，点保存。
-- 27.0.0-RC.1：打开系统 → 高级设置，在 NVIDIA Drivers 卡片点配置，勾选 Enable NVIDIA GPU Support，点保存。
+- TrueNAS 25.10：在应用 → 已安装页面点配置 → 设置，勾选安装 NVIDIA 驱动程序，点保存。
+- TrueNAS 27：打开系统 → 高级设置，在 NVIDIA Drivers 卡片点配置，勾选 Enable NVIDIA GPU Support，点保存。
 
 ## 1. 安装应用
 
@@ -46,10 +46,10 @@
 
 先备份数据目录、记下当前镜像标签，并等待任务结束，再改应用。把 `image:` 改为所需的已发布 GHCR 版本并保存。跟随 `latest` 时，TrueNAS 提示有新镜像就点「更新」（打开应用 → 已安装，点你的应用，在应用信息卡片上选 ⋮ → 更新），也可点编辑，改标签选择具体版本。保留相同数据挂载，账号凭证、任务记录和本地驱动都在其中。
 
-镜像标签是镜像地址里最后一个冒号后面的名字。想固定版本，就把 `latest` 改成版本号，例如 `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.0`。要核对镜像确实来自本仓库，运行：
+镜像标签是镜像地址里最后一个冒号后面的名字。想固定版本，就把 `latest` 改成版本号，例如 `ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.1`。要核对镜像确实来自本仓库，运行：
 
 ```bash
-gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.0 --repo sky-zhang01/truenas-nvidia-driver-manager
+gh attestation verify oci://ghcr.io/sky-zhang01/truenas-nvidia-driver-manager:0.4.1 --repo sky-zhang01/truenas-nvidia-driver-manager
 ```
 
 改应用本身，不会改变主机上的 NVIDIA 驱动。如果要换回原版驱动，请先在本地驱动里做。

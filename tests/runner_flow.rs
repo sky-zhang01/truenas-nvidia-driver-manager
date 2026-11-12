@@ -325,6 +325,38 @@ fn admitted_update_writes_canonical_and_finishes_succeeded() {
         .any(|m| m.mount_point == RW_MOUNT));
     assert_eq!(host.count("mv"), 1);
     assert_eq!(host.count("systemd-sysext"), 5);
+    assert_eq!(
+        host.read_link(Path::new("/run/extensions/nvidia.raw"))
+            .unwrap(),
+        Path::new(CANONICAL_PATH)
+    );
+    let log = host
+        .file_text(paths().state_log(ID).to_str().unwrap())
+        .unwrap();
+    let readonly_off = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|line| {
+            line["p"]["argv"].as_array().is_some_and(|argv| {
+                argv.first().and_then(|v| v.as_str()) == Some("zfs")
+                    && argv.get(1).and_then(|v| v.as_str()) == Some("set")
+                    && argv.get(2).and_then(|v| v.as_str()) == Some("readonly=off")
+            })
+        })
+        .expect("the successful update logged its readonly change");
+    assert_eq!(readonly_off["p"]["exit"], Exit::Code(255).to_json());
+    assert!(host.argv_log().iter().any(|argv| {
+        argv.first().is_some_and(|arg| arg == "mount")
+            && argv.iter().any(|arg| arg == "zfsutil,rw")
+            && argv.last().is_some_and(|arg| arg == RW_MOUNT)
+    }));
+    assert!(host.argv_log().iter().all(|argv| !argv.iter().any(|arg| {
+        [
+            concat!("docker", ".update"),
+            concat!("system.advanced", ".update"),
+        ]
+        .contains(&arg.as_str())
+    })));
 }
 
 #[test]

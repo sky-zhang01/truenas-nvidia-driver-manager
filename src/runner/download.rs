@@ -118,58 +118,7 @@ struct IndexEntry {
 
 /// Parse the toolkit `Packages` index and pick the newest common version.
 pub fn pick_toolkit(packages: &str) -> Result<ToolkitPick, PickError> {
-    let mut by_package: BTreeMap<String, Vec<IndexEntry>> = BTreeMap::new();
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
-    for paragraph in packages.split("\n\n") {
-        let mut fields: BTreeMap<String, String> = BTreeMap::new();
-        for line in paragraph.lines() {
-            if line.starts_with(' ') || line.starts_with('\t') {
-                continue;
-            }
-            if let Some((k, v)) = line.split_once(':') {
-                let key = k.trim();
-                if !key.is_empty() {
-                    fields.insert(key.to_string(), v.trim().to_string());
-                }
-            }
-        }
-        let Some(package) = fields.get("Package") else {
-            continue;
-        };
-        if !TOOLKIT_PACKAGES.contains(&package.as_str()) {
-            continue;
-        }
-        if fields.get("Architecture").map(|v| v.as_str()) != Some("amd64") {
-            continue;
-        }
-        let Some(version) = fields.get("Version") else {
-            // Without a version this paragraph cannot be selected; it does not make the index
-            // unreadable.
-            continue;
-        };
-        // The same (Package, Version) must not appear twice.
-        if !seen.insert((package.clone(), version.clone())) {
-            return Err(PickError::IndexUnreadable);
-        }
-        let Some((upstream, revision)) = upload::deb_version_ok(version) else {
-            // A version outside the rule never takes part in the selection.
-            continue;
-        };
-        by_package
-            .entry(package.clone())
-            .or_default()
-            .push(IndexEntry {
-                upstream,
-                revision,
-                version: version.clone(),
-                filename: fields.get("Filename").cloned(),
-                size: fields.get("Size").and_then(|v| v.parse::<u64>().ok()),
-                sha256: fields.get("SHA256").cloned(),
-            });
-    }
-    if by_package.len() != TOOLKIT_PACKAGES.len() {
-        return Err(PickError::IndexUnreadable);
-    }
+    let by_package = read_toolkit_entries(packages)?;
     // Versions present in all four packages, compared as the complete (upstream version,
     // revision) pair: the selection must be one version that every package really offers,
     // never a revision mixed from different upstream versions.
@@ -226,6 +175,63 @@ pub fn pick_toolkit(packages: &str) -> Result<ToolkitPick, PickError> {
         version: selected_version,
         files,
     })
+}
+
+/// Collect selectable versions before choosing the newest common version.
+fn read_toolkit_entries(packages: &str) -> Result<BTreeMap<String, Vec<IndexEntry>>, PickError> {
+    let mut by_package: BTreeMap<String, Vec<IndexEntry>> = BTreeMap::new();
+    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    for paragraph in packages.split("\n\n") {
+        let mut fields: BTreeMap<String, String> = BTreeMap::new();
+        for line in paragraph.lines() {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                let key = k.trim();
+                if !key.is_empty() {
+                    fields.insert(key.to_string(), v.trim().to_string());
+                }
+            }
+        }
+        let Some(package) = fields.get("Package") else {
+            continue;
+        };
+        if !TOOLKIT_PACKAGES.contains(&package.as_str()) {
+            continue;
+        }
+        if fields.get("Architecture").map(|v| v.as_str()) != Some("amd64") {
+            continue;
+        }
+        let Some(version) = fields.get("Version") else {
+            // Without a version this paragraph cannot be selected; it does not make the index
+            // unreadable.
+            continue;
+        };
+        // The same (Package, Version) must not appear twice.
+        if !seen.insert((package.clone(), version.clone())) {
+            return Err(PickError::IndexUnreadable);
+        }
+        let Some((upstream, revision)) = upload::deb_version_ok(version) else {
+            // A version outside the rule never takes part in the selection.
+            continue;
+        };
+        by_package
+            .entry(package.clone())
+            .or_default()
+            .push(IndexEntry {
+                upstream,
+                revision,
+                version: version.clone(),
+                filename: fields.get("Filename").cloned(),
+                size: fields.get("Size").and_then(|v| v.parse::<u64>().ok()),
+                sha256: fields.get("SHA256").cloned(),
+            });
+    }
+    if by_package.len() != TOOLKIT_PACKAGES.len() {
+        return Err(PickError::IndexUnreadable);
+    }
+    Ok(by_package)
 }
 
 struct ProgressWatch<'a> {

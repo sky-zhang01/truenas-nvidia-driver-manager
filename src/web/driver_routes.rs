@@ -211,41 +211,7 @@ pub(super) async fn delete_drivers(
         let mut ids = req.ids.clone();
         ids.sort();
         ids.dedup();
-        match drivers::delete(h, p, &ids, &canonical) {
-            Ok(deleted) => {
-                crate::log::info(
-                    Event::DriversDeleted,
-                    &[("rows", &deleted.len().to_string())],
-                );
-                json_response(json!({"deleted": deleted}))
-            }
-            Err(drivers::DeleteError::Missing(ids)) => {
-                ApiError::new(StatusCode::NOT_FOUND, "delete.row_missing")
-                    .params(json!({"ids": ids}))
-                    .into_response()
-            }
-            Err(drivers::DeleteError::Refused(rows)) => {
-                let rows_json: Vec<Value> = rows
-                    .iter()
-                    .map(|r| {
-                        json!({
-                            "id": r.id,
-                            "reason": r.reason,
-                            "version": r.version,
-                            "kind": r.kind,
-                        })
-                    })
-                    .collect();
-                ApiError::new(StatusCode::CONFLICT, "delete.refused")
-                    .params(json!({"rows": rows_json}))
-                    .into_response()
-            }
-            Err(drivers::DeleteError::Failed { deleted, reason }) => {
-                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "delete.failed")
-                    .params(json!({"deleted": deleted, "reason": reason}))
-                    .into_response()
-            }
-        }
+        delete_driver_rows(h, p, &ids, &canonical)
     })
     .await;
     match result {
@@ -309,5 +275,43 @@ pub(super) async fn set_driver_keep(
     match result {
         Ok(response) => with_common_headers(response),
         Err(_) => internal().into_response(),
+    }
+}
+
+fn delete_driver_rows(h: &dyn Host, p: &Paths, ids: &[String], canonical: &str) -> Response {
+    match drivers::delete(h, p, ids, canonical) {
+        Ok(deleted) => {
+            crate::log::info(
+                Event::DriversDeleted,
+                &[("rows", &deleted.len().to_string())],
+            );
+            json_response(json!({"deleted": deleted}))
+        }
+        Err(drivers::DeleteError::Missing(ids)) => {
+            ApiError::new(StatusCode::NOT_FOUND, "delete.row_missing")
+                .params(json!({"ids": ids}))
+                .into_response()
+        }
+        Err(drivers::DeleteError::Refused(rows)) => {
+            let rows_json: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "reason": r.reason,
+                        "version": r.version,
+                        "kind": r.kind,
+                    })
+                })
+                .collect();
+            ApiError::new(StatusCode::CONFLICT, "delete.refused")
+                .params(json!({"rows": rows_json}))
+                .into_response()
+        }
+        Err(drivers::DeleteError::Failed { deleted, reason }) => {
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "delete.failed")
+                .params(json!({"deleted": deleted, "reason": reason}))
+                .into_response()
+        }
     }
 }

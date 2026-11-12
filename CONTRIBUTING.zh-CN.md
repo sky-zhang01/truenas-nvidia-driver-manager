@@ -40,7 +40,32 @@ Playwright 自动在 **18109** 端口启动 `fake_host_server`，提供 `web/dis
 docker build --platform linux/amd64 -t truenas-nvidia-driver-manager:local .
 ```
 
-不要为了测试而部署特权 App。修改 Compose 后运行 `bash ci/check-compose-test.sh`，有 Docker Compose 时会执行全部渲染配置校验。用 `bash ci/guards.sh` 扫描 tracked 文件中的坐标，新增文件也须自行检查。这些检查不能代替对日志和 fixture 的敏感信息审查。
+对这个镜像运行容器测试：
+
+```bash
+NVM_IMAGE=truenas-nvidia-driver-manager:local NVM_CURL_IMAGE=<带 curl 的镜像> bash ci/container/test.sh
+```
+
+脚本在当前 Docker 上按 `deploy/compose.yaml` 启动镜像。启动自检把守护进程所在 PID 命名空间的 1 号进程当作 TrueNAS 主机；rootful Docker 下这就是本机，按原样检查。rootless Docker（普通的 rootless 安装或 rootless 的 Docker-in-Docker）都要让 RootlessKit 另开 PID、UTS 和 IPC 命名空间（`DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS="--pidns --utsns --ipcns"`）；测试开始前，脚本会在该守护进程的命名空间里补上 `/usr/bin/docker` 和 `/var/run/docker.sock`，此时 curl 镜像还须带 `nsenter`。
+
+除下面的虚拟机测试外，不要为了测试而部署特权 App。修改 Compose 后运行 `bash ci/check-compose-test.sh`，有 Docker Compose 时会执行全部渲染配置校验。用 `bash ci/guards.sh` 扫描 tracked 文件中的坐标，新增文件也须自行检查。这些检查不能代替对日志和 fixture 的敏感信息审查。
+
+## 在 TrueNAS 虚拟机里测试显卡解锁
+
+`tests/gpu_unlock_vm.rs` 把本程序作为应用部署进一台 TrueNAS 测试虚拟机，用程序自己的任务跑带显卡解锁的更新，核对构建与试装、kmod 实际采用的加载顺序、重启、GPU 隔离，以及换回保存的原版。判据是 `tests/fixtures/gpu-unlock-vm.tsv` 的各行；每行的 case 一栏写明它在配了 GPU 隔离、没配、两种情况各一次，还是整台虚拟机只跑一次。虚拟机里没有 NVIDIA 显卡：生成计划时，测试把 `/sys/bus/pci/devices` 的一份副本挂在原处，多加一项 `0000:00:1f.7` 上的 RTX 3090，程序于是给这个地址规划解锁，而内核在这个地址上没有设备。
+
+测试需要一台可以随时重装的 TrueNAS 25.10 或 27 虚拟机：已建存储池、已启用应用、能上外网，并有一个可以免密码 sudo 的 SSH 账号。测试会删掉并重建它自己的应用和数据目录，替换虚拟机的 NVIDIA 驱动，重启虚拟机，并把 NVIDIA 开关关掉再打开。不要对正在使用的 NAS 运行。先构建镜像、载入虚拟机，再在仓库根目录运行：
+
+```bash
+docker build --platform linux/amd64 -t truenas-nvidia-driver-manager:local .
+docker save truenas-nvidia-driver-manager:local | ssh <vm> sudo docker load
+NVM_VM_SSH='ssh -o BatchMode=yes -o ServerAliveInterval=10 <vm>' \
+  NVM_VM_IMAGE=truenas-nvidia-driver-manager:local \
+  NVM_VM_DATA=/mnt/<pool>/nvm-vm-test NVM_VM_OUT="$HOME/nvm-vm-evidence" \
+  cargo test --locked --test gpu_unlock_vm -- --ignored --nocapture
+```
+
+`NVM_VM_DATA` 必须是普通目录而不是数据集，并且尚不存在，或是这个测试以前建的。每个 TrueNAS 版本各跑一次。一次包含三次构建、九个任务、四次重启，在测试虚拟机上用了 15 到 20 分钟。`NVM_VM_OUT` 里存每个任务的记录、每项判据所依据的读数和 `results.tsv`。
 
 ## 撰写更新记录
 

@@ -89,34 +89,7 @@ fn tasks_response(
     let mut sorted = reconciled.tasks.clone();
     sorted.sort_by(|a, b| b.id.cmp(&a.id));
     for t in &sorted {
-        let times = crate::tasks::project_task_times(t.status, t.state.as_ref());
-        let (source, version, phase) = match &t.state {
-            Some(state) => (
-                task_source_json(Some(state)),
-                state.plan.as_ref().map(|p| p.version.clone()),
-                state.phase.map(|p| p.as_str()),
-            ),
-            None => (Value::Null, None, None),
-        };
-        let mut obj = serde_json::Map::new();
-        obj.insert("task_id".into(), json!(t.id));
-        obj.insert("status".into(), json!(t.status_for_ui()));
-        obj.insert("phase".into(), json!(phase));
-        obj.insert("source".into(), source);
-        obj.insert(
-            "version".into(),
-            version.map(Value::from).unwrap_or(Value::Null),
-        );
-        obj.insert("created_at".into(), opt_millis(times.created_at));
-        obj.insert("finished_at".into(), opt_millis(times.finished_at));
-        obj.insert(
-            "interrupt_discovered_at".into(),
-            opt_millis(times.interrupt_discovered_at),
-        );
-        if let Some(state_read_error) = &t.state_read_error {
-            obj.insert("state_read_error".into(), json!(state_read_error));
-        }
-        tasks.push(Value::Object(obj));
+        tasks.push(task_list_item(t));
     }
     let active_task = match reconciled.active.blocker() {
         None => Value::Null,
@@ -595,92 +568,126 @@ pub(super) fn notice_json(state: &TaskState) -> Option<Value> {
                 },
             }))
         }
-        Status::Failed => {
-            let error = state.error.as_ref()?;
-            let code = error.code.as_str();
-            let reload_failed = |pass: crate::task_state::Pass| {
-                state
-                    .replace
-                    .iter()
-                    .find(|r| r.pass == pass)
-                    .map(|r| r.final_reloaded().iter().any(|x| !x.ok))
-                    .unwrap_or(false)
-            };
-            match ErrorCode::parse(code) {
-                Some(ErrorCode::GpuInUse) => Some(json!({
-                    "key": "notice.gpu_in_use",
-                    "variant": if error.params.get("occupancy").and_then(|v| v.as_str()) == Some("unreadable") {
-                        "task_unreadable"
-                    } else {
-                        "task"
-                    },
-                    "params": {},
-                })),
-                Some(ErrorCode::ModuleUnloadRefused) => {
-                    let mut params = json!({
-                        "reload_failed": reload_failed(crate::task_state::Pass::Update),
-                    });
-                    if error.params.get("waited_in_use").and_then(|v| v.as_bool()) == Some(true) {
-                        params["waited_in_use"] = json!(true);
-                    }
-                    Some(json!({
-                        "key": "notice.unload_refused",
-                        "params": params,
-                    }))
-                }
-                Some(ErrorCode::RestoreAborted) => {
-                    let cause = error
-                        .params
-                        .get("cause")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("busy");
-                    let mut params = json!({
-                        "reload_failed": reload_failed(crate::task_state::Pass::Restore),
-                    });
-                    if error.params.get("waited_in_use").and_then(|v| v.as_bool()) == Some(true) {
-                        params["waited_in_use"] = json!(true);
-                    }
-                    Some(json!({
-                        "key": "notice.restore_stopped",
-                        "variant": cause,
-                        "params": params,
-                    }))
-                }
-                Some(ErrorCode::RestoreNotWritten) => Some(json!({
-                    "key": "notice.restore_failed",
-                    "variant": "before_write",
-                    "params": {"reload_failed": reload_failed(crate::task_state::Pass::Restore)},
-                })),
-                Some(ErrorCode::RestoreCheckFailed) => Some(json!({
-                    "key": "notice.restore_failed",
-                    "variant": "written",
-                    "params": {"reload_failed": false},
-                })),
-                Some(ErrorCode::NoUsableOriginal) => Some(json!({
-                    "key": "notice.no_restore",
-                    "params": {},
-                })),
-                Some(ErrorCode::SaveOriginalFailed) => Some(json!({
-                    "key": "code.explanation",
-                    "params": {"code": code, "reload_failed": false},
-                })),
-                Some(ErrorCode::WriteFailed) => Some(json!({
-                    "key": "code.explanation",
-                    "params": {"code": code, "reload_failed": reload_failed(crate::task_state::Pass::Update)},
-                })),
-                Some(ErrorCode::ReplaceDeadlineExceeded) => Some(json!({
-                    "key": "code.explanation",
-                    "params": {"code": code, "reload_failed": reload_failed(crate::task_state::Pass::Update)},
-                })),
-                Some(ErrorCode::DownloadFailed) | Some(ErrorCode::BuildFailed) => {
-                    Some(json!({"key": "code.explanation", "params": {"code": code}}))
-                }
-                Some(ErrorCode::BuildTimeout) => {
-                    Some(json!({"key": "code.explanation", "params": {"code": code}}))
-                }
-                None => None,
-            }
-        }
+        Status::Failed => failed_notice_json(state),
         Status::Running | Status::Interrupted => None,
     }
+}
+
+fn task_list_item(t: &crate::tasks::ReconciledTask) -> Value {
+    let times = crate::tasks::project_task_times(t.status, t.state.as_ref());
+    let (source, version, phase) = match &t.state {
+        Some(state) => (
+            task_source_json(Some(state)),
+            state.plan.as_ref().map(|p| p.version.clone()),
+            state.phase.map(|p| p.as_str()),
+        ),
+        None => (Value::Null, None, None),
+    };
+    let mut obj = serde_json::Map::new();
+    obj.insert("task_id".into(), json!(t.id));
+    obj.insert("status".into(), json!(t.status_for_ui()));
+    obj.insert("phase".into(), json!(phase));
+    obj.insert("source".into(), source);
+    obj.insert(
+        "version".into(),
+        version.map(Value::from).unwrap_or(Value::Null),
+    );
+    obj.insert("created_at".into(), opt_millis(times.created_at));
+    obj.insert("finished_at".into(), opt_millis(times.finished_at));
+    obj.insert(
+        "interrupt_discovered_at".into(),
+        opt_millis(times.interrupt_discovered_at),
+    );
+    if let Some(state_read_error) = &t.state_read_error {
+        obj.insert("state_read_error".into(), json!(state_read_error));
+    }
+    Value::Object(obj)
+}
+
+fn failed_notice_json(state: &TaskState) -> Option<Value> {
+    let error = state.error.as_ref()?;
+    let code = error.code.as_str();
+    match ErrorCode::parse(code) {
+        Some(ErrorCode::GpuInUse) => Some(json!({
+            "key": "notice.gpu_in_use",
+            "variant": if error.params.get("occupancy").and_then(|v| v.as_str()) == Some("unreadable") {
+                "task_unreadable"
+            } else {
+                "task"
+            },
+            "params": {},
+        })),
+        Some(ErrorCode::ModuleUnloadRefused) => {
+            let mut params = json!({
+                "reload_failed": reload_failed(state, crate::task_state::Pass::Update),
+            });
+            if error.params.get("waited_in_use").and_then(|v| v.as_bool()) == Some(true) {
+                params["waited_in_use"] = json!(true);
+            }
+            Some(json!({
+                "key": "notice.unload_refused",
+                "params": params,
+            }))
+        }
+        Some(ErrorCode::RestoreAborted) => {
+            let cause = error
+                .params
+                .get("cause")
+                .and_then(|v| v.as_str())
+                .unwrap_or("busy");
+            let mut params = json!({
+                "reload_failed": reload_failed(state, crate::task_state::Pass::Restore),
+            });
+            if error.params.get("waited_in_use").and_then(|v| v.as_bool()) == Some(true) {
+                params["waited_in_use"] = json!(true);
+            }
+            Some(json!({
+                "key": "notice.restore_stopped",
+                "variant": cause,
+                "params": params,
+            }))
+        }
+        Some(ErrorCode::RestoreNotWritten) => Some(json!({
+            "key": "notice.restore_failed",
+            "variant": "before_write",
+            "params": {"reload_failed": reload_failed(state, crate::task_state::Pass::Restore)},
+        })),
+        Some(ErrorCode::RestoreCheckFailed) => Some(json!({
+            "key": "notice.restore_failed",
+            "variant": "written",
+            "params": {"reload_failed": false},
+        })),
+        Some(ErrorCode::NoUsableOriginal) => Some(json!({
+            "key": "notice.no_restore",
+            "params": {},
+        })),
+        Some(ErrorCode::SaveOriginalFailed) => Some(json!({
+            "key": "code.explanation",
+            "params": {"code": code, "reload_failed": false},
+        })),
+        Some(ErrorCode::WriteFailed) => Some(json!({
+            "key": "code.explanation",
+            "params": {"code": code, "reload_failed": reload_failed(state, crate::task_state::Pass::Update)},
+        })),
+        Some(ErrorCode::ReplaceDeadlineExceeded) => Some(json!({
+            "key": "code.explanation",
+            "params": {"code": code, "reload_failed": reload_failed(state, crate::task_state::Pass::Update)},
+        })),
+        Some(ErrorCode::DownloadFailed) | Some(ErrorCode::BuildFailed) => {
+            Some(json!({"key": "code.explanation", "params": {"code": code}}))
+        }
+        Some(ErrorCode::BuildTimeout) => {
+            Some(json!({"key": "code.explanation", "params": {"code": code}}))
+        }
+        None => None,
+    }
+}
+
+fn reload_failed(state: &TaskState, pass: crate::task_state::Pass) -> bool {
+    state
+        .replace
+        .iter()
+        .find(|r| r.pass == pass)
+        .map(|r| r.final_reloaded().iter().any(|x| !x.ok))
+        .unwrap_or(false)
 }

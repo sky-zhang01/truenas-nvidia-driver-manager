@@ -28,15 +28,15 @@
 
 ## 适合你的机器吗
 
-- TrueNAS 25.10.7（Community Edition）或 TrueNAS 27.0.0-RC.1，电脑是 64 位的 Intel 或 AMD。其他版本和 ARM 电脑没有测试过。
+- TrueNAS 25.10.7、25.10.8（Community Edition）或 TrueNAS 27.0.0-RC.1，电脑是 64 位的 Intel 或 AMD。其他版本和 ARM 电脑没有测试过。
 - 有 NVIDIA 显卡。比较老的显卡有一些限制，见[为你的显卡选驱动](docs/operations.zh-CN.md#为你的显卡选驱动)。
 - 机器需要能上网，用来下载驱动（nvidia.com）和构建工具（Docker Hub 和 Debian）。没有网络时，可以换用以前保存的驱动；上传的文件也能用，但要先按[部署说明](docs/deploy.zh-CN.md)备好构建所需的文件。
 
 ## 安装
 
 1. 在 TrueNAS 里打开 NVIDIA 驱动。如果这个开关没打开，主页会显示提示。
-   - 25.10.7：打开应用 → 已安装 → 配置 → 设置，勾选安装 NVIDIA 驱动程序，点保存。
-   - 27.0.0-RC.1：打开系统 → 高级设置，在 NVIDIA Drivers 卡片点配置，勾选 Enable NVIDIA GPU Support，点保存。
+   - TrueNAS 25.10：打开应用 → 已安装 → 配置 → 设置，勾选安装 NVIDIA 驱动程序，点保存。
+   - TrueNAS 27：打开系统 → 高级设置，在 NVIDIA Drivers 卡片点配置，勾选 Enable NVIDIA GPU Support，点保存。
 2. 为程序单独建一个数据集。数据集是 TrueNAS 在存储池里建的一个目录，以后备份的就是它。
    1. 打开数据集，选中存储池，点添加数据集。
    2. 起名，例如 `nvm`。
@@ -106,7 +106,7 @@ services:
 5. 在确认窗口里点「保存原版驱动并开始」。已经保存过原版时，点「开始更新」。
 6. 等任务完成。关掉浏览器，任务也会继续。
 7. 确认任务显示成功，主页上是新的版本。
-8. 重启更新前已经在运行的显卡应用，包括主页「驱动版本已变更」里列出的应用，以及提示「Driver/library version mismatch」的应用。
+8. 重启更新前已经在运行的显卡应用，包括任务页「驱动版本已变更」里列出的应用，以及提示「Driver/library version mismatch」的应用。
 
 <img src="docs/images/plan-zh.png" width="900" alt="官网版本的确认更新窗口，按钮有「保存原版驱动并开始」「不保存原版驱动并开始」和「返回选择」。">
 
@@ -125,6 +125,7 @@ services:
 - **显示「已中断」（断电或重启）。** 主页会写出已加载的驱动版本和停在哪一步。核对版本后再更新一次。如果应用还是用不了显卡，先在本地驱动里换回原版，然后在空闲时段重启机器。重启不一定能解决。
 - **版本列表为空，或下载失败。** 机器必须能访问下载用的网站（nvidia.com、Docker Hub 和 Debian）。请检查它的网络设置和防火墙，再看任务日志。
 - **设置码被拒绝，或忘记了密码。** 刷新页面，到应用日志里复制最新的设置码；也可以按[运维说明](docs/operations.zh-CN.md#忘记密码重置管理员账号)重置账号。
+- **升级 TrueNAS 之后，驱动变回了 TrueNAS 自带的版本。** 升级会把驱动文件换成新版 TrueNAS 自带的那一份。要装回你的版本，见[运维说明](docs/operations.zh-CN.md#truenas-升级之后怎么办)。
 
 每个任务页都有日志。如果你以前用过别的 NVIDIA 驱动工具，它可能在每次开机时装回自己的驱动，让这里的更新失效，见[运维说明](docs/operations.zh-CN.md#排错与报告问题)。
 
@@ -139,7 +140,7 @@ services:
 ## 更多文档
 
 - [部署说明](docs/deploy.zh-CN.md)：网络方式、升级与固定应用版本、离线安装与构建。
-- [运维说明](docs/operations.zh-CN.md)：分步更新、为显卡选驱动、上传、本地驱动、换回原版、SSH 密钥登录、重置密码、备份、日志。
+- [运维说明](docs/operations.zh-CN.md)：分步更新、为显卡选驱动、上传、本地驱动、换回原版、TrueNAS 升级之后、SSH 密钥登录、重置密码、备份、日志。
 - [安全说明](docs/security.zh-CN.md)：程序的工作方式、需要的权限和已知限制。
 - [智能体说明](docs/agent.zh-CN.md)：让 Claude Code、Codex 这类 AI 智能体来做更新。登录之后，智能体拥有完整的管理员权限，程序也无法确认它是不是先问过你。
 - [安全报告](SECURITY.zh-CN.md)、[贡献指南](CONTRIBUTING.zh-CN.md)、[更新记录](CHANGELOG.zh-CN.md)。

@@ -4,10 +4,13 @@
 mod common;
 
 use std::ffi::OsStr;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::*;
+use syn::spanned::Spanned;
+use syn::visit::Visit;
 use truenas_nvidia_driver_manager::codes::CANONICAL_PATH;
 use truenas_nvidia_driver_manager::facts;
 use truenas_nvidia_driver_manager::host::{self, At};
@@ -16,36 +19,145 @@ fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_truenas-nvidia-driver-manager"))
 }
 
-/// Every line of every source file of `src/`, with a flag that marks the lines of the top-level
-/// `#[cfg(test)] mod tests {` module: those are test code and not production paths.
+type SourceLine = (String, usize, String, bool);
+
+/// Source lines under `src/`, split at test-module boundaries so production code on the same
+/// line as a test module stays visible. Paths are relative to `src/`.
 fn source_lines() -> Vec<(String, usize, String, bool)> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&src)
-        .expect("the source directory is readable")
-        .map(|entry| entry.expect("a source entry").path())
-        .filter(|path| path.extension() == Some(OsStr::new("rs")))
-        .collect();
+    let mut files = source_files(&src);
     files.sort();
     let mut out = Vec::new();
     for path in files {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let name = path.strip_prefix(&src).unwrap().to_string_lossy();
         let text = std::fs::read_to_string(&path).expect("a source file is UTF-8");
-        let lines: Vec<&str> = text.lines().collect();
-        // The test module starts at a top-level `#[cfg(test)]` whose next line opens `mod tests`.
-        // Its lines are the only ones the scan skips.
-        let tests_at = lines.iter().enumerate().find_map(|(i, line)| {
-            let opens_tests = lines
-                .get(i + 1)
-                .map(|next| next.trim_start().starts_with("mod tests"))
-                .unwrap_or(false);
-            (line.trim_end() == "#[cfg(test)]" && opens_tests).then_some(i)
-        });
-        let tests_at = tests_at.unwrap_or(lines.len());
-        for (i, line) in lines.iter().enumerate() {
-            out.push((name.clone(), i + 1, line.to_string(), i >= tests_at));
-        }
+        out.extend(classify_source(&name, &text));
     }
     out
+}
+
+fn source_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("a source directory is readable") {
+        let path = entry.expect("a source entry").path();
+        if path.is_dir() {
+            files.extend(source_files(&path));
+        } else if path.extension() == Some(OsStr::new("rs")) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+#[derive(Default)]
+struct TestModules(Vec<Range<usize>>);
+
+impl<'ast> Visit<'ast> for TestModules {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        let test_only = item.attrs.iter().any(|attr| {
+            attr.path().is_ident("cfg")
+                && attr
+                    .parse_args::<syn::Path>()
+                    .is_ok_and(|path| path.is_ident("test"))
+        });
+        if test_only {
+            self.0.push(item.span().byte_range());
+        } else {
+            syn::visit::visit_item_mod(self, item);
+        }
+    }
+}
+
+fn classify_source(name: &str, text: &str) -> Vec<SourceLine> {
+    let syntax = syn::parse_file(text).expect("a source file parses as Rust");
+    // syn strips these prefixes before parsing, so its spans start after them.
+    let bom = "\u{feff}";
+    let prefix = usize::from(text.starts_with(bom)) * bom.len()
+        + syntax.shebang.as_ref().map_or(0, String::len);
+    let mut modules = TestModules::default();
+    modules.visit_file(&syntax);
+    modules.0.sort_by_key(|range| range.start);
+    let mut out = Vec::new();
+    let (mut offset, mut number) = (0, 1);
+    let mut append = |region: &str, tests| {
+        for line in region.split_inclusive('\n') {
+            out.push((name.to_string(), number, line.to_string(), tests));
+            number += usize::from(line.ends_with('\n'));
+        }
+    };
+    for range in modules.0 {
+        let range = range.start + prefix..range.end + prefix;
+        append(&text[offset..range.start], false);
+        append(&text[range.clone()], true);
+        offset = range.end;
+    }
+    append(&text[offset..], false);
+    out
+}
+
+#[test]
+fn source_scan_skips_only_test_module_items() {
+    let text = r##"fn before() { let _ = "#[cfg(test)] mod tests {"; }
+#[cfg(test)]
+mod tests { fn test() { let _ = r#"} At::Here {"#; } }
+fn after() { let _ = At::Here; }
+mod nested {
+    #[cfg(test)] mod checks { fn test() { let _ = At::Here; } }
+    fn after_nested() { let _ = At::Here; }
+}
+#[cfg(test)] mod more { fn test() { let _ = At::Here; } } fn same_line() { let _ = At::Here; }
+#[cfg(not(test))] mod tests { fn production() { let _ = At::Here; } }
+"##;
+    let lines = classify_source("fixture.rs", text);
+    let hits: Vec<usize> = lines
+        .iter()
+        .filter(|(_, _, line, tests)| !tests && line.contains("At::Here"))
+        .map(|(_, number, _, _)| *number)
+        .collect();
+    assert_eq!(hits, [4, 7, 9, 10]);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|(_, _, line, tests)| *tests && line.contains("At::Here"))
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn source_scan_preserves_offsets_after_bom_and_shebang() {
+    for prefix in [
+        "\u{feff}",
+        "#!/usr/bin/env rust-script\n",
+        "\u{feff}#!/bin/runner\n",
+    ] {
+        let text = format!(
+            "{prefix}//🙂\n#[cfg(test)] mod tests {{ fn test() {{ let _ = At::Here; }} }}\n\
+             fn after() {{ let _ = At::Here; }}\n"
+        );
+        let lines = classify_source("fixture.rs", &text);
+        let hits: Vec<_> = lines
+            .iter()
+            .filter(|(_, _, line, tests)| !tests && line.contains("At::Here"))
+            .collect();
+        assert_eq!(hits.len(), 1, "{prefix:?}");
+        assert!(hits[0].2.contains("fn after"), "{prefix:?}");
+        assert_eq!(hits[0].1, 3 + prefix.matches('\n').count());
+    }
+}
+
+#[test]
+fn source_scan_reads_nested_production() {
+    assert!(source_lines().iter().any(|(file, _, line, tests)| {
+        file == "runner/build.rs" && !tests && line.contains("pub fn docker_run_argv")
+    }));
+}
+
+#[test]
+fn source_scan_reads_production_after_a_test_module() {
+    assert!(source_lines().iter().any(|(file, _, line, tests)| {
+        file == "tasks.rs" && !tests && line.contains("fn is_sixteen_hex")
+    }));
 }
 
 #[test]
