@@ -84,14 +84,7 @@ pub fn load(vars: impl Iterator<Item = (OsString, OsString)>) -> Settings {
         };
         match key_str.as_str() {
             VAR_USERNAME => {
-                if check_username(&text) {
-                    username = Some(text);
-                } else {
-                    problems.push(SettingProblem::Invalid {
-                        variable: VAR_USERNAME,
-                        rule: RULE_USERNAME,
-                    });
-                }
+                load_username(text, &mut username, &mut problems);
             }
             VAR_PORT => {
                 port_seen = true;
@@ -136,6 +129,17 @@ pub fn load(vars: impl Iterator<Item = (OsString, OsString)>) -> Settings {
         port,
         build_timeout_minutes: timeout,
         problems,
+    }
+}
+
+fn load_username(text: String, username: &mut Option<String>, problems: &mut Vec<SettingProblem>) {
+    if check_username(&text) {
+        *username = Some(text);
+    } else {
+        problems.push(SettingProblem::Invalid {
+            variable: VAR_USERNAME,
+            rule: RULE_USERNAME,
+        });
     }
 }
 

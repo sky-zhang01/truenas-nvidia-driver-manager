@@ -768,93 +768,111 @@ pub fn publish_file(
         });
     }
     match h.fsync_dir(dir) {
-        Ok(()) => {
-            if let Some(rec) = &recovery {
-                if let Err(e) = retire_recovery(h, dir, file_name, rec, target) {
-                    // The published bytes are durable but the protected copy could not be
-                    // retired. It must not stay able to roll the committed value back; only
-                    // when even the in-place disarm was refused is the commit not
-                    // protectable. Report the publish as failed and put the previous bytes
-                    // back, so the caller never sees a success whose value a later flush
-                    // could silently revert.
-                    let old = before.expect("a recovery copy holds previous bytes");
-                    let restored = {
-                        let copy = dir.join(format!(".{file_name}.tmp-{}", random_hex(8)));
-                        let via_copy = write_synced(h, &copy, old, recovery_mode(h, target))
-                            .is_ok()
-                            && h.rename(&copy, target).is_ok()
-                            && h.read(target).map(|b| b == old).unwrap_or(false);
-                        let _ = h.remove_file(&copy);
-                        via_copy
-                            || (h.rename(rec, target).is_ok()
-                                && h.read(target).map(|b| b == old).unwrap_or(false))
-                    };
-                    return Err(Rollback {
-                        error: e,
-                        restored,
-                        recovery: if restored { None } else { Some(rec.clone()) },
-                    });
-                }
-                let _ = h.fsync_dir(dir);
-            }
-            Ok(())
-        }
-        Err(e) => {
-            let Some(rec) = &recovery else {
-                // There was no previous file: put the target name back to
-                // absent. If unlinking is refused, move the published file out
-                // of the way, and read the result back either way.
-                if h.remove_file(target).is_err() {
-                    let hidden = dir.join(format!(".{file_name}.tmp-{}", random_hex(8)));
-                    let _ = h.rename(target, &hidden);
-                }
-                let absent = h.lstat(target).is_err();
-                return Err(Rollback {
-                    error: e,
-                    restored: absent,
-                    recovery: None,
-                });
-            };
-            let old = before.expect("the recovery copy is written only with previous bytes");
-            // First restore path: an atomic rename of a fresh copy of the old
-            // bytes. The recovery file itself is not consumed, so the report
-            // below can still name it truthfully.
-            let copy = dir.join(format!(".{file_name}.tmp-{}", random_hex(8)));
-            let path_one = write_synced(h, &copy, old, recovery_mode(h, target)).is_ok()
-                && h.rename(&copy, target).is_ok()
-                && h.read(target).map(|b| b == old).unwrap_or(false);
-            if path_one {
-                let _ = h.remove_file(rec);
-                return Err(Rollback {
-                    error: e,
-                    restored: true,
-                    recovery: None,
-                });
-            }
-            let _ = h.remove_file(&copy);
-            // Second restore path: rename the recovery copy itself back.
-            if h.rename(rec, target).is_ok() && h.read(target).map(|b| b == old).unwrap_or(false) {
-                return Err(Rollback {
-                    error: e,
-                    restored: true,
-                    recovery: None,
-                });
-            }
-            // Neither rollback was confirmed. The recovery copy already lives under the
-            // protected name that `clean_leftovers` never deletes and `flush_recovery`
-            // restores.
-            let kept = if h.read(rec).map(|have| have == *old).unwrap_or(false) {
-                Some(rec.clone())
-            } else {
-                protect_recovery(h, dir, file_name, rec, recovery_mode(h, target), Some(old))
-            };
-            Err(Rollback {
-                error: e,
-                restored: false,
-                recovery: kept,
-            })
-        }
+        Ok(()) => finish_file_publish(h, dir, target, file_name, before, &recovery),
+        Err(e) => rollback_file_publish(h, dir, target, file_name, before, &recovery, e),
     }
+}
+
+fn finish_file_publish(
+    h: &dyn Host,
+    dir: &Path,
+    target: &Path,
+    file_name: &str,
+    before: Option<&[u8]>,
+    recovery: &Option<PathBuf>,
+) -> Result<(), Rollback> {
+    if let Some(rec) = recovery {
+        if let Err(e) = retire_recovery(h, dir, file_name, rec, target) {
+            // The published bytes are durable but the protected copy could not be
+            // retired. It must not stay able to roll the committed value back; only
+            // when even the in-place disarm was refused is the commit not
+            // protectable. Report the publish as failed and put the previous bytes
+            // back, so the caller never sees a success whose value a later flush
+            // could silently revert.
+            let old = before.expect("a recovery copy holds previous bytes");
+            let restored = {
+                let copy = dir.join(format!(".{file_name}.tmp-{}", random_hex(8)));
+                let via_copy = write_synced(h, &copy, old, recovery_mode(h, target)).is_ok()
+                    && h.rename(&copy, target).is_ok()
+                    && h.read(target).map(|b| b == old).unwrap_or(false);
+                let _ = h.remove_file(&copy);
+                via_copy
+                    || (h.rename(rec, target).is_ok()
+                        && h.read(target).map(|b| b == old).unwrap_or(false))
+            };
+            return Err(Rollback {
+                error: e,
+                restored,
+                recovery: if restored { None } else { Some(rec.clone()) },
+            });
+        }
+        let _ = h.fsync_dir(dir);
+    }
+    Ok(())
+}
+
+fn rollback_file_publish(
+    h: &dyn Host,
+    dir: &Path,
+    target: &Path,
+    file_name: &str,
+    before: Option<&[u8]>,
+    recovery: &Option<PathBuf>,
+    e: io::Error,
+) -> Result<(), Rollback> {
+    let Some(rec) = recovery else {
+        // There was no previous file: put the target name back to
+        // absent. If unlinking is refused, move the published file out
+        // of the way, and read the result back either way.
+        if h.remove_file(target).is_err() {
+            let hidden = dir.join(format!(".{file_name}.tmp-{}", random_hex(8)));
+            let _ = h.rename(target, &hidden);
+        }
+        let absent = h.lstat(target).is_err();
+        return Err(Rollback {
+            error: e,
+            restored: absent,
+            recovery: None,
+        });
+    };
+    let old = before.expect("the recovery copy is written only with previous bytes");
+    // First restore path: an atomic rename of a fresh copy of the old
+    // bytes. The recovery file itself is not consumed, so the report
+    // below can still name it truthfully.
+    let copy = dir.join(format!(".{file_name}.tmp-{}", random_hex(8)));
+    let path_one = write_synced(h, &copy, old, recovery_mode(h, target)).is_ok()
+        && h.rename(&copy, target).is_ok()
+        && h.read(target).map(|b| b == old).unwrap_or(false);
+    if path_one {
+        let _ = h.remove_file(rec);
+        return Err(Rollback {
+            error: e,
+            restored: true,
+            recovery: None,
+        });
+    }
+    let _ = h.remove_file(&copy);
+    // Second restore path: rename the recovery copy itself back.
+    if h.rename(rec, target).is_ok() && h.read(target).map(|b| b == old).unwrap_or(false) {
+        return Err(Rollback {
+            error: e,
+            restored: true,
+            recovery: None,
+        });
+    }
+    // Neither rollback was confirmed. The recovery copy already lives under the
+    // protected name that `clean_leftovers` never deletes and `flush_recovery`
+    // restores.
+    let kept = if h.read(rec).map(|have| have == *old).unwrap_or(false) {
+        Some(rec.clone())
+    } else {
+        protect_recovery(h, dir, file_name, rec, recovery_mode(h, target), Some(old))
+    };
+    Err(Rollback {
+        error: e,
+        restored: false,
+        recovery: kept,
+    })
 }
 
 /// Publish complete bytes through a same-directory temporary file.

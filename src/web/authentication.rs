@@ -244,7 +244,12 @@ pub(super) async fn password_login(
             req.password.clone(),
         )
         .await;
-    let response = match outcome {
+    let response = password_login_response(outcome);
+    with_common_headers(response)
+}
+
+fn password_login_response(outcome: auth::LoginOutcome) -> Response {
+    match outcome {
         auth::LoginOutcome::Ok { cookie, token } => {
             crate::log::info(Event::LoginSucceeded, &[]);
             let body = json!({"token": token});
@@ -295,8 +300,7 @@ pub(super) async fn password_login(
         )
         .params(json!({"state": credentials_state_json(&state)}))
         .into_response(),
-    };
-    with_common_headers(response)
+    }
 }
 
 fn state_json_reason(state: &CredentialState) -> Value {
@@ -454,7 +458,12 @@ pub(super) async fn ssh_login_route(
         req.signature,
     )
     .await;
-    let response = match outcome {
+    let response = ssh_login_response(outcome);
+    with_common_headers(response)
+}
+
+fn ssh_login_response(outcome: crate::ssh_login::SshLoginOutcome) -> Response {
+    match outcome {
         crate::ssh_login::SshLoginOutcome::Ok {
             cookie,
             token,
@@ -485,29 +494,7 @@ pub(super) async fn ssh_login_route(
             fingerprint,
             algorithm,
             show_reset_help,
-        } => {
-            // The log line carries only the public fingerprint, the algorithm and the fixed
-            // reason category: the consecutive-failure count stays in the shared bucket and
-            // in the password login-shaped response params below.
-            let mut fields: Vec<(&str, serde_json::Value)> =
-                vec![("reason", json!(kind.log_reason()))];
-            if let Some(fingerprint) = &fingerprint {
-                fields.push(("fingerprint", json!(fingerprint)));
-            }
-            if let Some(algorithm) = &algorithm {
-                fields.push(("algorithm", json!(algorithm)));
-            }
-            crate::log::info_json(Event::SshLoginFailed, &fields);
-            // Parsing and verification share one error code; an unregistered key has its own.
-            let key = if kind == crate::ssh_login::SshFailKind::KeyNotRegistered {
-                "ssh.key_not_registered"
-            } else {
-                "ssh.login_failed"
-            };
-            ApiError::new(StatusCode::UNAUTHORIZED, key)
-                .params(json!({"show_reset_help": show_reset_help}))
-                .into_response()
-        }
+        } => ssh_login_failed_response(kind, fingerprint, algorithm, show_reset_help),
         crate::ssh_login::SshLoginOutcome::RateLimited {
             retry_after_s,
             show_reset_help,
@@ -532,8 +519,35 @@ pub(super) async fn ssh_login_route(
         )
         .params(json!({"state": credentials_state_json(&state)}))
         .into_response(),
+    }
+}
+
+fn ssh_login_failed_response(
+    kind: crate::ssh_login::SshFailKind,
+    fingerprint: Option<String>,
+    algorithm: Option<String>,
+    show_reset_help: bool,
+) -> Response {
+    // The log line carries only the public fingerprint, the algorithm and the fixed
+    // reason category: the consecutive-failure count stays in the shared bucket and
+    // in the password login-shaped response params below.
+    let mut fields: Vec<(&str, serde_json::Value)> = vec![("reason", json!(kind.log_reason()))];
+    if let Some(fingerprint) = &fingerprint {
+        fields.push(("fingerprint", json!(fingerprint)));
+    }
+    if let Some(algorithm) = &algorithm {
+        fields.push(("algorithm", json!(algorithm)));
+    }
+    crate::log::info_json(Event::SshLoginFailed, &fields);
+    // Parsing and verification share one error code; an unregistered key has its own.
+    let key = if kind == crate::ssh_login::SshFailKind::KeyNotRegistered {
+        "ssh.key_not_registered"
+    } else {
+        "ssh.login_failed"
     };
-    with_common_headers(response)
+    ApiError::new(StatusCode::UNAUTHORIZED, key)
+        .params(json!({"show_reset_help": show_reset_help}))
+        .into_response()
 }
 
 /// `GET /api/ssh/keys`: needs a session; a must-change session may read the (necessarily
@@ -592,41 +606,7 @@ fn ssh_key_write(ctx: &Arc<Ctx>, headers: &HeaderMap, change: KeyChange) -> Resp
     };
     match change {
         KeyChange::Add { line, comment } => {
-            match crate::ssh_login::add_ssh_key(
-                ctx.host.as_ref(),
-                &mut credentials,
-                &line,
-                &comment,
-            ) {
-                Ok(item) => {
-                    match auth::write_credentials(ctx.host.as_ref(), &ctx.paths, &credentials) {
-                        Ok(()) => {
-                            crate::log::info_json(
-                                Event::SshKeyAdded,
-                                &[
-                                    ("fingerprint", item["fingerprint"].clone()),
-                                    ("algorithm", item["algorithm"].clone()),
-                                ],
-                            );
-                            json_response_status(StatusCode::CREATED, item)
-                        }
-                        Err(reason) => ssh_keys_unsaved(reason),
-                    }
-                }
-                Err(crate::ssh_login::AddKeyError::Invalid(kind)) => {
-                    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "ssh.key_invalid")
-                        .params(json!({"reason": kind.reason()}))
-                        .into_response()
-                }
-                Err(crate::ssh_login::AddKeyError::Exists(fingerprint)) => {
-                    ApiError::new(StatusCode::CONFLICT, "ssh.key_exists")
-                        .params(json!({"fingerprint": fingerprint}))
-                        .into_response()
-                }
-                Err(crate::ssh_login::AddKeyError::Limit) => {
-                    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "ssh.key_limit").into_response()
-                }
-            }
+            ssh_key_add_response(ctx, &mut credentials, &line, &comment)
         }
         KeyChange::Remove { id } => {
             match crate::ssh_login::remove_ssh_key(&mut credentials, &id) {
@@ -658,6 +638,43 @@ fn ssh_key_write(ctx: &Arc<Ctx>, headers: &HeaderMap, change: KeyChange) -> Resp
                     ApiError::new(StatusCode::NOT_FOUND, "ssh.key_not_found").into_response()
                 }
             }
+        }
+    }
+}
+
+/// Add and publish the key while the caller holds the credentials lock.
+fn ssh_key_add_response(
+    ctx: &Arc<Ctx>,
+    credentials: &mut auth::Credentials,
+    line: &str,
+    comment: &str,
+) -> Response {
+    match crate::ssh_login::add_ssh_key(ctx.host.as_ref(), credentials, line, comment) {
+        Ok(item) => match auth::write_credentials(ctx.host.as_ref(), &ctx.paths, credentials) {
+            Ok(()) => {
+                crate::log::info_json(
+                    Event::SshKeyAdded,
+                    &[
+                        ("fingerprint", item["fingerprint"].clone()),
+                        ("algorithm", item["algorithm"].clone()),
+                    ],
+                );
+                json_response_status(StatusCode::CREATED, item)
+            }
+            Err(reason) => ssh_keys_unsaved(reason),
+        },
+        Err(crate::ssh_login::AddKeyError::Invalid(kind)) => {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "ssh.key_invalid")
+                .params(json!({"reason": kind.reason()}))
+                .into_response()
+        }
+        Err(crate::ssh_login::AddKeyError::Exists(fingerprint)) => {
+            ApiError::new(StatusCode::CONFLICT, "ssh.key_exists")
+                .params(json!({"fingerprint": fingerprint}))
+                .into_response()
+        }
+        Err(crate::ssh_login::AddKeyError::Limit) => {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "ssh.key_limit").into_response()
         }
     }
 }

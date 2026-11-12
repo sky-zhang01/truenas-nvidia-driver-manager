@@ -270,14 +270,12 @@ struct Inner {
     modules: Mutex<BTreeMap<String, facts::ModuleLine>>,
     refuse_unload: Mutex<BTreeSet<String>>,
     fail_reload: Mutex<BTreeSet<String>>,
-    module_load_fail: Mutex<Option<String>>,
     host_mounts: Mutex<Vec<MountLine>>,
     /// The App container's own mount table, what `/proc/self/mountinfo` holds in the container; the
     /// host table above stays separate.
     container_mounts: Mutex<Vec<MountLine>>,
     readonly: Mutex<String>,
     sysext_since: Mutex<u64>,
-    refresh_missing: Mutex<bool>,
     driver_version: Mutex<Option<String>>,
     /// Kernel reading frozen at an actual core-module load, independently of the merged image.
     loaded_version: Mutex<Option<String>>,
@@ -304,7 +302,6 @@ struct Inner {
     uname: Mutex<String>,
     listings: Mutex<BTreeMap<String, String>>,
     modinfo: Mutex<BTreeMap<String, String>>,
-    dpkg: Mutex<BTreeMap<String, String>>,
     midclt: Mutex<BTreeMap<String, FakeOutput>>,
     dpkg_passthrough: Mutex<bool>,
     curl: Mutex<BTreeMap<String, CurlResponse>>,
@@ -330,16 +327,7 @@ struct Inner {
     /// rm` removes the entry, and a test may install stopped or orphaned containers directly. This
     /// models the name set only: no image, id, exit code, restart policy or label exists.
     containers: Mutex<BTreeMap<String, bool>>,
-    /// Injection switches of the `docker ps -a --format {{.Names}}` answer.
-    docker_ps_all_fails: Mutex<bool>,
-    docker_ps_all_times_out: Mutex<bool>,
-    docker_ps_all_partial: Mutex<bool>,
-    /// Injection switches of `docker rm`.
-    docker_rm_noop: Mutex<bool>,
     docker_rm_fails: Mutex<bool>,
-    /// A removal that reports a failure although the container really is gone (the race against
-    /// another remover; the listing decides).
-    docker_rm_fails_after_removal: Mutex<bool>,
     unsquashfs_fails: Mutex<BTreeSet<String>>,
     /// The kernel log of this boot that `journalctl -k -b` reads.
     kernel_journal: Mutex<String>,
@@ -349,15 +337,8 @@ struct Inner {
     /// `(target suffix, allowed matches, seen matches)`: renames whose target ends with the suffix
     /// fail after `allowed` of them have passed.
     fail_rename_to: Mutex<Vec<(String, usize, usize)>>,
-    /// Target names for which a rename of a `.<target>.tmp-…` file back onto the target must fail
-    /// (the rollback path of a publish or slot restore).
-    fail_rename_rollback: Mutex<Vec<String>>,
     /// Read failures (EACCES) for every path with one of these prefixes.
     fail_reads: Mutex<Vec<String>>,
-    /// `(path prefix, marker file)`: the first read below the prefix creates the marker. It lets
-    /// another process observe a read that happens inside a critical section the reader holds (test
-    /// handshake only).
-    read_markers: Mutex<Vec<(String, std::path::PathBuf)>>,
     /// `(path prefix, gate)`: the next file-side operation below the prefix waits for the gate. It
     /// makes a product step inside a critical section observable at exactly that step (test barrier
     /// only).
@@ -383,26 +364,14 @@ struct Inner {
     /// Opt-in synthetic package content for browser upload fixtures only.
     dpkg_fixture_content: Mutex<bool>,
     units: Mutex<BTreeMap<String, UnitState>>,
-    /// Injection switch of `systemctl list-units`, the drain's unit query.
-    list_units_fails: Mutex<bool>,
-    /// Injection switch of the host mount table read.
-    mount_table_fails: Mutex<bool>,
     /// Directory listings that fail with EACCES, by path prefix.
     fail_read_dirs: Mutex<Vec<String>>,
     /// The host-root prefix `view` maps to. `None` is the host process itself (`/proc/1/root` is
     /// the container case).
     view_prefix: Mutex<Option<String>>,
-    /// Lines of `systemctl list-jobs`, one job per line, exactly as a test installed them (e.g.
-    /// `123 nvm-task-<id>.service start running`); the `jobs` field below holds something else: the
-    /// runner threads.
-    job_lines: Mutex<Vec<String>>,
-    /// Injection switches of the `systemctl list-jobs` answer.
-    list_jobs_fails: Mutex<bool>,
-    list_jobs_times_out: Mutex<bool>,
-    list_jobs_partial: Mutex<bool>,
     jobs: Mutex<Vec<std::thread::JoinHandle<()>>>,
-    /// Kill switches of the runner threads `systemd-run` started, keyed by task id: `kill_unit`
-    /// flips one so the thread stops at its next host boundary instead of continuing.
+    /// Stop switches of the runner threads `systemd-run` started, keyed by task id.
+    /// Scenario reset stops them at their next host boundary before reusing the sandbox.
     kills: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
     hostname_id: Mutex<String>,
     /// The version the merged sysext image carries, once a merge (or a host reboot) read a
@@ -421,17 +390,6 @@ struct Inner {
     /// right now. This is a process-wide in-memory model, not a real OS lock; [`FakeLock`] states
     /// its limits.
     locks_held: Mutex<BTreeSet<String>>,
-    /// Use the real kernel `flock` on the opened file instead of the in-process model. Two
-    /// processes over one sandbox really contend then, which the cross-process lock windows need;
-    /// the default keeps the deterministic in-process model for the single-process suites.
-    real_flock: std::sync::atomic::AtomicBool,
-    /// Makes `open_lock` fail for every path.
-    lock_open_fails: Mutex<bool>,
-    /// Makes `try_acquire` fail for every handle.
-    lock_acquire_fails: Mutex<bool>,
-    /// Overrides the mode `open_lock` creates the lock file with, so a test can model a file the
-    /// production validation must refuse.
-    lock_mode: Mutex<Option<u32>>,
 }
 
 /// Marks the current thread as running the task runner for the fake host; the previous state is
@@ -579,10 +537,9 @@ impl FakeHost {
     }
 
     /// A fixture over an **existing** sandbox directory. Two processes can share one virtual host
-    /// this way: their file state is the same real directory (so a `flock` taken by one process
-    /// really blocks the other), while each process keeps its own command model and clock. The
-    /// directory is created when missing and never wiped, so the caller decides what the shared
-    /// scene contains.
+    /// this way: their file state is the same real directory, while each process keeps its own
+    /// command model and clock. The directory is created when missing and never wiped, so the
+    /// caller decides what the shared scene contains.
     pub fn with_sandbox(sandbox: &std::path::Path) -> FakeHost {
         let sandbox = sandbox.to_path_buf();
         std::fs::create_dir_all(&sandbox).expect("fake host sandbox");
@@ -599,7 +556,6 @@ impl FakeHost {
                 modules: Mutex::new(BTreeMap::new()),
                 refuse_unload: Mutex::new(BTreeSet::new()),
                 fail_reload: Mutex::new(BTreeSet::new()),
-                module_load_fail: Mutex::new(None),
                 host_mounts: Mutex::new(vec![
                     MountLine {
                         source: "/dev/sda2".into(),
@@ -630,7 +586,6 @@ impl FakeHost {
                 ]),
                 readonly: Mutex::new("on".into()),
                 sysext_since: Mutex::new(1_000_000),
-                refresh_missing: Mutex::new(false),
                 driver_version: Mutex::new(Some("580.173.02".into())),
                 loaded_version: Mutex::new(None),
                 loaded_text: Mutex::new(None),
@@ -650,7 +605,6 @@ impl FakeHost {
                 uname: Mutex::new(KERNEL.into()),
                 listings: Mutex::new(BTreeMap::new()),
                 modinfo: Mutex::new(BTreeMap::new()),
-                dpkg: Mutex::new(BTreeMap::new()),
                 midclt: Mutex::new(BTreeMap::new()),
                 dpkg_passthrough: Mutex::new(false),
                 curl: Mutex::new(BTreeMap::new()),
@@ -666,21 +620,14 @@ impl FakeHost {
                 docker_pull_leaves_nothing: Mutex::new(false),
                 docker_image_rm_fails: Mutex::new(false),
                 containers: Mutex::new(BTreeMap::new()),
-                docker_ps_all_fails: Mutex::new(false),
-                docker_ps_all_times_out: Mutex::new(false),
-                docker_ps_all_partial: Mutex::new(false),
-                docker_rm_noop: Mutex::new(false),
                 docker_rm_fails: Mutex::new(false),
-                docker_rm_fails_after_removal: Mutex::new(false),
                 unsquashfs_fails: Mutex::new(BTreeSet::new()),
                 kernel_journal: Mutex::new(String::new()),
                 fail_writes: Mutex::new(Vec::new()),
                 fail_fsync_dirs: Mutex::new(Vec::new()),
                 fail_rename_suffix: Mutex::new(None),
                 fail_rename_to: Mutex::new(Vec::new()),
-                fail_rename_rollback: Mutex::new(Vec::new()),
                 fail_reads: Mutex::new(Vec::new()),
-                read_markers: Mutex::new(Vec::new()),
                 path_gate: Mutex::new(Vec::new()),
                 fail_removes: Mutex::new(Vec::new()),
                 fail_rename_contains: Mutex::new(Vec::new()),
@@ -694,14 +641,8 @@ impl FakeHost {
                 dpkg_default: Mutex::new(None),
                 dpkg_fixture_content: Mutex::new(false),
                 units: Mutex::new(BTreeMap::new()),
-                list_units_fails: Mutex::new(false),
-                mount_table_fails: Mutex::new(false),
                 fail_read_dirs: Mutex::new(Vec::new()),
                 view_prefix: Mutex::new(None),
-                job_lines: Mutex::new(Vec::new()),
-                list_jobs_fails: Mutex::new(false),
-                list_jobs_times_out: Mutex::new(false),
-                list_jobs_partial: Mutex::new(false),
                 jobs: Mutex::new(Vec::new()),
                 kills: Mutex::new(BTreeMap::new()),
                 hostname_id: Mutex::new("a".repeat(64)),
@@ -710,10 +651,6 @@ impl FakeHost {
                 runner_threads: Mutex::new(BTreeSet::new()),
                 red_lines_checked: Mutex::new(0),
                 locks_held: Mutex::new(BTreeSet::new()),
-                real_flock: std::sync::atomic::AtomicBool::new(false),
-                lock_open_fails: Mutex::new(false),
-                lock_acquire_fails: Mutex::new(false),
-                lock_mode: Mutex::new(None),
             }),
         };
         host.mkdir("/sys/bus/pci/devices");
@@ -1406,7 +1343,6 @@ impl FakeHost {
         self.clear_units();
         self.inner.locks_held.lock().unwrap().clear();
         self.inner.containers.lock().unwrap().clear();
-        self.inner.job_lines.lock().unwrap().clear();
         if let Ok(run) = self.real_path("/run") {
             let _ = std::fs::remove_dir_all(&run);
             let _ = std::fs::create_dir_all(&run);
@@ -1446,12 +1382,6 @@ impl FakeHost {
                 *self.inner.merged_version.lock().unwrap() = None;
             }
         }
-    }
-
-    /// The App container's own mount table (read through `/proc/self/mountinfo`); `mount` and
-    /// `umount` never change it.
-    pub fn container_mount_table(&self) -> Vec<MountLine> {
-        self.inner.container_mounts.lock().unwrap().clone()
     }
 
     // ---- clock ---------------------------------------------------------
@@ -1621,10 +1551,6 @@ impl FakeHost {
             .insert(name.to_string());
     }
 
-    pub fn set_module_load_fail(&self, name: &str) {
-        *self.inner.module_load_fail.lock().unwrap() = Some(name.to_string());
-    }
-
     // ---- mounts, dataset, sysext --------------------------------------
 
     pub fn add_mount(&self, source: &str, mount_point: &str, fstype: &str, options: &str) {
@@ -1675,10 +1601,6 @@ impl FakeHost {
 
     pub fn model_sysext_merge(&self) {
         // A command may change host state even if its reported exit fails.
-        if *self.inner.refresh_missing.lock().unwrap() {
-            self.model_sysext_unmerge();
-            return;
-        }
         let target = self
             .link_target("/run/extensions/nvidia.raw")
             .filter(|target| self.virtual_exists(target));
@@ -1692,10 +1614,6 @@ impl FakeHost {
             }
             None => self.model_sysext_unmerge(),
         }
-    }
-
-    pub fn set_refresh_missing(&self, missing: bool) {
-        *self.inner.refresh_missing.lock().unwrap() = missing;
     }
 
     pub fn set_driver_version(&self, version: &str) {
@@ -1772,23 +1690,6 @@ impl FakeHost {
                 exec_main_status,
             },
         );
-    }
-
-    /// Model the runner being killed: the unit becomes failed and the runner thread stops at its
-    /// next host boundary, without running another command or writing anything.
-    pub fn kill_unit(&self, id: &str) {
-        {
-            let mut units = self.inner.units.lock().unwrap();
-            if let Some(u) = units.get_mut(id) {
-                u.active = "failed".into();
-                u.sub = "failed".into();
-                u.result = "signal".into();
-                u.exec_main_status = 0;
-            }
-        }
-        if let Some(kill) = self.inner.kills.lock().unwrap().get(id) {
-            kill.store(true, Ordering::SeqCst);
-        }
     }
 
     /// True when the current thread runs a killed `systemd-run` runner.
@@ -1929,32 +1830,18 @@ impl FakeHost {
             .push((suffix.to_string(), allowed, 0));
     }
 
-    /// Make renames that put a temporary `.<target>.tmp-…` file back onto `target` fail; the first
-    /// publish or replacement rename is unaffected.
-    pub fn fail_rename_rollback(&self, target: &str) {
-        self.inner
-            .fail_rename_rollback
-            .lock()
-            .unwrap()
-            .push(target.to_string());
-    }
-
-    /// Clear every injected write, read, fsync, rename and lock failure.
+    /// Clear every injected write, read, fsync and rename failure.
     pub fn clear_failures(&self) {
         self.inner.fail_writes.lock().unwrap().clear();
         self.inner.fail_fsync_dirs.lock().unwrap().clear();
         *self.inner.fail_rename_suffix.lock().unwrap() = None;
         self.inner.fail_rename_to.lock().unwrap().clear();
-        self.inner.fail_rename_rollback.lock().unwrap().clear();
         self.inner.fail_reads.lock().unwrap().clear();
         self.inner.fail_removes.lock().unwrap().clear();
         self.inner.fail_rename_contains.lock().unwrap().clear();
         self.inner.fail_syncs.lock().unwrap().clear();
         self.inner.read_changes.lock().unwrap().clear();
         self.inner.fail_rename_exdev.lock().unwrap().clear();
-        *self.inner.lock_open_fails.lock().unwrap() = false;
-        *self.inner.lock_acquire_fails.lock().unwrap() = false;
-        *self.inner.lock_mode.lock().unwrap() = None;
     }
 
     pub fn set_unsquashfs_broken(&self, path: &str) {
@@ -2011,14 +1898,6 @@ impl FakeHost {
                 None => self.put_text(&target, "fake nvidia.ko"),
             }
         }
-    }
-
-    pub fn set_dpkg(&self, name: &str, fields: &str) {
-        self.inner
-            .dpkg
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), fields.to_string());
     }
 
     pub fn set_midclt(&self, args: &str, output: FakeOutput) {
@@ -2188,54 +2067,9 @@ impl FakeHost {
             .collect()
     }
 
-    /// Make `docker ps -a --format {{.Names}}` fail: a non-zero exit, or `Exit::TimedOut` when
-    /// [`FakeHost::set_docker_ps_all_times_out`] is set.
-    pub fn set_docker_ps_all_fails(&self, fails: bool) {
-        *self.inner.docker_ps_all_fails.lock().unwrap() = fails;
-    }
-
-    /// Turn the `docker ps -a --format {{.Names}}` failure into a timeout.
-    pub fn set_docker_ps_all_times_out(&self, times_out: bool) {
-        *self.inner.docker_ps_all_times_out.lock().unwrap() = times_out;
-    }
-
-    /// Let the failing `docker ps -a --format {{.Names}}` write one truncated name line before it
-    /// fails, like a listing cut off mid-line.
-    pub fn set_docker_ps_all_partial(&self, partial: bool) {
-        *self.inner.docker_ps_all_partial.lock().unwrap() = partial;
-    }
-
-    /// Make `docker rm` report success without removing the container from the model (the silent
-    /// no-op the cleanup must not trust).
-    pub fn set_docker_rm_noop(&self, noop: bool) {
-        *self.inner.docker_rm_noop.lock().unwrap() = noop;
-    }
-
     /// Make `docker rm` return a non-zero exit; the container stays in the model.
     pub fn set_docker_rm_fails(&self, fails: bool) {
         *self.inner.docker_rm_fails.lock().unwrap() = fails;
-    }
-
-    /// Make `docker rm` return a non-zero exit **and** remove the container from the model: the
-    /// exact listing is then the only proof of absence.
-    pub fn set_docker_rm_fails_after_removal(&self, fails: bool) {
-        *self.inner.docker_rm_fails.lock().unwrap() = fails;
-        *self.inner.docker_rm_fails_after_removal.lock().unwrap() = fails;
-    }
-
-    /// Install the lines `systemctl list-jobs` answers with, one job per line.
-    pub fn set_jobs(&self, jobs: &[&str]) {
-        *self.inner.job_lines.lock().unwrap() = jobs.iter().map(|j| j.to_string()).collect();
-    }
-
-    /// Make `systemctl list-units` fail with a non-zero exit and a reason.
-    pub fn set_list_units_fails(&self, fails: bool) {
-        *self.inner.list_units_fails.lock().unwrap() = fails;
-    }
-
-    /// Make the host mount table unreadable (the unclassifiable mount query).
-    pub fn set_mount_table_fails(&self, fails: bool) {
-        *self.inner.mount_table_fails.lock().unwrap() = fails;
     }
 
     /// Make every listing of this path fail with EACCES (never "empty").
@@ -2251,22 +2085,6 @@ impl FakeHost {
         *self.inner.view_prefix.lock().unwrap() = prefix.map(str::to_string);
     }
 
-    /// Make `systemctl list-jobs` fail with a non-zero exit, or with `Exit::TimedOut` when
-    /// [`FakeHost::set_list_jobs_times_out`] is set.
-    pub fn set_list_jobs_fails(&self, fails: bool) {
-        *self.inner.list_jobs_fails.lock().unwrap() = fails;
-    }
-
-    /// Turn the `systemctl list-jobs` failure into a timeout.
-    pub fn set_list_jobs_times_out(&self, times_out: bool) {
-        *self.inner.list_jobs_times_out.lock().unwrap() = times_out;
-    }
-
-    /// Let the failing `systemctl list-jobs` write one truncated job line before it fails.
-    pub fn set_list_jobs_partial(&self, partial: bool) {
-        *self.inner.list_jobs_partial.lock().unwrap() = partial;
-    }
-
     pub fn set_exe(&self, bytes: &[u8]) {
         *self.inner.exe.lock().unwrap() = bytes.to_vec();
     }
@@ -2277,32 +2095,6 @@ impl FakeHost {
 
     pub fn set_hostname_container_id(&self, id: &str) {
         *self.inner.hostname_id.lock().unwrap() = id.to_string();
-    }
-
-    // ---- the cross-process lock model ----------------------------------
-
-    /// Make `open_lock` fail for every path (the unopenable lock file).
-    pub fn set_lock_open_fails(&self, fails: bool) {
-        *self.inner.lock_open_fails.lock().unwrap() = fails;
-    }
-
-    /// Make `try_acquire` of every handle fail with an I/O error, which is never "free" (the
-    /// unclassifiable lock query).
-    pub fn set_lock_acquire_fails(&self, fails: bool) {
-        *self.inner.lock_acquire_fails.lock().unwrap() = fails;
-    }
-
-    /// Give an existing fixture directory this exact mode, so a test can model a directory the
-    /// production mode validation must refuse (a permissive `manager/control`, for instance). The
-    /// file sandbox keeps the real node: the product reads the mode through `lstat`.
-    #[cfg(unix)]
-    pub fn set_dir_mode(&self, path: &str, mode: u32) {
-        use std::os::unix::fs::PermissionsExt;
-        let real = self
-            .real_path(path)
-            .unwrap_or_else(|e| panic!("fake host set_dir_mode refuses {path}: {e}"));
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(mode))
-            .expect("fake host set_dir_mode");
     }
 
     /// Block the next operation below `prefix` at an observable product boundary. This can hold
@@ -2330,25 +2122,6 @@ impl FakeHost {
         for gate in gates {
             gate.wait_observed();
         }
-    }
-
-    /// Create `marker` the first time this host reads a path below `prefix`. Used by the
-    /// cross-process cases to observe a read that happens while the reader holds a lock (test
-    /// handshake only, the read uses the string reason).
-    pub fn on_read_marker(&self, prefix: &str, marker: std::path::PathBuf) {
-        self.inner
-            .read_markers
-            .lock()
-            .unwrap()
-            .push((prefix.to_string(), marker));
-    }
-
-    pub fn use_real_flock(&self, on: bool) {
-        self.inner.real_flock.store(on, Ordering::SeqCst);
-    }
-
-    pub fn set_lock_mode(&self, mode: u32) {
-        *self.inner.lock_mode.lock().unwrap() = Some(mode);
     }
 
     /// True while some open handle of this fake host holds the modelled lock of `host_path` (a
@@ -2397,21 +2170,15 @@ impl FakeHost {
     }
 
     /// The container model follows a finished `docker` command: a successful `rm` removes the
-    /// container, a failed one or an injected `rm` no-op leaves it in place.
+    /// container and a failed one leaves it in place.
     fn finish_docker_command(&self, cmd: &Cmd, out: &Output) {
         if cmd.program != "docker" {
             return;
         }
         let args = arg_strings(cmd);
-        if args.first().is_some_and(|a| a == "rm") {
-            // A removal may report a failure while the container really is gone; the mocked model
-            // must be able to express that so the listing is exercised as the only proof.
-            let gone = out.exit.ok() || *self.inner.docker_rm_fails_after_removal.lock().unwrap();
-            let noop = *self.inner.docker_rm_noop.lock().unwrap();
-            if gone && !noop {
-                if let Some(name) = args.last() {
-                    self.inner.containers.lock().unwrap().remove(name);
-                }
+        if args.first().is_some_and(|a| a == "rm") && out.exit.ok() {
+            if let Some(name) = args.last() {
+                self.inner.containers.lock().unwrap().remove(name);
             }
         }
     }
@@ -2483,398 +2250,400 @@ impl FakeHost {
             "systemctl" => Some(self.systemctl(cmd)),
             "docker" => Some(self.docker(cmd)),
             "zfs" => Some(self.zfs(cmd)),
-            "mount" => {
-                let args = arg_strings(cmd);
-                if let Some(pos) = args.iter().position(|a| a == "-o") {
-                    let opts = args.get(pos + 1).cloned().unwrap_or_default();
-                    let source = args.iter().rev().nth(1).cloned().unwrap_or_default();
-                    let mount_point = args.last().cloned().unwrap_or_default();
-                    self.add_mount(&source, &mount_point, "zfs", &opts);
-                    if mount_point == RW_MOUNT {
-                        self.mkdir(&format!("{RW_MOUNT}/share/truenas/sysext-extensions"));
-                        if let Some(bytes) = self.file(CANONICAL_PATH) {
-                            self.put_file(RW_CANONICAL_PATH, bytes);
-                        }
-                    }
-                    return Some(FakeOutput::code(0));
-                }
-                Some(FakeOutput::code(32).with_stderr("mount: unsupported in the fake host"))
-            }
-            "mv" => {
-                let args = arg_strings(cmd);
-                if args != ["-T", RW_TMP_PATH, RW_CANONICAL_PATH]
-                    || self.readonly() != "off"
-                    || !self
-                        .inner
-                        .host_mounts
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .any(|line| line.mount_point == RW_MOUNT && line.is_rw())
-                {
-                    return Some(FakeOutput::code(1).with_stderr("mv: writable mount unavailable"));
-                }
-                let Some(bytes) = self.file(RW_TMP_PATH) else {
-                    return Some(FakeOutput::code(1).with_stderr("mv: source missing"));
-                };
-                let listings = self.inner.listings.lock().unwrap().clone();
-                let listing = listings.iter().find_map(|(path, listing)| {
-                    (self.file(path).as_deref() == Some(bytes.as_slice())).then(|| listing.clone())
-                });
-                let (Ok(src), Ok(dst)) = (
-                    self.real_path_nofollow(RW_TMP_PATH),
-                    self.real_path_nofollow(RW_CANONICAL_PATH),
-                ) else {
-                    return Some(FakeOutput::code(1).with_stderr("mv: invalid path"));
-                };
-                if let Err(error) = std::fs::rename(&src, &dst) {
-                    return Some(FakeOutput::code(1).with_stderr(&format!("mv: {error}")));
-                }
-                // The writable mount and /usr name the same ZFS file. Replace its inode so a
-                // descriptor opened before mv keeps old bytes.
-                let Ok(canonical) = self.real_path_nofollow(CANONICAL_PATH) else {
-                    return Some(FakeOutput::code(1).with_stderr("mv: invalid canonical path"));
-                };
-                if let Err(error) = std::fs::rename(&dst, &canonical) {
-                    return Some(FakeOutput::code(1).with_stderr(&format!("mv: {error}")));
-                }
-                if let Err(error) = std::fs::hard_link(&canonical, &dst) {
-                    return Some(FakeOutput::code(1).with_stderr(&format!("mv: {error}")));
-                }
-                let mut stored = self.inner.listings.lock().unwrap();
-                if let Some(listing) = listing {
-                    stored.insert(CANONICAL_PATH.into(), listing);
-                } else {
-                    stored.remove(CANONICAL_PATH);
-                }
-                Some(FakeOutput::code(0))
-            }
-            "umount" => {
-                let mount_point = cmd
-                    .args
-                    .last()
-                    .map(|a| a.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.remove_mount(&mount_point);
-                Some(FakeOutput::code(0))
-            }
-            "insmod" => {
-                let file = arg_strings(cmd).last().cloned().unwrap_or_default();
-                if !self.exists(&file) {
-                    return Some(FakeOutput::code(1).with_stderr(&format!(
-                        "insmod: ERROR: could not load module {file}: No such file or directory"
-                    )));
-                }
-                self.load_module("gpu_unlock", 0, &[]);
-                Some(FakeOutput::code(0))
-            }
-            "modprobe" => {
-                let name = cmd
-                    .args
-                    .last()
-                    .map(|a| a.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                if arg_strings(cmd).first().map(String::as_str) == Some("--show-depends") {
-                    // Lists the dependency chain and loads nothing.
-                    return Some(FakeOutput::stdout(&format!(
-                        "insmod /lib/modules/{KERNEL}/kernel/drivers/video/{name}.ko \n"
-                    )));
-                }
-                if self.inner.modules.lock().unwrap().contains_key(&name) {
-                    return Some(FakeOutput::code(0));
-                }
-                if name != "nvidia"
-                    && self.driver_reading().is_some_and(|v| {
-                        self.inner
-                            .merged_version
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .is_some_and(|m| m != &v)
-                    })
-                {
-                    return Some(
-                        FakeOutput::code(1)
-                            .with_stderr("modprobe: Invalid argument (version mismatch)"),
-                    );
-                }
-                if self.inner.fail_reload.lock().unwrap().contains(&name) {
-                    return Some(
-                        FakeOutput::code(1)
-                            .with_stderr(&format!("modprobe: ERROR: could not insert {name}")),
-                    );
-                }
-                if self.inner.module_load_fail.lock().unwrap().as_deref() == Some(name.as_str()) {
-                    return Some(FakeOutput::code(1).with_stderr(&format!(
-                        "modprobe: ERROR: could not insert {name}: No such device"
-                    )));
-                }
-                if !self.inner.modules.lock().unwrap().contains_key(&name) {
-                    self.load_module(&name, 0, &[]);
-                }
-                Some(FakeOutput::code(0))
-            }
-            "rmmod" => {
-                let name = cmd
-                    .args
-                    .last()
-                    .map(|a| a.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let delay = self.inner.unload_delays.lock().unwrap().remove(&name);
-                if let Some(delay) = delay {
-                    self.advance(delay);
-                }
-                let correction = self
-                    .persisted_phase()
-                    .is_some_and(|p| p.ends_with("align_modules"));
-                if self.inner.refuse_unload.lock().unwrap().contains(&name)
-                    || (correction && self.inner.refuse_correction.lock().unwrap().contains(&name))
-                {
-                    return Some(FakeOutput::code(1).with_stderr(&format!(
-                        "rmmod: ERROR: Module {name} is in use by: holder"
-                    )));
-                }
-                let at = self.offset();
-                let periodic = self.inner.periodic_opens.lock().unwrap().clone();
-                let sustained = self.inner.sustained_opens.lock().unwrap().clone();
-                {
-                    let modules = self.inner.modules.lock().unwrap();
-                    let Some(module) = modules.get(&name) else {
-                        return Some(FakeOutput::code(1).with_stderr(&format!(
-                            "rmmod: ERROR: Module {name} not currently loaded"
-                        )));
-                    };
-                    // An open device raises the reference count; a loaded module in the holder list
-                    // (`/proc/modules` dependencies) refuses the unload. A time-based opener adds
-                    // the same extra count `/proc/modules` displays.
-                    let refcount =
-                        module.refcount + extra_refcount(at, &name, &periodic, &sustained);
-                    if refcount > 0 {
-                        return Some(
-                            FakeOutput::code(1)
-                                .with_stderr(&format!("rmmod: ERROR: Module {name} is in use")),
-                        );
-                    }
-                    let holders: Vec<String> = module
-                        .deps
-                        .iter()
-                        .filter(|d| modules.contains_key(d.as_str()))
-                        .cloned()
-                        .collect();
-                    if !holders.is_empty() {
-                        return Some(FakeOutput::code(1).with_stderr(&format!(
-                            "rmmod: ERROR: Module {name} is in use by: {}",
-                            holders.join(",")
-                        )));
-                    }
-                }
-                self.unload_module(&name);
-                Some(FakeOutput::code(0))
-            }
-            "unsquashfs" => {
-                let args = arg_strings(cmd);
-                if let Some(pos) = args.iter().position(|a| a == "-d") {
-                    self.unsquashfs_extract(&args[pos + 1..]);
-                    return Some(FakeOutput::code(0));
-                }
-                // The image is the first argument that is not an option; arguments after it
-                // are the members to list.
-                let image = args.iter().position(|a| !a.starts_with('-'));
-                let path = image.map_or_else(
-                    || args.last().cloned().unwrap_or_default(),
-                    |i| args[i].clone(),
-                );
-                let members: Vec<String> = image.map_or(Vec::new(), |i| {
-                    args[i + 1..]
-                        .iter()
-                        .map(|m| format!("squashfs-root/{m}"))
-                        .collect()
-                });
-                if self.inner.unsquashfs_fails.lock().unwrap().contains(&path) {
-                    return Some(FakeOutput::code(1).with_stderr("unsquashfs: failed"));
-                }
-                if !members.is_empty() && !self.exists(&path) {
-                    return Some(
-                        FakeOutput::code(1).with_stderr(&format!("Could not open {path}")),
-                    );
-                }
-                let listing = self.inner.listings.lock().unwrap().get(&path).cloned();
-                match listing {
-                    Some(l) if !members.is_empty() => {
-                        Some(FakeOutput::stdout(&member_listing(&l, &members)))
-                    }
-                    Some(l) => Some(FakeOutput::stdout(&l)),
-                    // An image nobody described has none of the members asked for.
-                    None if !members.is_empty() && self.exists(&path) => {
-                        Some(FakeOutput::stdout(&member_listing("", &members)))
-                    }
-                    None if !members.is_empty() => {
-                        Some(FakeOutput::code(1).with_stderr(&format!("Could not open {path}")))
-                    }
-                    None if path.ends_with("driver.run") => Some(FakeOutput {
-                        exit: Exit::Code(1),
-                        stdout: Vec::new(),
-                        stderr: Vec::new(),
-                        delay: Duration::ZERO,
-                    }),
-                    None => Some(FakeOutput::code(1).with_stderr("unsquashfs: no such file")),
-                }
-            }
-            "modinfo" => {
-                let args = arg_strings(cmd);
-                let path = args.last().cloned().unwrap_or_default();
-                match self.modinfo_answer(&path, args.get(1)) {
-                    Some(v) => Some(FakeOutput::stdout(&format!("{v}\n"))),
-                    None => Some(
-                        FakeOutput::code(1).with_stderr("modinfo: ERROR: could not find module"),
-                    ),
-                }
-            }
-            "dpkg-deb" => {
-                if *self.inner.dpkg_passthrough.lock().unwrap() {
-                    return Some(self.real_dpkg(cmd));
-                }
-                let args = arg_strings(cmd);
-                let path = args.get(1).cloned().unwrap_or_default();
-                if *self.inner.dpkg_fixture_content.lock().unwrap() {
-                    let fields = self
-                        .read(Path::new(&path))
-                        .ok()
-                        .and_then(|bytes| String::from_utf8(bytes).ok())
-                        .and_then(|text| text.strip_prefix("NVM_TEST_DEB\n").map(str::to_owned))
-                        .filter(|fields| {
-                            let lines: Vec<_> = fields.lines().collect();
-                            lines.len() == 3
-                                && lines[0].starts_with("Package: ")
-                                && lines[1].starts_with("Version: ")
-                                && lines[2].starts_with("Architecture: ")
-                        });
-                    return Some(match fields {
-                        Some(fields) => FakeOutput::stdout(&fields),
-                        None => {
-                            FakeOutput::code(1).with_stderr("invalid synthetic package fixture")
-                        }
-                    });
-                }
-                match self.inner.dpkg.lock().unwrap().get(&path).cloned() {
-                    Some(f) => Some(FakeOutput::stdout(&f)),
-                    None => match self.inner.dpkg_default.lock().unwrap().clone() {
-                        Some(f) => Some(FakeOutput::stdout(&f)),
-                        None => Some(FakeOutput::code(1).with_stderr("dpkg-deb: error")),
-                    },
-                }
-            }
-            "midclt" => {
-                let args = arg_strings(cmd);
-                let key = args.join(" ");
-                let map = self.inner.midclt.lock().unwrap();
-                for (pattern, out) in map.iter().rev() {
-                    if key == *pattern || key.starts_with(&format!("{pattern} ")) {
-                        return Some(out.clone());
-                    }
-                }
-                // The default fixture exposes virt; callers can override container.* for 27.
-                if key.starts_with("call container.") {
-                    Some(FakeOutput::code(1).with_stderr("[ENOMETHOD] Method does not exist"))
-                } else {
-                    Some(FakeOutput::stdout("[]"))
-                }
-            }
+            "mount" => Some(self.mount(cmd)),
+            "mv" => Some(self.mv(cmd)),
+            "umount" => Some(self.umount(cmd)),
+            "insmod" => Some(self.insmod(cmd)),
+            "modprobe" => Some(self.modprobe(cmd)),
+            "rmmod" => Some(self.rmmod(cmd)),
+            "unsquashfs" => Some(self.unsquashfs(cmd)),
+            "modinfo" => Some(self.modinfo(cmd)),
+            "dpkg-deb" => Some(self.dpkg_deb(cmd)),
+            "midclt" => Some(self.midclt(cmd)),
             "curl" => Some(self.curl(cmd)),
             "nvidia-smi"
                 if arg_strings(cmd).first().map(String::as_str)
                     == Some("--query-gpu=name,pci.bus_id") =>
             {
-                if self.driver_reading().is_some_and(|v| {
-                    self.inner
-                        .merged_version
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .is_some_and(|m| m != &v)
-                }) {
-                    Some(
-                        FakeOutput::code(18).with_stderr(
-                            "Failed to initialize NVML: Driver/library version mismatch",
-                        ),
-                    )
-                } else {
-                    Some(FakeOutput::stdout("NVIDIA Example GPU, 00000000:01:00.0\n"))
-                }
+                Some(self.nvidia_smi_query())
             }
-            "nvidia-smi" => {
-                match self.driver_reading() {
-                    Some(version)
-                        if self
-                            .inner
-                            .merged_version
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .is_some_and(|m| m != &version) =>
-                    {
-                        Some(FakeOutput::code(18).with_stderr(
-                            "Failed to initialize NVML: Driver/library version mismatch",
-                        ))
-                    }
-                    Some(version) => Some(FakeOutput::stdout(&format!("{version}\n"))),
-                    None => Some(FakeOutput::code(9).with_stderr("nvidia-smi: no devices")),
-                }
-            }
-            "systemd-sysext" => {
-                let args = arg_strings(cmd);
-                match args.first().map(|s| s.as_str()) {
-                    Some("status") => {
-                        let merged = *self.inner.merged.lock().unwrap()
-                            && !*self.inner.refresh_missing.lock().unwrap();
-                        if merged {
-                            let since = *self.inner.sysext_since.lock().unwrap();
-                            Some(FakeOutput::stdout(&format!(
-                                "[{{\"hierarchy\":\"/usr\",\"extensions\":[\"nvidia\"],\"since\":{since}}}]\n"
-                            )))
-                        } else {
-                            Some(FakeOutput::stdout(
-                                "[{\"hierarchy\":\"/usr\",\"extensions\":\"none\",\"since\":null}]\n",
-                            ))
-                        }
-                    }
-                    Some("unmerge") => {
-                        self.model_sysext_unmerge();
-                        Some(FakeOutput::code(0))
-                    }
-                    Some("merge" | "refresh") => {
-                        // Merge reads what the link target holds: a missing link or target drops
-                        // the `/usr` extension; a target with a readable listing decides the loaded
-                        // version and gets a new SINCE.
-                        self.model_sysext_merge();
-                        Some(FakeOutput::code(0))
-                    }
-                    _ => Some(FakeOutput::code(0)),
-                }
-            }
-            "sleep" => {
-                self.advance(Duration::from_secs(2));
-                Some(FakeOutput::code(0))
-            }
+            "nvidia-smi" => Some(self.nvidia_smi_version()),
+            "systemd-sysext" => Some(self.systemd_sysext(cmd)),
+            "sleep" => Some(self.sleep()),
             "ldconfig" => Some(FakeOutput::code(0)),
             "journalctl" => Some(self.journalctl(cmd)),
-            "cat" => {
-                let path = cmd
-                    .args
-                    .last()
-                    .map(|a| a.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                match self.file(&path) {
-                    Some(bytes) => Some(FakeOutput {
-                        exit: Exit::Code(0),
-                        stdout: bytes,
-                        stderr: Vec::new(),
-                        delay: Duration::ZERO,
-                    }),
-                    None => Some(FakeOutput::code(1).with_stderr("cat: No such file or directory")),
+            "cat" => Some(self.cat(cmd)),
+            _ => None,
+        }
+    }
+
+    fn mount(&self, cmd: &Cmd) -> FakeOutput {
+        let args = arg_strings(cmd);
+        if let Some(pos) = args.iter().position(|a| a == "-o") {
+            let opts = args.get(pos + 1).cloned().unwrap_or_default();
+            let source = args.iter().rev().nth(1).cloned().unwrap_or_default();
+            let mount_point = args.last().cloned().unwrap_or_default();
+            self.add_mount(&source, &mount_point, "zfs", &opts);
+            if mount_point == RW_MOUNT {
+                self.mkdir(&format!("{RW_MOUNT}/share/truenas/sysext-extensions"));
+                if let Some(bytes) = self.file(CANONICAL_PATH) {
+                    self.put_file(RW_CANONICAL_PATH, bytes);
                 }
             }
-            _ => None,
+            return FakeOutput::code(0);
+        }
+        FakeOutput::code(32).with_stderr("mount: unsupported in the fake host")
+    }
+
+    fn mv(&self, cmd: &Cmd) -> FakeOutput {
+        let args = arg_strings(cmd);
+        if args != ["-T", RW_TMP_PATH, RW_CANONICAL_PATH]
+            || self.readonly() != "off"
+            || !self
+                .inner
+                .host_mounts
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.mount_point == RW_MOUNT && line.is_rw())
+        {
+            return FakeOutput::code(1).with_stderr("mv: writable mount unavailable");
+        }
+        let Some(bytes) = self.file(RW_TMP_PATH) else {
+            return FakeOutput::code(1).with_stderr("mv: source missing");
+        };
+        let listings = self.inner.listings.lock().unwrap().clone();
+        let listing = listings.iter().find_map(|(path, listing)| {
+            (self.file(path).as_deref() == Some(bytes.as_slice())).then(|| listing.clone())
+        });
+        let (Ok(src), Ok(dst)) = (
+            self.real_path_nofollow(RW_TMP_PATH),
+            self.real_path_nofollow(RW_CANONICAL_PATH),
+        ) else {
+            return FakeOutput::code(1).with_stderr("mv: invalid path");
+        };
+        if let Err(error) = std::fs::rename(&src, &dst) {
+            return FakeOutput::code(1).with_stderr(&format!("mv: {error}"));
+        }
+        // The writable mount and /usr name the same ZFS file. Replace its inode so a
+        // descriptor opened before mv keeps old bytes.
+        let Ok(canonical) = self.real_path_nofollow(CANONICAL_PATH) else {
+            return FakeOutput::code(1).with_stderr("mv: invalid canonical path");
+        };
+        if let Err(error) = std::fs::rename(&dst, &canonical) {
+            return FakeOutput::code(1).with_stderr(&format!("mv: {error}"));
+        }
+        if let Err(error) = std::fs::hard_link(&canonical, &dst) {
+            return FakeOutput::code(1).with_stderr(&format!("mv: {error}"));
+        }
+        let mut stored = self.inner.listings.lock().unwrap();
+        if let Some(listing) = listing {
+            stored.insert(CANONICAL_PATH.into(), listing);
+        } else {
+            stored.remove(CANONICAL_PATH);
+        }
+        FakeOutput::code(0)
+    }
+
+    fn umount(&self, cmd: &Cmd) -> FakeOutput {
+        let mount_point = cmd
+            .args
+            .last()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.remove_mount(&mount_point);
+        FakeOutput::code(0)
+    }
+
+    fn insmod(&self, cmd: &Cmd) -> FakeOutput {
+        let file = arg_strings(cmd).last().cloned().unwrap_or_default();
+        if !self.exists(&file) {
+            return FakeOutput::code(1).with_stderr(&format!(
+                "insmod: ERROR: could not load module {file}: No such file or directory"
+            ));
+        }
+        self.load_module("gpu_unlock", 0, &[]);
+        FakeOutput::code(0)
+    }
+
+    fn modprobe(&self, cmd: &Cmd) -> FakeOutput {
+        let name = cmd
+            .args
+            .last()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if arg_strings(cmd).first().map(String::as_str) == Some("--show-depends") {
+            // Lists the dependency chain and loads nothing.
+            return FakeOutput::stdout(&format!(
+                "insmod /lib/modules/{KERNEL}/kernel/drivers/video/{name}.ko \n"
+            ));
+        }
+        if self.inner.modules.lock().unwrap().contains_key(&name) {
+            return FakeOutput::code(0);
+        }
+        if name != "nvidia"
+            && self.driver_reading().is_some_and(|v| {
+                self.inner
+                    .merged_version
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|m| m != &v)
+            })
+        {
+            return FakeOutput::code(1)
+                .with_stderr("modprobe: Invalid argument (version mismatch)");
+        }
+        if self.inner.fail_reload.lock().unwrap().contains(&name) {
+            return FakeOutput::code(1)
+                .with_stderr(&format!("modprobe: ERROR: could not insert {name}"));
+        }
+        if !self.inner.modules.lock().unwrap().contains_key(&name) {
+            self.load_module(&name, 0, &[]);
+        }
+        FakeOutput::code(0)
+    }
+
+    fn rmmod(&self, cmd: &Cmd) -> FakeOutput {
+        let name = cmd
+            .args
+            .last()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let delay = self.inner.unload_delays.lock().unwrap().remove(&name);
+        if let Some(delay) = delay {
+            self.advance(delay);
+        }
+        let correction = self
+            .persisted_phase()
+            .is_some_and(|p| p.ends_with("align_modules"));
+        if self.inner.refuse_unload.lock().unwrap().contains(&name)
+            || (correction && self.inner.refuse_correction.lock().unwrap().contains(&name))
+        {
+            return FakeOutput::code(1)
+                .with_stderr(&format!("rmmod: ERROR: Module {name} is in use by: holder"));
+        }
+        let at = self.offset();
+        let periodic = self.inner.periodic_opens.lock().unwrap().clone();
+        let sustained = self.inner.sustained_opens.lock().unwrap().clone();
+        {
+            let modules = self.inner.modules.lock().unwrap();
+            let Some(module) = modules.get(&name) else {
+                return FakeOutput::code(1)
+                    .with_stderr(&format!("rmmod: ERROR: Module {name} not currently loaded"));
+            };
+            // An open device raises the reference count; a loaded module in the holder list
+            // (`/proc/modules` dependencies) refuses the unload. A time-based opener adds
+            // the same extra count `/proc/modules` displays.
+            let refcount = module.refcount + extra_refcount(at, &name, &periodic, &sustained);
+            if refcount > 0 {
+                return FakeOutput::code(1)
+                    .with_stderr(&format!("rmmod: ERROR: Module {name} is in use"));
+            }
+            let holders: Vec<String> = module
+                .deps
+                .iter()
+                .filter(|d| modules.contains_key(d.as_str()))
+                .cloned()
+                .collect();
+            if !holders.is_empty() {
+                return FakeOutput::code(1).with_stderr(&format!(
+                    "rmmod: ERROR: Module {name} is in use by: {}",
+                    holders.join(",")
+                ));
+            }
+        }
+        self.unload_module(&name);
+        FakeOutput::code(0)
+    }
+
+    fn unsquashfs(&self, cmd: &Cmd) -> FakeOutput {
+        let args = arg_strings(cmd);
+        if let Some(pos) = args.iter().position(|a| a == "-d") {
+            self.unsquashfs_extract(&args[pos + 1..]);
+            return FakeOutput::code(0);
+        }
+        // The image is the first argument that is not an option; arguments after it
+        // are the members to list.
+        let image = args.iter().position(|a| !a.starts_with('-'));
+        let path = image.map_or_else(
+            || args.last().cloned().unwrap_or_default(),
+            |i| args[i].clone(),
+        );
+        let members: Vec<String> = image.map_or(Vec::new(), |i| {
+            args[i + 1..]
+                .iter()
+                .map(|m| format!("squashfs-root/{m}"))
+                .collect()
+        });
+        if self.inner.unsquashfs_fails.lock().unwrap().contains(&path) {
+            return FakeOutput::code(1).with_stderr("unsquashfs: failed");
+        }
+        if !members.is_empty() && !self.exists(&path) {
+            return FakeOutput::code(1).with_stderr(&format!("Could not open {path}"));
+        }
+        let listing = self.inner.listings.lock().unwrap().get(&path).cloned();
+        match listing {
+            Some(l) if !members.is_empty() => FakeOutput::stdout(&member_listing(&l, &members)),
+            Some(l) => FakeOutput::stdout(&l),
+            // An image nobody described has none of the members asked for.
+            None if !members.is_empty() && self.exists(&path) => {
+                FakeOutput::stdout(&member_listing("", &members))
+            }
+            None if !members.is_empty() => {
+                FakeOutput::code(1).with_stderr(&format!("Could not open {path}"))
+            }
+            None if path.ends_with("driver.run") => FakeOutput {
+                exit: Exit::Code(1),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                delay: Duration::ZERO,
+            },
+            None => FakeOutput::code(1).with_stderr("unsquashfs: no such file"),
+        }
+    }
+
+    fn modinfo(&self, cmd: &Cmd) -> FakeOutput {
+        let args = arg_strings(cmd);
+        let path = args.last().cloned().unwrap_or_default();
+        match self.modinfo_answer(&path, args.get(1)) {
+            Some(v) => FakeOutput::stdout(&format!("{v}\n")),
+            None => FakeOutput::code(1).with_stderr("modinfo: ERROR: could not find module"),
+        }
+    }
+
+    fn dpkg_deb(&self, cmd: &Cmd) -> FakeOutput {
+        if *self.inner.dpkg_passthrough.lock().unwrap() {
+            return self.real_dpkg(cmd);
+        }
+        let args = arg_strings(cmd);
+        let path = args.get(1).cloned().unwrap_or_default();
+        if *self.inner.dpkg_fixture_content.lock().unwrap() {
+            let fields = self
+                .read(Path::new(&path))
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .and_then(|text| text.strip_prefix("NVM_TEST_DEB\n").map(str::to_owned))
+                .filter(|fields| {
+                    let lines: Vec<_> = fields.lines().collect();
+                    lines.len() == 3
+                        && lines[0].starts_with("Package: ")
+                        && lines[1].starts_with("Version: ")
+                        && lines[2].starts_with("Architecture: ")
+                });
+            return match fields {
+                Some(fields) => FakeOutput::stdout(&fields),
+                None => FakeOutput::code(1).with_stderr("invalid synthetic package fixture"),
+            };
+        }
+        match self.inner.dpkg_default.lock().unwrap().clone() {
+            Some(f) => FakeOutput::stdout(&f),
+            None => FakeOutput::code(1).with_stderr("dpkg-deb: error"),
+        }
+    }
+
+    fn midclt(&self, cmd: &Cmd) -> FakeOutput {
+        let args = arg_strings(cmd);
+        let key = args.join(" ");
+        let map = self.inner.midclt.lock().unwrap();
+        for (pattern, out) in map.iter().rev() {
+            if key == *pattern || key.starts_with(&format!("{pattern} ")) {
+                return out.clone();
+            }
+        }
+        // The default fixture exposes virt; callers can override container.* for 27.
+        if key.starts_with("call container.") {
+            FakeOutput::code(1).with_stderr("[ENOMETHOD] Method does not exist")
+        } else {
+            FakeOutput::stdout("[]")
+        }
+    }
+
+    fn nvidia_smi_version(&self) -> FakeOutput {
+        match self.driver_reading() {
+            Some(version)
+                if self
+                    .inner
+                    .merged_version
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|m| m != &version) =>
+            {
+                FakeOutput::code(18)
+                    .with_stderr("Failed to initialize NVML: Driver/library version mismatch")
+            }
+            Some(version) => FakeOutput::stdout(&format!("{version}\n")),
+            None => FakeOutput::code(9).with_stderr("nvidia-smi: no devices"),
+        }
+    }
+
+    fn systemd_sysext(&self, cmd: &Cmd) -> FakeOutput {
+        let args = arg_strings(cmd);
+        match args.first().map(|s| s.as_str()) {
+            Some("status") => {
+                let merged = *self.inner.merged.lock().unwrap();
+                if merged {
+                    let since = *self.inner.sysext_since.lock().unwrap();
+                    FakeOutput::stdout(&format!(
+                        "[{{\"hierarchy\":\"/usr\",\"extensions\":[\"nvidia\"],\"since\":{since}}}]\n"
+                    ))
+                } else {
+                    FakeOutput::stdout(
+                        "[{\"hierarchy\":\"/usr\",\"extensions\":\"none\",\"since\":null}]\n",
+                    )
+                }
+            }
+            Some("unmerge") => {
+                self.model_sysext_unmerge();
+                FakeOutput::code(0)
+            }
+            Some("merge" | "refresh") => {
+                // Merge reads what the link target holds: a missing link or target drops
+                // the `/usr` extension; a target with a readable listing decides the loaded
+                // version and gets a new SINCE.
+                self.model_sysext_merge();
+                FakeOutput::code(0)
+            }
+            _ => FakeOutput::code(0),
+        }
+    }
+
+    fn sleep(&self) -> FakeOutput {
+        self.advance(Duration::from_secs(2));
+        FakeOutput::code(0)
+    }
+
+    fn cat(&self, cmd: &Cmd) -> FakeOutput {
+        let path = cmd
+            .args
+            .last()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match self.file(&path) {
+            Some(bytes) => FakeOutput {
+                exit: Exit::Code(0),
+                stdout: bytes,
+                stderr: Vec::new(),
+                delay: Duration::ZERO,
+            },
+            None => FakeOutput::code(1).with_stderr("cat: No such file or directory"),
+        }
+    }
+
+    fn nvidia_smi_query(&self) -> FakeOutput {
+        if self.driver_reading().is_some_and(|v| {
+            self.inner
+                .merged_version
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|m| m != &v)
+        }) {
+            FakeOutput::code(18)
+                .with_stderr("Failed to initialize NVML: Driver/library version mismatch")
+        } else {
+            FakeOutput::stdout("NVIDIA Example GPU, 00000000:01:00.0\n")
         }
     }
 
@@ -2942,7 +2711,7 @@ impl FakeHost {
             host.inner.kills.lock().unwrap().remove(&id_owned);
             let code = match outcome {
                 Ok(code) => code,
-                // `kill_unit` already marked the unit failed; the killed thread stops here without
+                // Scenario reset requested a stop; the runner thread exits here without
                 // running or writing anything.
                 Err(payload) if payload.is::<RunnerKilled>() => return,
                 Err(payload) => std::panic::resume_unwind(payload),
@@ -2983,9 +2752,6 @@ impl FakeHost {
                 }
             }
             Some("list-units") => {
-                if *self.inner.list_units_fails.lock().unwrap() {
-                    return FakeOutput::code(1).with_stderr("systemctl: list-units failed");
-                }
                 let units = self.inner.units.lock().unwrap();
                 let mut out = String::new();
                 for (id, u) in units.iter() {
@@ -2996,38 +2762,7 @@ impl FakeHost {
                 }
                 FakeOutput::stdout(&out)
             }
-            Some("list-jobs") => {
-                if *self.inner.list_jobs_fails.lock().unwrap() {
-                    let exit = if *self.inner.list_jobs_times_out.lock().unwrap() {
-                        Exit::TimedOut
-                    } else {
-                        Exit::Code(1)
-                    };
-                    let mut stdout = Vec::new();
-                    if *self.inner.list_jobs_partial.lock().unwrap() {
-                        let jobs = self.inner.job_lines.lock().unwrap();
-                        let first = jobs
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "0 nvm-task.service start running".to_string());
-                        stdout = format!("{}\n", first.chars().take(12).collect::<String>())
-                            .into_bytes();
-                    }
-                    return FakeOutput {
-                        exit,
-                        stdout,
-                        stderr: b"systemctl: list-jobs failed".to_vec(),
-                        delay: Duration::ZERO,
-                    };
-                }
-                let jobs = self.inner.job_lines.lock().unwrap().clone();
-                let mut out = String::new();
-                for job in jobs {
-                    out.push_str(&job);
-                    out.push('\n');
-                }
-                FakeOutput::stdout(&out)
-            }
+            Some("list-jobs") => FakeOutput::stdout(""),
             Some("reset-failed") => FakeOutput::code(0),
             _ => FakeOutput::code(1).with_stderr("systemctl: unmodelled subcommand"),
         }
@@ -3053,29 +2788,6 @@ impl FakeHost {
                     "docker: ps -a is modelled only with --format {{{{.Names}}}}, not {}",
                     format.as_deref().unwrap_or("(a missing --format)")
                 ));
-            }
-            if *self.inner.docker_ps_all_fails.lock().unwrap() {
-                let exit = if *self.inner.docker_ps_all_times_out.lock().unwrap() {
-                    Exit::TimedOut
-                } else {
-                    Exit::Code(1)
-                };
-                let mut stdout = Vec::new();
-                if *self.inner.docker_ps_all_partial.lock().unwrap() {
-                    let names = self.container_names();
-                    let first = names
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| "nvm-build-".to_string());
-                    stdout =
-                        format!("{}\n", first.chars().take(12).collect::<String>()).into_bytes();
-                }
-                return FakeOutput {
-                    exit,
-                    stdout,
-                    stderr: b"docker: ps -a --format {{.Names}} failed".to_vec(),
-                    delay: Duration::ZERO,
-                };
             }
             let mut text = String::new();
             for name in self.container_names() {
@@ -3652,23 +3364,13 @@ struct FakeLock {
     real: PathBuf,
     /// Whether this handle is the current holder.
     held: bool,
-    /// The open descriptor of the real kernel lock, when that mode is on.
-    file: Option<std::fs::File>,
     inner: Arc<Inner>,
 }
 
 impl FakeLock {
     fn do_release(&mut self) {
         if self.held {
-            if let Some(file) = &self.file {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::io::AsRawFd;
-                    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-                }
-            } else {
-                self.inner.locks_held.lock().unwrap().remove(&self.key);
-            }
+            self.inner.locks_held.lock().unwrap().remove(&self.key);
             self.held = false;
         }
     }
@@ -3683,35 +3385,10 @@ impl HostLock for FakeLock {
     }
 
     fn try_acquire(&mut self) -> std::io::Result<bool> {
-        if *self.inner.lock_acquire_fails.lock().unwrap() {
-            return Err(std::io::Error::other(
-                "lock acquisition refused by the fake host",
-            ));
-        }
         if self.held {
             // Re-locking the descriptor already held is a no-op success in `flock`, and it is here
             // too.
             return Ok(true);
-        }
-        if let Some(file) = &self.file {
-            // The real kernel lock: another process holding the same node fails this non-blocking
-            // attempt, exactly like the product sees.
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::AsRawFd;
-                let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-                if rc == 0 {
-                    self.held = true;
-                    return Ok(true);
-                }
-                let err = std::io::Error::last_os_error();
-                return match err.raw_os_error() {
-                    Some(libc::EWOULDBLOCK) => Ok(false),
-                    _ => Err(err),
-                };
-            }
-            #[cfg(not(unix))]
-            return Ok(false);
         }
         let mut held = self.inner.locks_held.lock().unwrap();
         if held.contains(&self.key) {
@@ -3859,12 +3536,6 @@ impl Host for FakeHost {
     }
 
     fn mount_table(&self) -> std::io::Result<Vec<MountLine>> {
-        if *self.inner.mount_table_fails.lock().unwrap() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "mount table refused by the fake host",
-            ));
-        }
         Ok(self.inner.host_mounts.lock().unwrap().clone())
     }
 
@@ -3876,19 +3547,6 @@ impl Host for FakeHost {
                 std::io::ErrorKind::PermissionDenied,
                 "read refused by the fake host",
             ));
-        }
-        // A registered marker fires on the first read below its prefix. The read itself is not
-        // altered in any way.
-        let fired: Vec<std::path::PathBuf> = {
-            let markers = self.inner.read_markers.lock().unwrap();
-            markers
-                .iter()
-                .filter(|(prefix, _)| path.starts_with(prefix))
-                .map(|(_, marker)| marker.clone())
-                .collect()
-        };
-        for marker in fired {
-            let _ = std::fs::write(&marker, b"read");
         }
         if let Some(bytes) = self.generated_proc(&path)? {
             return self.apply_read_change(&path, bytes);
@@ -4098,19 +3756,6 @@ impl Host for FakeHost {
                 }
             }
         }
-        {
-            let from_name = from.rsplit('/').next().unwrap_or("");
-            let to_name = to.rsplit('/').next().unwrap_or("");
-            let rules = self.inner.fail_rename_rollback.lock().unwrap();
-            for target in rules.iter() {
-                if to_name == target && from_name.starts_with(&format!(".{target}.tmp-")) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "rollback rename refused by the fake host",
-                    ));
-                }
-            }
-        }
         let state_phase = if to.contains("/manager/state/") && to.ends_with(".json") {
             self.file(&from)
                 .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -4208,34 +3853,20 @@ impl Host for FakeHost {
         // key); the file itself is opened where this process really reaches it.
         let key = lock_key(&viewed.to_string_lossy());
         self.note("open_lock", &key);
-        if *self.inner.lock_open_fails.lock().unwrap() {
-            return Err(std::io::Error::other("lock open refused by the fake host"));
-        }
         let real = self.real_path(&viewed.to_string_lossy())?;
         self.ensure_parent(&real);
-        let override_mode = *self.inner.lock_mode.lock().unwrap();
-        let create_mode = override_mode.unwrap_or(mode);
         let mut opts = std::fs::OpenOptions::new();
         opts.read(true).write(true).create(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(create_mode);
+            opts.mode(mode);
         }
         #[cfg(not(unix))]
         {
-            let _ = create_mode;
+            let _ = mode;
         }
         let file = opts.open(&real)?;
-        #[cfg(unix)]
-        if let Some(mode) = override_mode {
-            // An injected mode is applied exactly, without the process umask: the test asks for one
-            // specific node mode, whatever the environment.
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
-        }
-        #[cfg(not(unix))]
-        let _ = override_mode;
         // The mode argument only applies at creation: an existing file keeps its own mode, which
         // the checks below then judge, exactly like the production `open_lock_real`.
         let meta = file.metadata()?;
@@ -4246,13 +3877,10 @@ impl Host for FakeHost {
             ));
         }
         refuse_insecure_lock(&meta)?;
-        let real_flock = self.inner.real_flock.load(Ordering::SeqCst);
-        let file = if real_flock { Some(file) } else { None };
         Ok(Box::new(FakeLock {
             key,
             real,
             held: false,
-            file,
             inner: self.inner.clone(),
         }))
     }

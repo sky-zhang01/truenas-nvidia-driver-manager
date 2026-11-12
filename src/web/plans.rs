@@ -85,133 +85,105 @@ fn plan_response(precheck: Precheck) -> Response {
 
 fn source_invalid_response(e: plan::SourceInvalid) -> Response {
     use plan::SourceInvalid as S;
+    let status = match &e {
+        S::SetupBlocked
+        | S::VersionUnconfirmed { .. }
+        | S::BranchUndecidable { .. }
+        | S::GpuUndecidable { .. }
+        | S::GpusChanged
+        | S::UploadBusy => StatusCode::CONFLICT,
+        S::RequestInvalid => StatusCode::BAD_REQUEST,
+        S::LocalRowMissing => StatusCode::NOT_FOUND,
+        S::VersionFormat
+        | S::VersionBelow470
+        | S::BranchUnbuildable { .. }
+        | S::VersionNotOfficial { .. }
+        | S::GpuUnsupported { .. }
+        | S::UploadGone
+        | S::UploadIncomplete { .. }
+        | S::UploadProblem
+        | S::UploadVersionRequired
+        | S::UploadVersionNotCandidate { .. }
+        | S::ToolkitTooOld { .. }
+        | S::GpuUnlockUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    let (key, params) = source_invalid_details(e);
+    ApiError::new(status, key).params(params).into_response()
+}
+
+fn source_invalid_details(e: plan::SourceInvalid) -> (&'static str, Value) {
+    use plan::SourceInvalid as S;
     match e {
-        S::SetupBlocked => ApiError::new(StatusCode::CONFLICT, "setup.blocked").into_response(),
-        S::RequestInvalid => {
-            ApiError::new(StatusCode::BAD_REQUEST, "request.invalid").into_response()
-        }
-        S::VersionFormat => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "plan.source_invalid.version_format",
-        )
-        .into_response(),
-        S::VersionBelow470 => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "plan.source_invalid.version_below_470",
-        )
-        .into_response(),
+        S::SetupBlocked => ("setup.blocked", json!({})),
+        S::RequestInvalid => ("request.invalid", json!({})),
+        S::VersionFormat => ("plan.source_invalid.version_format", json!({})),
+        S::VersionBelow470 => ("plan.source_invalid.version_below_470", json!({})),
         S::BranchUnbuildable {
             version,
             from,
             reasons,
-        } => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
+        } => (
             "plan.source_invalid.branch_unbuildable",
-        )
-        .params(json!({
-            // Every reason field has the `{key, params}` shape; these phrases have no
-            // placeholder.
-            "version": version,
-            "from": from,
-            "reasons": reasons
-                .iter()
-                .map(|key| json!({"key": key, "params": {}}))
-                .collect::<Vec<_>>(),
-        }))
-        .into_response(),
-        S::VersionNotOfficial { version } => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                // Every reason field has the `{key, params}` shape; these phrases have no
+                // placeholder.
+                "version": version,
+                "from": from,
+                "reasons": reasons
+                    .iter()
+                    .map(|key| json!({"key": key, "params": {}}))
+                    .collect::<Vec<_>>(),
+            }),
+        ),
+        S::VersionNotOfficial { version } => (
             "plan.source_invalid.version_not_official",
-        )
-        .params(json!({"version": version}))
-        .into_response(),
+            json!({"version": version}),
+        ),
         S::VersionUnconfirmed {
             version,
             unreadable,
-        } => ApiError::new(
-            StatusCode::CONFLICT,
+        } => (
             "plan.source_invalid.version_unconfirmed",
-        )
-        .params(json!({"version": version, "unreadable": unreadable}))
-        .into_response(),
-        S::BranchUndecidable { unreadable } => ApiError::new(
-            StatusCode::CONFLICT,
+            json!({"version": version, "unreadable": unreadable}),
+        ),
+        S::BranchUndecidable { unreadable } => (
             "plan.source_invalid.branch_undecidable",
-        )
-        .params(json!({
-            "unreadable": unreadable.iter().map(|u| u.to_json()).collect::<Vec<_>>(),
-        }))
-        .into_response(),
-        S::GpuUndecidable { unreadable } => {
-            ApiError::new(StatusCode::CONFLICT, "plan.source_invalid.gpu_undecidable")
-                .params(json!({
-                    "unreadable": unreadable.iter().map(|u| u.to_json()).collect::<Vec<_>>(),
-                }))
-                .into_response()
-        }
+            json!({"unreadable": unreadable.iter().map(|u| u.to_json()).collect::<Vec<_>>()}),
+        ),
+        S::GpuUndecidable { unreadable } => (
+            "plan.source_invalid.gpu_undecidable",
+            json!({"unreadable": unreadable.iter().map(|u| u.to_json()).collect::<Vec<_>>()}),
+        ),
         S::GpuUnsupported {
             version,
             gpus,
             conflict,
-        } => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
+        } => (
             "plan.source_invalid.gpu_unsupported",
-        )
-        .params(json!({"version": version, "gpus": gpus, "conflict": conflict}))
-        .into_response(),
-        S::GpusChanged => ApiError::new(StatusCode::CONFLICT, "plan.changed")
-            .params(json!({"changed": ["gpus"]}))
-            .into_response(),
-        S::UploadGone => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "plan.source_invalid.upload_group_gone",
-        )
-        .into_response(),
-        S::UploadBusy => ApiError::new(StatusCode::CONFLICT, "upload.busy").into_response(),
-        S::UploadIncomplete { missing } => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"version": version, "gpus": gpus, "conflict": conflict}),
+        ),
+        S::GpusChanged => ("plan.changed", json!({"changed": ["gpus"]})),
+        S::UploadGone => ("plan.source_invalid.upload_group_gone", json!({})),
+        S::UploadBusy => ("upload.busy", json!({})),
+        S::UploadIncomplete { missing } => (
             "plan.source_invalid.upload_incomplete",
-        )
-        .params(json!({"missing": missing}))
-        .into_response(),
-        S::UploadProblem => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "plan.source_invalid.upload_problem",
-        )
-        .into_response(),
-        S::UploadVersionRequired => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "plan.source_invalid.upload_version_required",
-        )
-        .into_response(),
-        S::UploadVersionNotCandidate { version } => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"missing": missing}),
+        ),
+        S::UploadProblem => ("plan.source_invalid.upload_problem", json!({})),
+        S::UploadVersionRequired => ("plan.source_invalid.upload_version_required", json!({})),
+        S::UploadVersionNotCandidate { version } => (
             "plan.source_invalid.upload_version_not_candidate",
-        )
-        .params(json!({"version": version}))
-        .into_response(),
+            json!({"version": version}),
+        ),
         S::ToolkitTooOld {
             driver_version,
             toolkit_version,
-        } => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
+        } => (
             "plan.source_invalid.toolkit_too_old",
-        )
-        .params(json!({
-            "driver_version": driver_version,
-            "toolkit_version": toolkit_version,
-        }))
-        .into_response(),
-        S::LocalRowMissing => ApiError::new(
-            StatusCode::NOT_FOUND,
-            "plan.source_invalid.local_row_missing",
-        )
-        .into_response(),
-        S::GpuUnlockUnsupported => ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "plan.source_invalid.gpu_unlock_unsupported",
-        )
-        .into_response(),
+            json!({"driver_version": driver_version, "toolkit_version": toolkit_version}),
+        ),
+        S::LocalRowMissing => ("plan.source_invalid.local_row_missing", json!({})),
+        S::GpuUnlockUnsupported => ("plan.source_invalid.gpu_unlock_unsupported", json!({})),
     }
 }
 

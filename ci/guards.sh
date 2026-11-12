@@ -112,3 +112,10 @@ scan() { # scan <rule> <pattern>
 scan 'private IPv4' "${ipv4}"
 scan MAC "${mac}"
 scan 'non-placeholder pool path' "${pool}"
+
+# Public exports exclude the maintainer-only policy and its checker.
+if [ -f export/rules ]; then
+    bash ci/public-leak-check.sh --root "${repo_root}" --allowlist "${repo_root}/ci/public-leak-allowlist.json" --registrations-only
+else
+    echo 'NOT RUN: maintainer-only public leak registrations (public checkout).'
+fi

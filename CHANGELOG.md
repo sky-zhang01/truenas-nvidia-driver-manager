@@ -4,6 +4,29 @@
 
 Each version starts with one line on what it means for you. Under it, "Before you update" comes first (only when you have something to do), then "New", "Changed" and "Fixed". The last bullet, when there is one, is for developers.
 
+## 0.4.1
+
+After a TrueNAS upgrade, the operations guide shows you how to check the driver and install yours again. The built-in GPU list now includes drivers and cards NVIDIA has published through 620.70.06, and when the NVIDIA driver extension is missing the notice gives the switch location for TrueNAS 25.10 and for TrueNAS 27.
+
+New:
+
+- The operations guide has a new section, "After a TrueNAS upgrade". An upgrade replaces the driver file with the one that ships with the new TrueNAS release; the section explains what to check, how to install your driver again and how to go back to the previous release.
+
+Changed:
+
+- The README and deployment guide add TrueNAS 25.10.8 to the tested versions and label the NVIDIA driver switch instructions for all of TrueNAS 25.10 and TrueNAS 27.
+- The table adds 580.196.07, 595.112.07, 615.78.08 and 620.70.06, plus RTX Spark N1X and NVIDIA VR NVL72.
+- One NVIDIA GB300 entry, previously supported from 595.58.03, is now supported from 580.196.07. NVIDIA's 580.196.07 supported-chips page lists that card; 580.178.04 does not.
+- The operations guide now says how much the full-speed GPU unlock adds to the driver file: about 0.24 MB.
+
+Fixed:
+
+- The README and the operations guide now say that the "Driver version changed" list is on the task page.
+- RTX PRO 5500 Blackwell Workstation Edition is supported from driver 620.70.06. After you select it, versions earlier than 620.70.06 leave the list, and the page says it needs driver 620 or newer. Typing 615.71.09 or 615.78.08 under Other version… does not start the update: the page says the GPUs do not support that version, and that this card needs driver 620 or newer.
+- When the NVIDIA driver extension is missing, the notice gives the switch location for TrueNAS 25.10 and for TrueNAS 27.
+- The operations guide now describes the NVIDIA driver switch correctly: turning it off and on in the TrueNAS settings leaves the driver file as it is and does not remove the full-speed GPU unlock. To remove the unlock, update to a driver without it.
+- For developers: before a release, the script regenerates the GPU table in a temporary directory and stops if it differs from the committed file. A new test runs updates with the full-speed GPU unlock in a TrueNAS virtual machine; see CONTRIBUTING.md.
+
 ## 0.4.0
 
 You can now turn on an optional full-speed GPU unlock, and the page tells you which driver each card needs.

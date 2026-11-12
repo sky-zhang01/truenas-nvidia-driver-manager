@@ -131,6 +131,33 @@ fn check_log_marks_distinct_times_unconfirmed_when_unmerge_was_not_confirmed() {
 }
 
 #[test]
+fn confirmed_unmerge_with_unchanged_merge_time_fails_the_check() {
+    let host = default_host();
+    host.set_driver_version("580.178.04");
+    host.preset(
+        "nvidia-smi",
+        &["--query-gpu=driver_version", "--format=csv,noheader"],
+        FakeOutput::stdout("580.178.04\n"),
+    );
+    let mut ctx = ctx(&host, running(Phase::Check));
+    let rec = check(
+        &mut ctx,
+        Pass::Update,
+        (Reading::Value(1), Reading::Value(1), None, None, true),
+        "580.178.04",
+        false,
+    );
+    assert!(rec.version_ok);
+    assert!(!rec.refresh_ok);
+    assert!(!rec.passed);
+    let lines = log_lines(&host, "log.check_item");
+    assert_eq!(lines[0]["p"]["check_item"], "refresh");
+    assert_eq!(lines[0]["p"]["passed"], false);
+    assert_eq!(lines[0]["p"]["since_before"]["value"], 1);
+    assert_eq!(lines[0]["p"]["since_after"]["value"], 1);
+}
+
+#[test]
 fn sysext_log_keeps_each_streams_last_hundred_lines_without_truncating_the_parse() {
     let host = default_host();
     let status = r#"[{"hierarchy":"/usr","extensions":["nvidia"],"since":123}]"#;

@@ -10,6 +10,15 @@
 # through the program's own namespace mode, and that part is host-dependent and is
 # only recorded.
 #
+# The startup check treats PID 1 of the daemon's PID namespace as the host: it enters
+# PID 1's namespaces and runs docker from /usr/sbin:/usr/bin:/sbin:/bin against the
+# default /var/run/docker.sock, as on TrueNAS. On a rootful daemon that is the real
+# host and is left as it is. A rootless daemon (plain rootless Docker or rootless
+# Docker-in-Docker) must run RootlessKit in its own PID namespace,
+# DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS="--pidns --utsns --ipcns", so that PID 1 is the
+# daemon's side; prepare_daemon_host then adds the two missing pieces there before
+# the probes (see that function).
+#
 # Variants are independent and concurrent runs on one daemon do not collide:
 #     the rendered `image:` is the final NVM_IMAGE, and the container's image id
 #     is checked against it after `up`;
@@ -95,6 +104,89 @@ docker run --rm --name "nvmct-${RUN_ID}-curl-version" \
     --entrypoint curl "${CURL_IMAGE}" --version >/dev/null
 
 . "${SCRIPT_DIR}/../test-lib.sh"
+
+# Run inside PID 1's mount namespace of a rootless daemon (RootlessKit's own mount
+# namespace, whose /run is a private tmpfs). Official dind-rootless images keep docker
+# in /usr/local/bin and serve the socket at $XDG_RUNTIME_DIR/docker.sock
+# (/run/user/<uid>/docker.sock), and /usr/bin is not writable there. Missing entries
+# are added: /var/run/docker.sock as a link to the daemon socket, and /usr/bin/docker
+# through an overlay on /usr/bin whose upper layer holds only that link. Existing
+# entries are left alone, so a daemon that already provides them is not touched. The
+# additions live only in the daemon's namespace and end with the daemon; they are
+# not removed afterwards because concurrent runs on the same daemon share them, and
+# the lock serializes runs that start together.
+DAEMON_HOST_SCRIPT='
+set -eu
+exec 9>/run/nvm-ci-daemon-host.lock
+flock 9
+if [ ! -S /var/run/docker.sock ]; then
+    # A container started with -v /var/run/docker.sock:... before the link existed
+    # leaves an empty directory here, which the daemon created as the bind source.
+    if [ -d /var/run/docker.sock ] && [ ! -L /var/run/docker.sock ] \
+        && ! mountpoint -q /var/run/docker.sock && rmdir /var/run/docker.sock 2>/dev/null; then
+        echo "removed the empty directory /var/run/docker.sock"
+    fi
+    if [ -e /var/run/docker.sock ] || [ -L /var/run/docker.sock ]; then
+        echo "/var/run/docker.sock exists but is not a socket" >&2
+        exit 1
+    fi
+    set -- /run/user/*/docker.sock
+    if [ "$#" -ne 1 ] || [ ! -S "$1" ]; then
+        echo "no single rootless daemon socket at /run/user/<uid>/docker.sock" >&2
+        exit 1
+    fi
+    ln -s "$1" /var/run/docker.sock
+    echo "added /var/run/docker.sock -> $1"
+fi
+if [ ! -x /usr/bin/docker ]; then
+    cli=""
+    for dir in /usr/local/bin /usr/local/sbin; do
+        if [ -x "${dir}/docker" ]; then cli="${dir}/docker"; break; fi
+    done
+    if [ -z "${cli}" ]; then
+        echo "no docker client in /usr/local/bin or /usr/local/sbin" >&2
+        exit 1
+    fi
+    layer=/run/nvm-ci-usr-bin
+    mkdir -p "${layer}/upper" "${layer}/work"
+    ln -sfn "${cli}" "${layer}/upper/docker"
+    mount -t overlay overlay \
+        -o "lowerdir=/usr/bin,upperdir=${layer}/upper,workdir=${layer}/work" /usr/bin
+    echo "added /usr/bin/docker -> ${cli}"
+fi
+'
+
+# Give the daemon's PID 1 what the startup check expects of a TrueNAS host, then run
+# the docker client there the way the program's namespace mode does (PID 1's mount,
+# UTS, IPC, network and PID namespaces; only LC_ALL and the fixed host PATH). A
+# rootful daemon's PID 1 is the real host and is never modified.
+prepare_daemon_host() {
+    local options=""
+    if ! options="$(docker info -f '{{json .SecurityOptions}}' 2>"${WORK}/daemon-host.info.err")"; then
+        fail "daemon host: docker info failed (see ${WORK}/daemon-host.info.err)"
+        return
+    fi
+    case "${options}" in
+        *'name=rootless'*) ;;
+        *)
+            echo "daemon host: rootful daemon; PID 1 is the real host and is used as it is"
+            return
+            ;;
+    esac
+    if docker run --rm --name "nvmct-${RUN_ID}-curl-host" \
+        --privileged --pid host --user 0:0 \
+        --entrypoint nsenter "${CURL_IMAGE}" -t 1 -m -u -i -n -p -- \
+        /bin/sh -c "${DAEMON_HOST_SCRIPT}
+env -i LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin docker version --format '{{.Server.Version}}' >/dev/null" \
+        >"${WORK}/daemon-host.out" 2>"${WORK}/daemon-host.err"; then
+        cat "${WORK}/daemon-host.out"
+        pass "daemon host: docker on the host PATH answers on /var/run/docker.sock in PID 1's namespaces"
+    else
+        cat "${WORK}/daemon-host.out" "${WORK}/daemon-host.err" >&2 || true
+        fail "daemon host: PID 1 of this rootless daemon cannot run docker as a TrueNAS host does (RootlessKit needs --pidns --utsns --ipcns)"
+    fi
+}
+prepare_daemon_host
 
 NEW_PASSWORD="ci-fixture-password-not-a-secret-2"
 

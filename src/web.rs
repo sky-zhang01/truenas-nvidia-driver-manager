@@ -20,7 +20,7 @@ use crate::auth::{self, CredentialState, Session};
 use crate::catalog;
 use crate::codes::*;
 use crate::drivers;
-use crate::facts::{self, Reading};
+use crate::facts::{self, GpusUnreadable, HostGpu, ModuleLine, Reading, Version};
 use crate::host::Host;
 use crate::plan::{self, Ctx, PlanSlot, Precheck, SourceRequest, SubmitReject};
 use crate::settings::Settings;
@@ -699,30 +699,7 @@ async fn home(
 /// saved-original lookup follows once the kernel and TrueNAS version are known.
 async fn read_home(ctx: &Arc<Ctx>, session: &SessionOpt, headers: &HeaderMap) -> Response {
     if !ctx.startup.pid_host_ok {
-        let h = ctx.host.clone();
-        let kernel = bounded_reading(move || facts::kernel(h.as_ref())).await;
-        let kernel_json = match kernel {
-            Ok(r) => reading_json(&r),
-            Err(f) => f.unknown_json(),
-        };
-        let readings = HomeReadings {
-            loaded: startup_unknown_json(),
-            canonical_version: startup_unknown_json(),
-            canonical_sha: startup_unknown_json(),
-            truenas: startup_unknown_json(),
-            kernel: kernel_json,
-            link: startup_unknown_json(),
-            link_missing: None,
-            original: startup_unknown_json(),
-            gpu_unlock: startup_unknown_json(),
-        };
-        return home_response(
-            ctx.as_ref(),
-            session,
-            readings,
-            startup_unknown_json(),
-            None,
-        );
+        return read_home_without_host(ctx, session).await;
     }
 
     let h1 = ctx.host.clone();
@@ -776,54 +753,10 @@ async fn read_home(ctx: &Arc<Ctx>, session: &SessionOpt, headers: &HeaderMap) ->
         Ok(r) => reading_json(r),
         Err(f) => f.unknown_json(),
     };
-    let (link_json, link_missing) = match link {
-        Ok(link) => {
-            let missing = matches!(link, facts::LinkReading::Missing);
-            (link_reading_json(&link), Some(missing))
-        }
-        Err(f) => (
-            json!({"exists": false, "unknown": f.reason_json()}),
-            Some(false),
-        ),
-    };
-    let original = match (&kernel, &truenas) {
-        (Ok(Reading::Value(k)), Ok(Reading::Value(t))) => {
-            let h7 = ctx.host.clone();
-            let p7 = ctx.paths.clone();
-            let k = k.clone();
-            let t = t.clone();
-            match bounded_reading(move || drivers::find_original(h7.as_ref(), &p7, &k, &t)).await {
-                Ok(drivers::OriginalLookup::Found(row)) => {
-                    let record = row.record_ok().unwrap();
-                    json!({
-                        "saved": true,
-                        "version": record.version,
-                        "saved_at": record.created_at,
-                    })
-                }
-                Ok(drivers::OriginalLookup::NotFound) => json!({"saved": false}),
-                Ok(drivers::OriginalLookup::Unreadable) => json!({
-                    "unknown": {"key": REASON_RECORD_UNREADABLE, "params": {}},
-                }),
-                Err(f) => f.unknown_json(),
-            }
-        }
-        (Err(f), _) | (_, Err(f)) => json!({"unknown": f.reason_json()}),
-        (Ok(Reading::Unknown(r)), _) | (_, Ok(Reading::Unknown(r))) => json!({
-            "unknown": crate::task_state::general_reason_json(r, READING_TIMEOUT.as_secs()),
-        }),
-    };
+    let (link_json, link_missing) = home_link_json(link);
+    let original = read_saved_original(ctx, &kernel, &truenas).await;
 
-    let gpus_json = match gpus_read {
-        Ok(Ok(gpus)) => home_gpus_value(&gpus),
-        Ok(Err(e)) => json!({
-            "unknown": crate::task_state::general_reason_json(
-                e.reason,
-                READING_TIMEOUT.as_secs(),
-            ),
-        }),
-        Err(f) => f.unknown_json(),
-    };
+    let gpus_json = home_gpus_json(gpus_read);
     let reconciled = match reconcile_bounded(ctx, headers).await {
         Ok(reconciled) => reconciled,
         Err(SessionLost) => {
@@ -878,7 +811,7 @@ struct HomeReadings {
     gpu_unlock: Value,
 }
 
-fn home_gpus_value(gpus: &[facts::HostGpu]) -> Value {
+fn home_gpus_value(gpus: &[HostGpu]) -> Value {
     let mut devices: Vec<Value> = gpus
         .iter()
         .map(|gpu| {
@@ -1105,7 +1038,7 @@ async fn read_versions(ctx: &Arc<Ctx>) -> Response {
     };
     let gpus_result = match gpus {
         Ok(result) => result,
-        Err(f) => Err(facts::GpusUnreadable {
+        Err(f) => Err(GpusUnreadable {
             reason: match f {
                 ReadingFailure::TimedOut(_) => REASON_TIMED_OUT,
                 ReadingFailure::Failed => REASON_IO_ERROR,
@@ -1118,101 +1051,22 @@ async fn read_versions(ctx: &Arc<Ctx>) -> Response {
         _ => None,
     };
 
-    let versions = match catalog_result {
-        Ok(versions) => versions,
-        Err(item) => {
-            unreadable.push(item);
-            Vec::new()
-        }
-    };
+    let items = catalog_items(
+        catalog_result,
+        &interfaces,
+        &modules,
+        kernel.as_deref(),
+        &mut unreadable,
+    );
 
-    let listed = catalog::with_unlock_versions(&catalog::branch_latest(&versions), &versions);
-    let items = match catalog::items(&listed, &interfaces, &modules, kernel.as_deref()) {
-        Ok(items) => items,
-        Err(headers) => {
-            for item in &headers.items {
-                unreadable.push(json!({
-                    "object": "kernel_headers",
-                    "reason": crate::task_state::general_reason_json(
-                        item.reason,
-                        READING_TIMEOUT.as_secs(),
-                    ),
-                    "raw": item.path,
-                }));
-                crate::log::error_json(
-                    Event::KernelHeadersUnreadable,
-                    &[
-                        ("path", json!(item.path)),
-                        (
-                            "reason",
-                            crate::task_state::general_reason_json(
-                                item.reason,
-                                READING_TIMEOUT.as_secs(),
-                            ),
-                        ),
-                    ],
-                );
-            }
-            Vec::new()
-        }
-    };
-
-    let gpus = match gpus_result {
-        Ok(gpus) => Some(gpus),
-        Err(e) => {
-            crate::log::error_json(
-                Event::GpusUnreadable,
-                &[
-                    ("path", json!(e.path.as_str())),
-                    (
-                        "reason",
-                        crate::task_state::general_reason_json(e.reason, READING_TIMEOUT.as_secs()),
-                    ),
-                ],
-            );
-            unreadable.push(json!({
-                "object": "gpus",
-                "reason": crate::task_state::general_reason_json(
-                    e.reason,
-                    READING_TIMEOUT.as_secs(),
-                ),
-                "raw": e.path,
-            }));
-            None
-        }
-    };
-
-    let any_unreadable = !unreadable.is_empty();
-    let items_json: Vec<Value> = if any_unreadable {
-        Vec::new()
-    } else {
-        items.iter().map(|v| json!({"version": v.text()})).collect()
-    };
-    let open_unbuildable = if any_unreadable {
-        Vec::new()
-    } else {
-        catalog::open_unbuildable(&items, kernel.as_deref().unwrap_or_default(), &interfaces)
-    };
-    let usable_readings = (!any_unreadable && modules.is_value() && kernel.is_some())
-        .then_some(open_unbuildable.as_slice());
-    let gpus_json = gpus
-        .map(|gpus| {
-            catalog::gpu_readings_json(&catalog::gpu_list(
-                &items,
-                &gpus,
-                crate::gpu_table::GPUS,
-                crate::gpu_table::VERSIONS,
-                usable_readings,
-            ))
-        })
-        .unwrap_or_else(|| json!([]));
-    json_response(json!({
-        "items": items_json,
-        "open_unbuildable": open_unbuildable,
-        "unreadable": unreadable,
-        "gpus": gpus_json,
-        "gpu_unlock_versions": crate::gpu_unlock::DRIVER_VERSIONS,
-    }))
+    versions_response(
+        items,
+        gpus_result,
+        unreadable,
+        &interfaces,
+        &modules,
+        kernel,
+    )
 }
 
 /// The snapshot never takes process_lock: plans may be waiting for GPU release while it runs.
@@ -1344,6 +1198,59 @@ pub async fn serve_with(
     web_root: PathBuf,
 ) -> std::io::Result<()> {
     crate::log::info(Event::Starting, &[("version", VERSION)]);
+    log_setting_problems(&settings);
+
+    let paths = Paths::new(PathBuf::from(CONTAINER_DATA_DIR));
+    let startup = check_web_startup(&host, &paths).await;
+
+    let auth_state = Arc::new(auth::AuthState::new());
+    let (pending_code, leftover_group) =
+        prepare_web_state(&host, &paths, &settings, &startup, &auth_state).await;
+
+    let static_files = load_static_files(&web_root);
+    let ctx = Arc::new(Ctx {
+        host,
+        paths,
+        settings: settings.clone(),
+        startup,
+        process_lock: tokio::sync::Mutex::new(()),
+        gpu_users_cache: Default::default(),
+        plan: std::sync::Mutex::new(PlanSlot::new()),
+        upload: Arc::new(UploadState::with_current(leftover_group)),
+        auth: auth_state,
+    });
+    let app = router(ctx, static_files);
+    let address = format!("0.0.0.0:{}", settings.port);
+    let listener = match tokio::net::TcpListener::bind(&address).await {
+        Ok(l) => l,
+        Err(e) => {
+            // the bind failure's reason is an `{key, params}` object with the
+            // operating-system text as its raw.
+            crate::log::error_json(
+                Event::ListenFailed,
+                &[
+                    ("address", json!(address)),
+                    (
+                        "reason",
+                        crate::log::reason_object(
+                            crate::log::io_reason_key(&e),
+                            json!({}),
+                            Some(&e.to_string()),
+                        ),
+                    ),
+                ],
+            );
+            return Err(e);
+        }
+    };
+    crate::log::info(Event::Listening, &[("address", &address)]);
+    if let Some(issued) = pending_code {
+        issued.log();
+    }
+    axum::serve(listener, app).await
+}
+
+fn log_setting_problems(settings: &Settings) {
     for problem in &settings.problems {
         match problem {
             crate::settings::SettingProblem::Unknown { variable } => {
@@ -1375,8 +1282,9 @@ pub async fn serve_with(
             }
         }
     }
+}
 
-    let paths = Paths::new(PathBuf::from(CONTAINER_DATA_DIR));
+async fn check_web_startup(host: &Arc<dyn Host>, paths: &Paths) -> Startup {
     let host2 = host.clone();
     let paths2 = paths.clone();
     let dirs = tokio::task::spawn_blocking(move || store::prepare_dirs(&*host2, &paths2))
@@ -1444,8 +1352,16 @@ pub async fn serve_with(
             ],
         );
     }
+    startup
+}
 
-    let auth_state = std::sync::Arc::new(auth::AuthState::new());
+async fn prepare_web_state(
+    host: &Arc<dyn Host>,
+    paths: &Paths,
+    settings: &Settings,
+    startup: &Startup,
+    auth_state: &Arc<auth::AuthState>,
+) -> (Option<auth::IssuedSetupCode>, Option<String>) {
     let pending_code = {
         let auth4 = auth_state.clone();
         let host4 = host.clone();
@@ -1500,48 +1416,210 @@ pub async fn serve_with(
             }
         }
     }
+    (pending_code, leftover_group)
+}
 
-    let static_files = load_static_files(&web_root);
-    let ctx = Arc::new(Ctx {
-        host,
-        paths,
-        settings: settings.clone(),
-        startup,
-        process_lock: tokio::sync::Mutex::new(()),
-        gpu_users_cache: Default::default(),
-        plan: std::sync::Mutex::new(PlanSlot::new()),
-        upload: Arc::new(UploadState::with_current(leftover_group)),
-        auth: auth_state,
-    });
-    let app = router(ctx, static_files);
-    let address = format!("0.0.0.0:{}", settings.port);
-    let listener = match tokio::net::TcpListener::bind(&address).await {
-        Ok(l) => l,
+async fn read_home_without_host(ctx: &Arc<Ctx>, session: &SessionOpt) -> Response {
+    let h = ctx.host.clone();
+    let kernel = bounded_reading(move || facts::kernel(h.as_ref())).await;
+    let kernel_json = match kernel {
+        Ok(r) => reading_json(&r),
+        Err(f) => f.unknown_json(),
+    };
+    let readings = HomeReadings {
+        loaded: startup_unknown_json(),
+        canonical_version: startup_unknown_json(),
+        canonical_sha: startup_unknown_json(),
+        truenas: startup_unknown_json(),
+        kernel: kernel_json,
+        link: startup_unknown_json(),
+        link_missing: None,
+        original: startup_unknown_json(),
+        gpu_unlock: startup_unknown_json(),
+    };
+    home_response(
+        ctx.as_ref(),
+        session,
+        readings,
+        startup_unknown_json(),
+        None,
+    )
+}
+
+async fn read_saved_original(
+    ctx: &Arc<Ctx>,
+    kernel: &Result<Reading<String>, ReadingFailure>,
+    truenas: &Result<Reading<String>, ReadingFailure>,
+) -> Value {
+    match (kernel, truenas) {
+        (Ok(Reading::Value(k)), Ok(Reading::Value(t))) => {
+            let h7 = ctx.host.clone();
+            let p7 = ctx.paths.clone();
+            let k = k.clone();
+            let t = t.clone();
+            match bounded_reading(move || drivers::find_original(h7.as_ref(), &p7, &k, &t)).await {
+                Ok(drivers::OriginalLookup::Found(row)) => {
+                    let record = row.record_ok().unwrap();
+                    json!({
+                        "saved": true,
+                        "version": record.version,
+                        "saved_at": record.created_at,
+                    })
+                }
+                Ok(drivers::OriginalLookup::NotFound) => json!({"saved": false}),
+                Ok(drivers::OriginalLookup::Unreadable) => json!({
+                    "unknown": {"key": REASON_RECORD_UNREADABLE, "params": {}},
+                }),
+                Err(f) => f.unknown_json(),
+            }
+        }
+        (Err(f), _) | (_, Err(f)) => json!({"unknown": f.reason_json()}),
+        (Ok(Reading::Unknown(r)), _) | (_, Ok(Reading::Unknown(r))) => json!({
+            "unknown": crate::task_state::general_reason_json(r, READING_TIMEOUT.as_secs()),
+        }),
+    }
+}
+
+fn versions_response(
+    items: Vec<Version>,
+    gpus_result: Result<Vec<HostGpu>, GpusUnreadable>,
+    mut unreadable: Vec<Value>,
+    interfaces: &catalog::KernelInterfaces,
+    modules: &Reading<Vec<ModuleLine>>,
+    kernel: Option<String>,
+) -> Response {
+    let gpus = match gpus_result {
+        Ok(gpus) => Some(gpus),
         Err(e) => {
-            // the bind failure's reason is an `{key, params}` object with the
-            // operating-system text as its raw.
             crate::log::error_json(
-                Event::ListenFailed,
+                Event::GpusUnreadable,
                 &[
-                    ("address", json!(address)),
+                    ("path", json!(e.path.as_str())),
                     (
                         "reason",
-                        crate::log::reason_object(
-                            crate::log::io_reason_key(&e),
-                            json!({}),
-                            Some(&e.to_string()),
-                        ),
+                        crate::task_state::general_reason_json(e.reason, READING_TIMEOUT.as_secs()),
                     ),
                 ],
             );
-            return Err(e);
+            unreadable.push(json!({
+                "object": "gpus",
+                "reason": crate::task_state::general_reason_json(
+                    e.reason,
+                    READING_TIMEOUT.as_secs(),
+                ),
+                "raw": e.path,
+            }));
+            None
         }
     };
-    crate::log::info(Event::Listening, &[("address", &address)]);
-    if let Some(issued) = pending_code {
-        issued.log();
+
+    let any_unreadable = !unreadable.is_empty();
+    let items_json: Vec<Value> = if any_unreadable {
+        Vec::new()
+    } else {
+        items.iter().map(|v| json!({"version": v.text()})).collect()
+    };
+    let open_unbuildable = if any_unreadable {
+        Vec::new()
+    } else {
+        catalog::open_unbuildable(&items, kernel.as_deref().unwrap_or_default(), interfaces)
+    };
+    let usable_readings = (!any_unreadable && modules.is_value() && kernel.is_some())
+        .then_some(open_unbuildable.as_slice());
+    let gpus_json = gpus
+        .map(|gpus| {
+            catalog::gpu_readings_json(&catalog::gpu_list(
+                &items,
+                &gpus,
+                crate::gpu_table::GPUS,
+                crate::gpu_table::VERSIONS,
+                usable_readings,
+            ))
+        })
+        .unwrap_or_else(|| json!([]));
+    json_response(json!({
+        "items": items_json,
+        "open_unbuildable": open_unbuildable,
+        "unreadable": unreadable,
+        "gpus": gpus_json,
+        "gpu_unlock_versions": crate::gpu_unlock::DRIVER_VERSIONS,
+    }))
+}
+
+fn catalog_items(
+    catalog_result: Result<Vec<Version>, Value>,
+    interfaces: &catalog::KernelInterfaces,
+    modules: &Reading<Vec<ModuleLine>>,
+    kernel: Option<&str>,
+    unreadable: &mut Vec<Value>,
+) -> Vec<Version> {
+    let versions = match catalog_result {
+        Ok(versions) => versions,
+        Err(item) => {
+            unreadable.push(item);
+            Vec::new()
+        }
+    };
+
+    let listed = catalog::with_unlock_versions(&catalog::branch_latest(&versions), &versions);
+    match catalog::items(&listed, interfaces, modules, kernel) {
+        Ok(items) => items,
+        Err(headers) => {
+            for item in &headers.items {
+                unreadable.push(json!({
+                    "object": "kernel_headers",
+                    "reason": crate::task_state::general_reason_json(
+                        item.reason,
+                        READING_TIMEOUT.as_secs(),
+                    ),
+                    "raw": item.path,
+                }));
+                crate::log::error_json(
+                    Event::KernelHeadersUnreadable,
+                    &[
+                        ("path", json!(item.path)),
+                        (
+                            "reason",
+                            crate::task_state::general_reason_json(
+                                item.reason,
+                                READING_TIMEOUT.as_secs(),
+                            ),
+                        ),
+                    ],
+                );
+            }
+            Vec::new()
+        }
     }
-    axum::serve(listener, app).await
+}
+
+fn home_link_json(link: Result<facts::LinkReading, ReadingFailure>) -> (Value, Option<bool>) {
+    let (link_json, link_missing) = match link {
+        Ok(link) => {
+            let missing = matches!(link, facts::LinkReading::Missing);
+            (link_reading_json(&link), Some(missing))
+        }
+        Err(f) => (
+            json!({"exists": false, "unknown": f.reason_json()}),
+            Some(false),
+        ),
+    };
+    (link_json, link_missing)
+}
+
+fn home_gpus_json(
+    gpus_read: Result<Result<Vec<HostGpu>, GpusUnreadable>, ReadingFailure>,
+) -> Value {
+    match gpus_read {
+        Ok(Ok(gpus)) => home_gpus_value(&gpus),
+        Ok(Err(e)) => json!({
+            "unknown": crate::task_state::general_reason_json(
+                e.reason,
+                READING_TIMEOUT.as_secs(),
+            ),
+        }),
+        Err(f) => f.unknown_json(),
+    }
 }
 
 #[cfg(test)]

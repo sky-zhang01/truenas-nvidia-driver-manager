@@ -1,0 +1,34 @@
+# The checks of the GPU unlock test in a TrueNAS VM (tests/gpu_unlock_vm.rs). One row is one
+# check; tests/gpu_unlock_vm.rs runs it and fails when a row has no result or a result has no row.
+# case: "a" with GPU isolation configured (/etc/modprobe.d/nvidia.conf as TrueNAS writes it),
+# "b" without it, "ab" in both, "vm" once for the VM.
+# item	case	check	criterion
+0	vm	lib_is_usr_lib	/lib resolves to /usr/lib, so the rule in the image's /usr/lib/modprobe.d is read by kmod.
+1	ab	firmware_generated	The update with the unlock generates the unlock firmware in its own stage (none was cached).
+1	ab	module_test_loaded	The task test-loads the new gpu_unlock module with insmod (gpu_unlock was not in the kernel).
+1	ab	built_and_delivered	Build, test load and the checks before delivery pass: the task reaches the replacement and delivers a 610.43.03 local driver row with the target.
+1	ab	nvidia_610	The image carries nvidia.ko 610.43.03 built for the running kernel (vermagic starts with uname -r).
+1	ab	modversions	nvidia.ko and gpu_unlock.ko carry a __versions section exactly when the kernel has CONFIG_MODVERSIONS (25.10.7 does, 27 does not).
+2	ab	merged	The same task writes the image to the permanent path and merges it: systemd-sysext lists nvidia on /usr and the file equals the delivered row.
+2	ab	files	gpu-unlock.conf, extra/gpu_unlock.ko and the 16 firmware files under /usr/lib/firmware/gpu-unlock/610.43.03 are in the merged /usr.
+2	ab	targets_null	/sys/module/gpu_unlock/parameters/targets reads (null) after the test load.
+2	ab	record_both	The update check record's load order: vfio_pci_first and gpu_unlock_before_nvidia are both true.
+2	a	record_vfio_line	(a) The recorded modprobe --show-depends nvidia lists vfio-pci before nvidia.ko.
+2	ab	skip_outcome	Without a saved original the failed check ends FAILED with NO_USABLE_ORIGINAL and the new image stays at the permanent path.
+3	a	isolation_file_kept	(a) /etc/modprobe.d/nvidia.conf is still there after the reboot.
+3	ab	boot_line_first	After the reboot the kernel log has gpu_unlock: no supported card at the target before the first NVRM line.
+3	ab	modules_loaded	gpu_unlock (targets = the target) and vfio_pci are in /sys/module.
+3	ab	show_depends_order	modprobe --show-depends nvidia lists vfio-pci, then gpu_unlock targets=<target>, then nvidia.
+3	ab	no_second_load	After rmmod of the nvidia modules, modprobe nvidia does not load gpu_unlock again: no second kernel log line.
+3	ab	home_reading	The home reading shows the target as not unlocked, with that kernel log line.
+4	a	nvidia_rule_is_image	(a) The softdep kmod uses for nvidia is the image's (vfio-pci gpu_unlock): it is the first softdep nvidia line in modprobe -c.
+4	a	other_modules_vfio	(a) TrueNAS's softdep nvidia* pre: vfio-pci still applies; --show-depends of nvidia_drm and nvidia_uvm list vfio-pci before nvidia.
+4	a	vfio_loaded	(a) vfio_pci is loaded.
+4	b	vfio_unbound	(b) The extra vfio-pci load binds no device.
+5	vm	switch_keeps_file	Turning the TrueNAS NVIDIA switch off and on leaves the file at the permanent path unchanged; the unlock rule stays merged.
+5	ab	r1_record	Run 1 (aaa-test.conf: softdep nvidia pre: vfio-pci): gpu_unlock_before_nvidia false, no gpu_unlock in the reading, vfio_pci_first true.
+5	a	r1_vfio_line	(a) Run 1: the reading lists vfio-pci before nvidia.ko.
+5	ab	r1_restored	After run 1 the permanent path equals the saved original byte for byte and gpu-unlock.conf is gone.
+5	a	r2_record	(a) Run 2 (aaa-test.conf: softdep nvidia pre: gpu_unlock): no vfio-pci in the reading, vfio_pci_first false.
+5	b	r2_record	(b) Run 2 (aaa-test.conf: softdep nvidia pre: gpu_unlock): no vfio-pci in the reading, vfio_pci_first true.
+5	ab	r2_restored	After run 2 the permanent path equals the saved original byte for byte and gpu-unlock.conf is gone.

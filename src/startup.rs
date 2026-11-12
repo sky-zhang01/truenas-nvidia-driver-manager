@@ -291,7 +291,45 @@ pub fn check(h: &dyn Host, p: &Paths) -> Startup {
         };
     };
 
-    // container inspection
+    let entry = match inspect_container(h, container_id) {
+        Ok(entry) => entry,
+        Err(startup) => return startup,
+    };
+
+    let mut problems = Vec::new();
+    let runtime = entry.host_config.as_ref().and_then(|c| c.runtime.clone());
+    if runtime.as_deref() != Some("runc") {
+        problems.push(StartupProblem::Runtime { value: runtime });
+    }
+
+    let mounts = entry.mounts.unwrap_or_default();
+    let mut host_data_dir = data_dir_from_mounts(&mounts, &mut problems);
+    let image_id = checked_image_id(entry.image, &mut problems);
+    // data-directory readback, only when the path is usable.
+    if let Some(dir) = host_data_dir.clone() {
+        if problems
+            .iter()
+            .all(|p| !matches!(p, StartupProblem::DataMapping { .. }))
+        {
+            match check_readback(h, p, &dir) {
+                Ok(()) => {}
+                Err(reason) => problems.push(StartupProblem::DataMapping { reason }),
+            }
+        }
+        if !data_dir_path_ok(&dir.to_string_lossy()) {
+            host_data_dir = None;
+        }
+    }
+
+    Startup {
+        problems,
+        pid_host_ok: true,
+        host_data_dir,
+        image_id,
+    }
+}
+
+fn inspect_container(h: &dyn Host, container_id: String) -> Result<InspectEntry, Startup> {
     let out = h.run(
         &Cmd::new(At::Host, "docker", HOST_QUERY_TIMEOUT)
             .arg("inspect")
@@ -303,30 +341,30 @@ pub fn check(h: &dyn Host, p: &Paths) -> Startup {
         // Everything else keeps the inspect_failed reason and the raw text.
         let stderr = out.stderr_text();
         if matches!(out.exit, crate::host::Exit::Code(1)) && out.stderr.starts_with(b"nsenter:") {
-            return Startup {
+            return Err(Startup {
                 problems: vec![StartupProblem::DataMapping {
                     reason: MappingReason::NsenterFailed,
                 }],
                 pid_host_ok: true,
                 host_data_dir: None,
                 image_id: None,
-            };
+            });
         }
         let reason = MappingReason::InspectFailed {
             reason: command_reason(&out),
             raw: Some(stderr),
         };
-        return Startup {
+        return Err(Startup {
             problems: vec![StartupProblem::DataMapping { reason }],
             pid_host_ok: true,
             host_data_dir: None,
             image_id: None,
-        };
+        });
     }
     let entries: Vec<InspectEntry> = match serde_json::from_slice(&out.stdout) {
         Ok(v) => v,
         Err(_) => {
-            return Startup {
+            return Err(Startup {
                 problems: vec![StartupProblem::DataMapping {
                     reason: MappingReason::InspectFailed {
                         reason: crate::task_state::ReasonValue::new(
@@ -341,11 +379,11 @@ pub fn check(h: &dyn Host, p: &Paths) -> Startup {
                 pid_host_ok: true,
                 host_data_dir: None,
                 image_id: None,
-            };
+            });
         }
     };
     let Some(entry) = entries.into_iter().next() else {
-        return Startup {
+        return Err(Startup {
             problems: vec![StartupProblem::DataMapping {
                 reason: MappingReason::InspectFailed {
                     reason: crate::task_state::ReasonValue::new(
@@ -358,16 +396,15 @@ pub fn check(h: &dyn Host, p: &Paths) -> Startup {
             pid_host_ok: true,
             host_data_dir: None,
             image_id: None,
-        };
+        });
     };
+    Ok(entry)
+}
 
-    let mut problems = Vec::new();
-    let runtime = entry.host_config.as_ref().and_then(|c| c.runtime.clone());
-    if runtime.as_deref() != Some("runc") {
-        problems.push(StartupProblem::Runtime { value: runtime });
-    }
-
-    let mounts = entry.mounts.unwrap_or_default();
+fn data_dir_from_mounts(
+    mounts: &[InspectMount],
+    problems: &mut Vec<StartupProblem>,
+) -> Option<PathBuf> {
     let matching: Vec<&InspectMount> = mounts
         .iter()
         .filter(|m| m.destination.as_deref() == Some(CONTAINER_DATA_DIR))
@@ -389,7 +426,7 @@ pub fn check(h: &dyn Host, p: &Paths) -> Startup {
             host_data_dir = Some(PathBuf::from(source));
         }
     }
-    for m in &mounts {
+    for m in mounts {
         if let Some(dest) = &m.destination {
             if dest.starts_with(&format!("{CONTAINER_DATA_DIR}/")) {
                 problems.push(StartupProblem::DataMapping {
@@ -400,8 +437,11 @@ pub fn check(h: &dyn Host, p: &Paths) -> Startup {
             }
         }
     }
+    host_data_dir
+}
 
-    let image_id = match entry.image {
+fn checked_image_id(image: Option<String>, problems: &mut Vec<StartupProblem>) -> Option<String> {
+    match image {
         Some(id) if image_id_ok(&id) => Some(id),
         Some(_) => {
             problems.push(StartupProblem::DataMapping {
@@ -427,29 +467,6 @@ pub fn check(h: &dyn Host, p: &Paths) -> Startup {
             });
             None
         }
-    };
-
-    // data-directory readback, only when the path is usable.
-    if let Some(dir) = host_data_dir.clone() {
-        if problems
-            .iter()
-            .all(|p| !matches!(p, StartupProblem::DataMapping { .. }))
-        {
-            match check_readback(h, p, &dir) {
-                Ok(()) => {}
-                Err(reason) => problems.push(StartupProblem::DataMapping { reason }),
-            }
-        }
-        if !data_dir_path_ok(&dir.to_string_lossy()) {
-            host_data_dir = None;
-        }
-    }
-
-    Startup {
-        problems,
-        pid_host_ok: true,
-        host_data_dir,
-        image_id,
     }
 }
 

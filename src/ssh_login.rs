@@ -435,25 +435,23 @@ pub async fn ssh_login(
         drop(guard);
         return SshLoginOutcome::ChallengeInvalid;
     };
-    let failed = |state: &AuthState,
-                  guard: &mut tokio::sync::MutexGuard<'_, Option<crate::auth::LoginLimiter>>,
-                  kind: SshFailKind,
-                  fingerprint: Option<String>,
-                  algorithm: Option<String>| {
-        // The shared bucket still spends one attempt and counts the consecutive failure; only
-        // the reset-help notice trigger crosses into the outcome, never the count itself.
-        let failures = record_failure(state, guard);
-        SshLoginOutcome::Failed {
-            kind,
-            fingerprint,
-            algorithm,
-            show_reset_help: failures >= LOGIN_RESET_HELP_AFTER,
-        }
-    };
+    verify_consumed_challenge(state, h.as_ref(), snapshot, guard, signature, message)
+}
+
+/// Verify only after the caller has consumed the challenge, retaining its limiter guard.
+fn verify_consumed_challenge(
+    state: &AuthState,
+    h: &dyn Host,
+    snapshot: Credentials,
+    mut guard: tokio::sync::MutexGuard<'_, Option<crate::auth::LoginLimiter>>,
+    signature: String,
+    message: String,
+) -> SshLoginOutcome {
     let sig = match SshSig::from_pem(signature.as_bytes()) {
         Ok(sig) => sig,
         Err(_) => {
-            let outcome = failed(state, &mut guard, SshFailKind::BadSignature, None, None);
+            let outcome =
+                ssh_login_failure(state, &mut guard, SshFailKind::BadSignature, None, None);
             drop(guard);
             return outcome;
         }
@@ -466,7 +464,7 @@ pub async fn ssh_login(
         .iter()
         .find(|key| key.fingerprint == fingerprint)
     else {
-        let outcome = failed(
+        let outcome = ssh_login_failure(
             state,
             &mut guard,
             SshFailKind::KeyNotRegistered,
@@ -483,7 +481,7 @@ pub async fn ssh_login(
         .as_ref()
         .is_some_and(|key| key.verify(SSH_NAMESPACE, message.as_bytes(), &sig).is_ok());
     if !verified {
-        let outcome = failed(
+        let outcome = ssh_login_failure(
             state,
             &mut guard,
             SshFailKind::BadSignature,
@@ -516,6 +514,24 @@ pub async fn ssh_login(
         token: issued.token,
         fingerprint: registered.fingerprint.clone(),
         algorithm: verified_algorithm,
+    }
+}
+
+fn ssh_login_failure(
+    state: &AuthState,
+    guard: &mut tokio::sync::MutexGuard<'_, Option<crate::auth::LoginLimiter>>,
+    kind: SshFailKind,
+    fingerprint: Option<String>,
+    algorithm: Option<String>,
+) -> SshLoginOutcome {
+    // The shared bucket still spends one attempt and counts the consecutive failure; only
+    // the reset-help notice trigger crosses into the outcome, never the count itself.
+    let failures = record_failure(state, guard);
+    SshLoginOutcome::Failed {
+        kind,
+        fingerprint,
+        algorithm,
+        show_reset_help: failures >= LOGIN_RESET_HELP_AFTER,
     }
 }
 

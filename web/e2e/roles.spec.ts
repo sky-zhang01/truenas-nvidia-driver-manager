@@ -36,7 +36,10 @@ test("the running task and the missing link use the catalog wording", async ({ p
   await signIn(page);
   await page.goto("/#/home");
   await expect(page.locator(".app-main")).toContainText(
-    /not found|未检测到|Enable the NVIDIA driver|启用 NVIDIA 驱动/,
+    /TrueNAS 25\.10: Apps → Installed → Configuration → Settings|TrueNAS 25\.10：打开应用 → 已安装 → 配置 → 设置/,
+  );
+  await expect(page.locator(".app-main")).toContainText(
+    /TrueNAS 27: System → Advanced Settings|TrueNAS 27：打开系统 → 高级设置/,
   );
 });
 

@@ -682,6 +682,34 @@ fn prepare_official_source(
     let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
     let module_type = catalog::module_type(crate::gpu_table::GPUS, &devices, &parsed);
     check_branch(&parsed, kernel, &interfaces, module_type, &loaded)?;
+    let versions = confirmed_official_versions(version, official_versions)?;
+    if !catalog::drives_all(
+        crate::gpu_table::GPUS,
+        crate::gpu_table::VERSIONS,
+        &devices,
+        &parsed,
+    ) {
+        return Err(official_gpu_unsupported(
+            h,
+            &parsed,
+            &selected,
+            official_kernel,
+            versions,
+            &interfaces,
+            &loaded,
+        ));
+    }
+    snapshot.source = PlanSource::Official;
+    snapshot.version = version.to_string();
+    snapshot.gpus = plan_gpus(&selected);
+    snapshot.kernel_module_type = module_type;
+    Ok(None)
+}
+
+fn confirmed_official_versions<'a>(
+    version: &str,
+    official_versions: &'a Result<Vec<facts::Version>, serde_json::Value>,
+) -> Result<&'a [facts::Version], SourceInvalid> {
     let versions = match official_versions {
         Ok(versions) => versions,
         Err(item) => {
@@ -696,59 +724,60 @@ fn prepare_official_source(
             version: version.to_string(),
         });
     }
-    if !catalog::drives_all(
+    Ok(versions)
+}
+
+fn official_gpu_unsupported(
+    h: &dyn Host,
+    parsed: &facts::Version,
+    selected: &[facts::HostGpu],
+    official_kernel: &Option<String>,
+    versions: &[facts::Version],
+    interfaces: &catalog::KernelInterfaces,
+    loaded: &Reading<Vec<facts::ModuleLine>>,
+) -> SourceInvalid {
+    let devices: Vec<u16> = selected.iter().map(|g| g.device).collect();
+    let conflict = catalog::conflict(crate::gpu_table::GPUS, &devices);
+    let mut payload = catalog::gpu_unsupported_json(
         crate::gpu_table::GPUS,
         crate::gpu_table::VERSIONS,
-        &devices,
-        &parsed,
-    ) {
-        let conflict = catalog::conflict(crate::gpu_table::GPUS, &devices);
-        let mut payload = catalog::gpu_unsupported_json(
-            crate::gpu_table::GPUS,
-            crate::gpu_table::VERSIONS,
-            &selected,
-            &parsed,
-        );
-        let current_kernel = official_kernel
-            .clone()
-            .or_else(|| facts::kernel(h).value().cloned());
-        let candidates = catalog::items(
-            &catalog::branch_latest(versions),
-            &interfaces,
-            &loaded,
-            current_kernel.as_deref(),
-        )
-        .unwrap_or_default();
-        let excluded = catalog::open_unbuildable(
-            &candidates,
-            current_kernel.as_deref().unwrap_or_default(),
-            &interfaces,
-        );
-        let usable = (loaded.is_value() && current_kernel.is_some()).then_some(excluded.as_slice());
-        let listed = catalog::gpu_list(
-            &candidates,
-            &selected,
-            crate::gpu_table::GPUS,
-            crate::gpu_table::VERSIONS,
-            usable,
-        );
-        for gpu in payload["gpus"].as_array_mut().unwrap() {
-            gpu["usable_from_branch"] = json!(listed
-                .iter()
-                .find(|entry| gpu["address"] == entry.gpu.address)
-                .and_then(|entry| entry.usable_from.as_ref().map(facts::Version::major)));
-        }
-        return Err(SourceInvalid::GpuUnsupported {
-            version: Some(version.to_string()),
-            gpus: payload["gpus"].clone(),
-            conflict,
-        });
+        selected,
+        parsed,
+    );
+    let current_kernel = official_kernel
+        .clone()
+        .or_else(|| facts::kernel(h).value().cloned());
+    let candidates = catalog::items(
+        &catalog::branch_latest(versions),
+        interfaces,
+        loaded,
+        current_kernel.as_deref(),
+    )
+    .unwrap_or_default();
+    let excluded = catalog::open_unbuildable(
+        &candidates,
+        current_kernel.as_deref().unwrap_or_default(),
+        interfaces,
+    );
+    let usable = (loaded.is_value() && current_kernel.is_some()).then_some(excluded.as_slice());
+    let listed = catalog::gpu_list(
+        &candidates,
+        selected,
+        crate::gpu_table::GPUS,
+        crate::gpu_table::VERSIONS,
+        usable,
+    );
+    for gpu in payload["gpus"].as_array_mut().unwrap() {
+        gpu["usable_from_branch"] = json!(listed
+            .iter()
+            .find(|entry| gpu["address"] == entry.gpu.address)
+            .and_then(|entry| entry.usable_from.as_ref().map(facts::Version::major)));
     }
-    snapshot.source = PlanSource::Official;
-    snapshot.version = version.to_string();
-    snapshot.gpus = plan_gpus(&selected);
-    snapshot.kernel_module_type = module_type;
-    Ok(None)
+    SourceInvalid::GpuUnsupported {
+        version: Some(parsed.text().to_string()),
+        gpus: payload["gpus"].clone(),
+        conflict,
+    }
 }
 
 fn prepare_upload_source(
@@ -774,30 +803,7 @@ fn prepare_upload_source(
         return Err(SourceInvalid::UploadBusy);
     }
     let summary = upload::summary(h, p, group_id);
-    let source = match upload::resolve(&summary, version.as_deref()) {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(match e {
-                upload::SourceInvalid::VersionRequired => SourceInvalid::UploadVersionRequired,
-                upload::SourceInvalid::VersionNotCandidate { version } => {
-                    SourceInvalid::UploadVersionNotCandidate { version }
-                }
-                upload::SourceInvalid::VersionFormat => SourceInvalid::VersionFormat,
-                upload::SourceInvalid::Incomplete { missing } => {
-                    SourceInvalid::UploadIncomplete { missing }
-                }
-                upload::SourceInvalid::Problem => SourceInvalid::UploadProblem,
-                upload::SourceInvalid::ToolkitTooOld {
-                    driver_version,
-                    toolkit_version,
-                } => SourceInvalid::ToolkitTooOld {
-                    driver_version,
-                    toolkit_version,
-                },
-                upload::SourceInvalid::GroupGone => SourceInvalid::UploadGone,
-            })
-        }
-    };
+    let source = upload::resolve(&summary, version.as_deref()).map_err(upload_source_invalid)?;
     let chosen = version.clone().unwrap_or_default();
     // Uploads defer driver compatibility to the isolated build; only GPU conflicts block here.
     let host_gpus = read_source_gpus(h)?;
@@ -833,6 +839,28 @@ fn prepare_upload_source(
     }
     snapshot.upload_group = Some(group_id.to_string());
     Ok(())
+}
+
+fn upload_source_invalid(e: upload::SourceInvalid) -> SourceInvalid {
+    match e {
+        upload::SourceInvalid::VersionRequired => SourceInvalid::UploadVersionRequired,
+        upload::SourceInvalid::VersionNotCandidate { version } => {
+            SourceInvalid::UploadVersionNotCandidate { version }
+        }
+        upload::SourceInvalid::VersionFormat => SourceInvalid::VersionFormat,
+        upload::SourceInvalid::Incomplete { missing } => {
+            SourceInvalid::UploadIncomplete { missing }
+        }
+        upload::SourceInvalid::Problem => SourceInvalid::UploadProblem,
+        upload::SourceInvalid::ToolkitTooOld {
+            driver_version,
+            toolkit_version,
+        } => SourceInvalid::ToolkitTooOld {
+            driver_version,
+            toolkit_version,
+        },
+        upload::SourceInvalid::GroupGone => SourceInvalid::UploadGone,
+    }
 }
 
 fn prepare_local_source(
@@ -1025,6 +1053,26 @@ pub fn precheck(
     }
     snapshot.gpu_unlock_targets = unlock_targets(req, &snapshot)?;
 
+    precheck_host(
+        ctx,
+        snapshot,
+        modules_for_occupancy,
+        local_row,
+        local_unreadable,
+        official_kernel,
+    )
+}
+
+fn precheck_host(
+    ctx: &Ctx,
+    snapshot: Snapshot,
+    modules_for_occupancy: Option<Reading<Vec<facts::ModuleLine>>>,
+    local_row: Option<drivers::Row>,
+    local_unreadable: bool,
+    official_kernel: Option<String>,
+) -> Result<(Precheck, Snapshot), SourceInvalid> {
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
     let mut failures: Vec<Failure> = Vec::new();
     let reconciled = crate::tasks::reconcile_managed(h, p);
     match reconciled.active.blocker() {
@@ -1073,6 +1121,17 @@ pub fn precheck(
         ));
     }
 
+    finish_precheck(ctx, snapshot, official_kernel, link)
+}
+
+fn finish_precheck(
+    ctx: &Ctx,
+    mut snapshot: Snapshot,
+    official_kernel: Option<String>,
+    link: facts::LinkReading,
+) -> Result<(Precheck, Snapshot), SourceInvalid> {
+    let h = ctx.host.as_ref();
+    let p = &ctx.paths;
     let kernel = official_kernel.map_or_else(|| facts::kernel(h), Reading::Value);
     let truenas = facts::truenas_version(h);
     let mut uncomputable = Vec::new();
@@ -1154,40 +1213,7 @@ fn confirmation_dialog(
 ) -> Dialog {
     let original_saved = snapshot.original_saved;
     let save_available = snapshot.save_available;
-    let source_json = match &snapshot.source {
-        PlanSource::Official => json!({"kind": "official"}),
-        PlanSource::Upload {
-            run_sha256,
-            fingerprint,
-            ..
-        } => json!({
-            "kind": "upload",
-            "fingerprint": fingerprint,
-            "sha256": run_sha256,
-        }),
-        PlanSource::Local {
-            row_kind,
-            fingerprint,
-            sha256,
-            ..
-        } => {
-            let mut obj = serde_json::Map::new();
-            obj.insert("kind".into(), json!("local"));
-            obj.insert(
-                "row_kind".into(),
-                json!(match row_kind {
-                    RowKind::Official => "official",
-                    RowKind::Upload => "upload",
-                    RowKind::Original => "original",
-                }),
-            );
-            if let Some(f) = fingerprint {
-                obj.insert("fingerprint".into(), json!(f));
-            }
-            obj.insert("sha256".into(), json!(sha256));
-            serde_json::Value::Object(obj)
-        }
-    };
+    let source_json = confirmation_source(&snapshot.source);
     let original_state = if original_saved {
         "saved"
     } else if save_available {
@@ -1261,6 +1287,43 @@ fn confirmation_dialog(
         original: original_json,
         save_available,
         confirmation,
+    }
+}
+
+fn confirmation_source(source: &PlanSource) -> serde_json::Value {
+    match source {
+        PlanSource::Official => json!({"kind": "official"}),
+        PlanSource::Upload {
+            run_sha256,
+            fingerprint,
+            ..
+        } => json!({
+            "kind": "upload",
+            "fingerprint": fingerprint,
+            "sha256": run_sha256,
+        }),
+        PlanSource::Local {
+            row_kind,
+            fingerprint,
+            sha256,
+            ..
+        } => {
+            let mut obj = serde_json::Map::new();
+            obj.insert("kind".into(), json!("local"));
+            obj.insert(
+                "row_kind".into(),
+                json!(match row_kind {
+                    RowKind::Official => "official",
+                    RowKind::Upload => "upload",
+                    RowKind::Original => "original",
+                }),
+            );
+            if let Some(f) = fingerprint {
+                obj.insert("fingerprint".into(), json!(f));
+            }
+            obj.insert("sha256".into(), json!(sha256));
+            serde_json::Value::Object(obj)
+        }
     }
 }
 
@@ -1393,24 +1456,7 @@ fn check_source_fingerprint(ctx: &Ctx, snapshot: &Snapshot, changed: &mut Vec<&'
 fn recheck_submission(ctx: &Ctx, snapshot: &Snapshot) -> Result<(), SubmitReject> {
     let h = ctx.host.as_ref();
     let p = &ctx.paths;
-    let reconciled = crate::tasks::reconcile(h, p);
-    match reconciled.active.blocker() {
-        None => {}
-        Some(crate::tasks::Blocker::Running { .. }) => return Err(SubmitReject::TaskRunning),
-        Some(crate::tasks::Blocker::Unreadable { reason }) => {
-            return Err(SubmitReject::PrecheckFailed {
-                failures: vec![Failure::unreadable(
-                    "running_task",
-                    json!({"key": reason.key, "params": reason.params}),
-                )],
-            })
-        }
-    }
-    if let Some(residue) = &reconciled.host_residue {
-        return Err(SubmitReject::PrecheckFailed {
-            failures: vec![host_residue_failure(residue)],
-        });
-    }
+    recheck_task_readiness(h, p)?;
 
     let mut items = Vec::new();
     let kernel = facts::kernel(h);
@@ -1482,6 +1528,29 @@ fn recheck_submission(ctx: &Ctx, snapshot: &Snapshot) -> Result<(), SubmitReject
     }
     if !changed.is_empty() {
         return Err(SubmitReject::Changed { changed });
+    }
+
+    Ok(())
+}
+
+fn recheck_task_readiness(h: &dyn Host, p: &Paths) -> Result<(), SubmitReject> {
+    let reconciled = crate::tasks::reconcile(h, p);
+    match reconciled.active.blocker() {
+        None => {}
+        Some(crate::tasks::Blocker::Running { .. }) => return Err(SubmitReject::TaskRunning),
+        Some(crate::tasks::Blocker::Unreadable { reason }) => {
+            return Err(SubmitReject::PrecheckFailed {
+                failures: vec![Failure::unreadable(
+                    "running_task",
+                    json!({"key": reason.key, "params": reason.params}),
+                )],
+            })
+        }
+    }
+    if let Some(residue) = &reconciled.host_residue {
+        return Err(SubmitReject::PrecheckFailed {
+            failures: vec![host_residue_failure(residue)],
+        });
     }
 
     Ok(())

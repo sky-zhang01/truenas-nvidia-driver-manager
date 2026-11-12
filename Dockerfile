@@ -7,7 +7,7 @@
 # digests and lockfiles.
 
 # Web assets.
-FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS web
+FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS web
 WORKDIR /build
 COPY web/package.json web/package-lock.json ./web/
 RUN npm --prefix web ci
@@ -19,7 +19,7 @@ RUN cp web/index.html web/src/styles.css web/dist/ \
  && cp web/brand/*.svg web/dist/brand/
 
 # Rust static executable.
-FROM rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS rust
+FROM rust:1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS rust
 RUN rustup target add x86_64-unknown-linux-musl
 # Host execution requires a static executable; the dependency tree needs no C compiler.
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"

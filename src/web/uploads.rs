@@ -151,6 +151,15 @@ pub(super) async fn receive_upload_file(
         session_ok,
     )
     .await;
+    received_file_response(result)
+}
+
+fn received_file_response(
+    result: Result<
+        (crate::upload::FileResult, crate::upload::GroupSummary),
+        crate::upload::UploadReject,
+    >,
+) -> Response {
     match result {
         Ok((file, group)) => {
             let _ = &group;

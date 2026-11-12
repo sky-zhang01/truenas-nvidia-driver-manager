@@ -115,23 +115,7 @@ fn bounded_digits(rest: &str) -> bool {
 }
 
 fn fail_reason_ok(reason: &str) -> bool {
-    const PLAIN: [&str; 14] = [
-        BUILD_RUN_CHECK_FAILED,
-        BUILD_MODULES_COPY_FAILED,
-        BUILD_KERNEL_GCC_UNKNOWN,
-        BUILD_EXTRACT_FAILED,
-        BUILD_OPTIONS_UNREADABLE,
-        BUILD_KERNEL_MODULE_TYPE_UNSUPPORTED,
-        BUILD_INSTALLER_FAILED,
-        BUILD_INSTALLER_USERSPACE_FAILED,
-        BUILD_INSTALLER_KERNEL_MODULE_FAILED,
-        BUILD_DEPMOD_FAILED,
-        BUILD_CAPTURE_EMPTY,
-        BUILD_STAGE_COPY_FAILED,
-        BUILD_GPU_UNLOCK_MODULE_BUILD_FAILED,
-        BUILD_GPU_UNLOCK_INSTALL_FAILED,
-    ];
-    if PLAIN.contains(&reason) {
+    if BUILD_SCRIPT_REASONS.contains(&reason) {
         return true;
     }
     if let Some(rest) = reason.strip_prefix("compiler_missing:gcc-") {
@@ -157,10 +141,7 @@ fn fail_reason_ok(reason: &str) -> bool {
     if let Some(rest) = reason.strip_prefix("kernel_module_install_failed:") {
         return facts::DRIVER_MODULES.contains(&rest);
     }
-    reason == BUILD_RELEASE_WRITE_FAILED
-        || reason == BUILD_MKSQUASHFS_FAILED
-        || reason == BUILD_RESULT_WRITE_FAILED
-        || reason == BUILD_KERNEL_MODULE_BUILD_FAILED
+    false
 }
 
 pub fn parse_machine_line(line: &[u8]) -> Option<MachineLine> {
@@ -437,6 +418,22 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), Bui
         gpu_unlock,
         compiler,
     });
+    run_build_container(ctx, argv, &id)?;
+    let artifact = check_artifact(ctx, &kernel)?;
+    crate::gpu_unlock::artifact::check_gpu_unlock(ctx, &kernel, &artifact)?;
+    if gpu_unlock {
+        crate::runner::unlock_preload::after_build(ctx, &kernel)?;
+    }
+    deliver(ctx, &artifact)?;
+    Ok(())
+}
+
+/// Run and classify the container before inspecting its artifact.
+fn run_build_container(
+    ctx: &mut RunCtx,
+    argv: Vec<OsString>,
+    id: &str,
+) -> Result<(), BuildFailure> {
     let deadline = ctx
         .build_deadline
         .unwrap_or_else(|| ctx.host.now() + Duration::from_secs(1800));
@@ -454,7 +451,7 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), Bui
     cmd.args = argv;
     ctx.log(
         LogKey::BuildContainer,
-        json!({"container": crate::tasks::build_container_name(&id)}),
+        json!({"container": crate::tasks::build_container_name(id)}),
     );
     let mut watch = DockerWatch {
         ctx,
@@ -488,7 +485,7 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), Bui
                 &Cmd::new(At::Host, "docker", HOST_CMD_TIMEOUT)
                     .arg("rm")
                     .arg("-f")
-                    .arg(crate::tasks::build_container_name(&id)),
+                    .arg(crate::tasks::build_container_name(id)),
             );
             ctx.log(LogKey::BuildTimeout, json!({}));
             return Err(BuildFailure {
@@ -503,12 +500,6 @@ pub fn build(ctx: &mut RunCtx, env: &BuildEnv, compiler: &str) -> Result<(), Bui
                 .with_command(out_argv, out_exit));
         }
     }
-    let artifact = check_artifact(ctx, &kernel)?;
-    crate::gpu_unlock::artifact::check_gpu_unlock(ctx, &kernel, &artifact)?;
-    if gpu_unlock {
-        crate::runner::unlock_preload::after_build(ctx, &kernel)?;
-    }
-    deliver(ctx, &artifact)?;
     Ok(())
 }
 
@@ -636,6 +627,68 @@ pub fn check_artifact(ctx: &mut RunCtx, kernel: &str) -> Result<Artifact, BuildF
             )),
         ));
     }
+    let copied = check_artifact_digest(ctx)?;
+    let out_raw = ctx.task_dir().join("out").join("nvidia.raw");
+    let entries = read_artifact_entries(ctx, &out_raw)?;
+    let facts = facts::image_facts(&entries);
+    let built_kernel = match &facts.target_kernel {
+        Reading::Value(k) => k.clone(),
+        Reading::Unknown(_) => {
+            return Err(check_failure(
+                ctx,
+                BUILD_ARTIFACT_KERNEL_AMBIGUOUS,
+                json!({}),
+                None,
+            ))
+        }
+    };
+    if built_kernel != kernel {
+        return Err(check_failure(
+            ctx,
+            BUILD_ARTIFACT_KERNEL_MISMATCH,
+            json!({"built_kernel": built_kernel, "current_kernel": kernel}),
+            None,
+        ));
+    }
+
+    let (plan_version, ko_path) = check_artifact_version(ctx, &facts, &entries, &built_kernel)?;
+    let ko_file = check_artifact_module(ctx, &out_raw, ko_path, &plan_version)?;
+
+    // Fourth check: the three toolkit programs.
+    for (name, path) in TOOLKIT_TOOLS {
+        let ok = entries.iter().any(|e| {
+            e.path == path && e.kind == EntryKind::File && e.mode.as_bytes().get(3) == Some(&b'x')
+        });
+        if !ok {
+            return Err(check_failure(
+                ctx,
+                BUILD_ARTIFACT_TOOL_MISSING,
+                json!({"program": name}),
+                None,
+            ));
+        }
+    }
+
+    ctx.log(
+        LogKey::ArtifactChecked,
+        json!({
+            "target_kernel": built_kernel,
+            "version": plan_version,
+        }),
+    );
+    let _ = ctx.write_state();
+    Ok(Artifact {
+        sha256: copied.sha256,
+        size: copied.size,
+        version: plan_version,
+        target_kernel: built_kernel,
+        entries,
+        nvidia_ko: ko_file,
+    })
+}
+
+/// Verify the recorded digest before reading the image listing.
+fn check_artifact_digest(ctx: &RunCtx) -> Result<store::Copied, BuildFailure> {
     let out_result = ctx.task_dir().join("out").join("result.txt");
     let out_raw = ctx.task_dir().join("out").join("nvidia.raw");
     regular_file(ctx, &out_result, "result.txt")?;
@@ -669,6 +722,13 @@ pub fn check_artifact(ctx: &mut RunCtx, kernel: &str) -> Result<Artifact, BuildF
         ));
     }
 
+    Ok(copied)
+}
+
+fn read_artifact_entries(
+    ctx: &RunCtx,
+    out_raw: &std::path::Path,
+) -> Result<Vec<ImageEntry>, BuildFailure> {
     // listing.
     let listing_cmd = Cmd::new(At::Host, "unsquashfs", HOST_CMD_TIMEOUT)
         .arg("-lls")
@@ -694,27 +754,16 @@ pub fn check_artifact(ctx: &mut RunCtx, kernel: &str) -> Result<Artifact, BuildF
             ))
         }
     };
-    let facts = facts::image_facts(&entries);
-    let built_kernel = match &facts.target_kernel {
-        Reading::Value(k) => k.clone(),
-        Reading::Unknown(_) => {
-            return Err(check_failure(
-                ctx,
-                BUILD_ARTIFACT_KERNEL_AMBIGUOUS,
-                json!({}),
-                None,
-            ))
-        }
-    };
-    if built_kernel != kernel {
-        return Err(check_failure(
-            ctx,
-            BUILD_ARTIFACT_KERNEL_MISMATCH,
-            json!({"built_kernel": built_kernel, "current_kernel": kernel}),
-            None,
-        ));
-    }
+    Ok(entries)
+}
 
+/// Check the image version and module path before extracting the module.
+fn check_artifact_version<'a>(
+    ctx: &RunCtx,
+    facts: &facts::ImageFacts,
+    entries: &'a [ImageEntry],
+    built_kernel: &str,
+) -> Result<(String, &'a str), BuildFailure> {
     // Third check: the driver version inside the image and in nvidia.ko.
     let plan_version = ctx
         .state
@@ -751,7 +800,7 @@ pub fn check_artifact(ctx: &mut RunCtx, kernel: &str) -> Result<Artifact, BuildF
         ));
     }
     let ko_path = &ko_candidates[0].path;
-    if !nvidia_ko_path_ok(ko_path, &built_kernel) {
+    if !nvidia_ko_path_ok(ko_path, built_kernel) {
         return Err(check_failure(
             ctx,
             BUILD_ARTIFACT_VERSION_UNREADABLE,
@@ -767,6 +816,16 @@ pub fn check_artifact(ctx: &mut RunCtx, kernel: &str) -> Result<Artifact, BuildF
             None,
         ));
     }
+    Ok((plan_version, ko_path))
+}
+
+/// Extract the selected module and check its version before the toolkit checks.
+fn check_artifact_module(
+    ctx: &RunCtx,
+    out_raw: &std::path::Path,
+    ko_path: &str,
+    plan_version: &str,
+) -> Result<std::path::PathBuf, BuildFailure> {
     let inspect = ctx.task_dir().join("inspect");
     let _ = ctx.host.remove_dir_all(&inspect);
     let extract_cmd = Cmd::new(At::Host, "unsquashfs", HOST_CMD_TIMEOUT)
@@ -825,72 +884,12 @@ pub fn check_artifact(ctx: &mut RunCtx, kernel: &str) -> Result<Artifact, BuildF
         ));
     }
 
-    // Fourth check: the three toolkit programs.
-    for (name, path) in TOOLKIT_TOOLS {
-        let ok = entries.iter().any(|e| {
-            e.path == path && e.kind == EntryKind::File && e.mode.as_bytes().get(3) == Some(&b'x')
-        });
-        if !ok {
-            return Err(check_failure(
-                ctx,
-                BUILD_ARTIFACT_TOOL_MISSING,
-                json!({"program": name}),
-                None,
-            ));
-        }
-    }
-
-    ctx.log(
-        LogKey::ArtifactChecked,
-        json!({
-            "target_kernel": built_kernel,
-            "version": plan_version,
-        }),
-    );
-    let _ = ctx.write_state();
-    Ok(Artifact {
-        sha256: copied.sha256,
-        size: copied.size,
-        version: plan_version,
-        target_kernel: built_kernel,
-        entries,
-        nvidia_ko: ko_file,
-    })
+    Ok(ko_file)
 }
 
 /// Deliver the artifact as a new local driver row.
 pub fn deliver(ctx: &mut RunCtx, artifact: &Artifact) -> Result<String, BuildFailure> {
-    let row_dir = ctx.task_dir().join("row-build");
-    if ctx.host.create_dir(&row_dir, 0o755).is_err() {
-        return Err(build_failure(
-            BUILD_ARTIFACT_DELIVER_FAILED,
-            json!({}),
-            None,
-        ));
-    }
-    if ctx
-        .host
-        .rename(
-            &ctx.task_dir().join("out").join("nvidia.raw"),
-            &row_dir.join("nvidia.raw"),
-        )
-        .is_err()
-    {
-        return Err(build_failure(
-            BUILD_ARTIFACT_DELIVER_FAILED,
-            json!({}),
-            None,
-        ));
-    }
-    // The artifact was written by the build container, not through this process: flush the
-    // file itself before the row directory is published.
-    if ctx.host.fsync_file(&row_dir.join("nvidia.raw")).is_err() {
-        return Err(build_failure(
-            BUILD_ARTIFACT_DELIVER_FAILED,
-            json!({}),
-            None,
-        ));
-    }
+    let row_dir = stage_artifact_row(ctx)?;
     let plan = ctx.state.plan.as_ref().unwrap();
     let (kind, fingerprint) = match &plan.source {
         crate::task_state::PlanSource::Official => (RowKind::Official, None),
@@ -954,6 +953,42 @@ pub fn deliver(ctx: &mut RunCtx, artifact: &Artifact) -> Result<String, BuildFai
         }),
     );
     Ok(row_id)
+}
+
+/// Move and flush the built image before writing its row record.
+fn stage_artifact_row(ctx: &RunCtx) -> Result<std::path::PathBuf, BuildFailure> {
+    let row_dir = ctx.task_dir().join("row-build");
+    if ctx.host.create_dir(&row_dir, 0o755).is_err() {
+        return Err(build_failure(
+            BUILD_ARTIFACT_DELIVER_FAILED,
+            json!({}),
+            None,
+        ));
+    }
+    if ctx
+        .host
+        .rename(
+            &ctx.task_dir().join("out").join("nvidia.raw"),
+            &row_dir.join("nvidia.raw"),
+        )
+        .is_err()
+    {
+        return Err(build_failure(
+            BUILD_ARTIFACT_DELIVER_FAILED,
+            json!({}),
+            None,
+        ));
+    }
+    // The artifact was written by the build container, not through this process: flush the
+    // file itself before the row directory is published.
+    if ctx.host.fsync_file(&row_dir.join("nvidia.raw")).is_err() {
+        return Err(build_failure(
+            BUILD_ARTIFACT_DELIVER_FAILED,
+            json!({}),
+            None,
+        ));
+    }
+    Ok(row_dir)
 }
 
 #[cfg(test)]

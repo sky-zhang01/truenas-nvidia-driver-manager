@@ -116,12 +116,11 @@ if [ "${PRIVATE}" = 1 ]; then
     case_route tools/release/release.py 'controls'
     case_route ci/release.sh 'controls'
     case_route ci/nas-e2e/run.py 'controls'
-    case_route ci/runner/Dockerfile ''
     case_route export/rules 'controls leak'
     case_route ci/post-merge.sh 'controls leak'
     # The leak and export tooling selects its own self-tests.
     for path in ci/export-public.sh ci/export-public-test.sh ci/public-leak-check.sh ci/public-export-drift-test.sh \
-        ci/install-gitleaks.sh ci/install-gitleaks-test.sh ci/public-leak-ci-test.sh ci/github-ci-test.sh; do
+        ci/install-gitleaks.sh ci/install-gitleaks-test.sh ci/public-leak-ci-test.sh ci/public-leak-local.sh ci/public-leak-local-test.sh ci/github-ci-test.sh; do
         out=$(route "$(diff_spec M "${path}")")
         eq "$(sw control_leak_tools "${out}")" true "leak tooling self-tests for ${path}"
     done

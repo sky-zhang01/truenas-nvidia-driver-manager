@@ -322,6 +322,10 @@ fn docker_usage(h: &dyn Host, id: &str, timeout: Duration) -> Usage {
     if pids.is_empty() {
         return Usage::Unknown;
     }
+    docker_pids_usage(h, pids)
+}
+
+fn docker_pids_usage(h: &dyn Host, pids: BTreeSet<u32>) -> Usage {
     let mut in_use = false;
     let mut dri = None;
     for pid in pids {
@@ -529,7 +533,34 @@ pub fn container_gpu_instances(
 pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
     let mut result = GpuUsers::default();
 
-    // Docker.
+    list_docker_users(h, timeout, &mut result);
+
+    match run_midclt(h, &["call", "container.query"], timeout) {
+        Ok(bytes) => match parse_container_users(h, &bytes) {
+            Ok(users) => result.users.extend(users),
+            Err(reason) => result.errors.push(CategoryError {
+                kind: UserKind::TrueNasContainer,
+                reason: crate::task_state::ReasonValue::new(reason, serde_json::json!({})),
+            }),
+        },
+        Err(out) if method_missing(&out, "container", "query") => {
+            list_virt_instances(h, timeout, &mut result);
+        }
+        Err(out) => result
+            .errors
+            .push(category_error(UserKind::TrueNasContainer, &out, timeout)),
+    }
+
+    result.users.sort_by(|a, b| {
+        a.usage
+            .cmp(&b.usage)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    result
+}
+
+fn list_docker_users(h: &dyn Host, timeout: Duration, result: &mut GpuUsers) {
     let ps = h.run(
         &Cmd::new(At::Host, "docker", timeout)
             .arg("ps")
@@ -577,67 +608,7 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
                     .all(|l| l.trim().is_empty() || l.contains("No such object"));
             match parse_result {
                 Ok(mut containers) if inspect.exit.ok() || no_such_object => {
-                    for c in &mut containers {
-                        // Resolve /dev/dri/by-path links through the host view.
-                        for d in &c.devices {
-                            if let Some(node) = d
-                                .path_on_host
-                                .as_deref()
-                                .and_then(|p| p.strip_prefix("/dev/dri/by-path/"))
-                            {
-                                let link = h.view(Path::new(&format!("/dev/dri/by-path/{node}")));
-                                if let Ok(target) = h.read_link(&link) {
-                                    c.by_path_targets.insert(
-                                        node.to_string(),
-                                        target.to_string_lossy().into_owned(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    let needs_nodes = containers.iter().any(|c| {
-                        c.devices.iter().any(|d| {
-                            d.path_on_host
-                                .as_deref()
-                                .map(|p| p.starts_with("/dev/dri"))
-                                .unwrap_or(false)
-                        })
-                    });
-                    let nodes = if needs_nodes {
-                        nvidia_dri_nodes(h)
-                    } else {
-                        Ok(BTreeSet::new())
-                    };
-                    match nodes {
-                        Err(reason) => result.errors.push(CategoryError {
-                            kind: UserKind::Docker,
-                            reason: crate::task_state::ReasonValue::new(
-                                reason,
-                                serde_json::json!({}),
-                            ),
-                        }),
-                        Ok(nodes) => {
-                            let mut users: Vec<GpuUser> = containers
-                                .iter()
-                                .filter(|c| docker_requests_gpu(c, &nodes))
-                                .map(|c| GpuUser {
-                                    id: format!(
-                                        "docker:{}",
-                                        if c.id.is_empty() { &c.name } else { &c.id }
-                                    ),
-                                    name: c.name.trim_start_matches('/').to_string(),
-                                    kind: UserKind::Docker,
-                                    usage: if ids.contains(&c.id) {
-                                        docker_usage(h, &c.id, timeout)
-                                    } else {
-                                        Usage::Unknown
-                                    },
-                                })
-                                .collect();
-                            users.sort_by(|a, b| a.name.cmp(&b.name));
-                            result.users.extend(users);
-                        }
-                    }
+                    collect_docker_users(h, timeout, result, &ids, &mut containers);
                 }
                 Ok(_) => result
                     .errors
@@ -658,30 +629,68 @@ pub fn list(h: &dyn Host, timeout: Duration) -> GpuUsers {
             }
         }
     }
+}
 
-    match run_midclt(h, &["call", "container.query"], timeout) {
-        Ok(bytes) => match parse_container_users(h, &bytes) {
-            Ok(users) => result.users.extend(users),
-            Err(reason) => result.errors.push(CategoryError {
-                kind: UserKind::TrueNasContainer,
-                reason: crate::task_state::ReasonValue::new(reason, serde_json::json!({})),
-            }),
-        },
-        Err(out) if method_missing(&out, "container", "query") => {
-            list_virt_instances(h, timeout, &mut result);
+fn collect_docker_users(
+    h: &dyn Host,
+    timeout: Duration,
+    result: &mut GpuUsers,
+    ids: &[String],
+    containers: &mut [InspectedContainer],
+) {
+    for c in containers.iter_mut() {
+        // Resolve /dev/dri/by-path links through the host view.
+        for d in &c.devices {
+            if let Some(node) = d
+                .path_on_host
+                .as_deref()
+                .and_then(|p| p.strip_prefix("/dev/dri/by-path/"))
+            {
+                let link = h.view(Path::new(&format!("/dev/dri/by-path/{node}")));
+                if let Ok(target) = h.read_link(&link) {
+                    c.by_path_targets
+                        .insert(node.to_string(), target.to_string_lossy().into_owned());
+                }
+            }
         }
-        Err(out) => result
-            .errors
-            .push(category_error(UserKind::TrueNasContainer, &out, timeout)),
     }
-
-    result.users.sort_by(|a, b| {
-        a.usage
-            .cmp(&b.usage)
-            .then_with(|| a.name.cmp(&b.name))
-            .then_with(|| a.id.cmp(&b.id))
+    let needs_nodes = containers.iter().any(|c| {
+        c.devices.iter().any(|d| {
+            d.path_on_host
+                .as_deref()
+                .map(|p| p.starts_with("/dev/dri"))
+                .unwrap_or(false)
+        })
     });
-    result
+    let nodes = if needs_nodes {
+        nvidia_dri_nodes(h)
+    } else {
+        Ok(BTreeSet::new())
+    };
+    match nodes {
+        Err(reason) => result.errors.push(CategoryError {
+            kind: UserKind::Docker,
+            reason: crate::task_state::ReasonValue::new(reason, serde_json::json!({})),
+        }),
+        Ok(nodes) => {
+            let mut users: Vec<GpuUser> = containers
+                .iter()
+                .filter(|c| docker_requests_gpu(c, &nodes))
+                .map(|c| GpuUser {
+                    id: format!("docker:{}", if c.id.is_empty() { &c.name } else { &c.id }),
+                    name: c.name.trim_start_matches('/').to_string(),
+                    kind: UserKind::Docker,
+                    usage: if ids.contains(&c.id) {
+                        docker_usage(h, &c.id, timeout)
+                    } else {
+                        Usage::Unknown
+                    },
+                })
+                .collect();
+            users.sort_by(|a, b| a.name.cmp(&b.name));
+            result.users.extend(users);
+        }
+    }
 }
 
 // Preserve the stored `incus` category key so existing task records still render.

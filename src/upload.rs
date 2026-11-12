@@ -1041,33 +1041,123 @@ pub async fn receive(
     }
     {
         let _lock = process_lock.lock().await;
-        // Re-check before this receive marks the group busy or creates a file.
-        if !session_ok() {
-            return Err(UploadReject::Unauthorized);
-        }
-        let mut inner = st.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.current.as_deref() != Some(group.as_str()) {
-            return Err(UploadReject::GroupReplaced);
-        }
-        if inner.receiving || inner.locked {
-            return Err(UploadReject::Busy {
-                params: serde_json::json!({"file_name": client_name}),
-            });
-        }
-        inner.receiving = true;
+        admit_receive(&st, &group, &client_name, &session_ok)?;
     }
     let guard = Arc::new(ReceivingGuard { st: st.clone() });
-    if !name_ok(&client_name) {
+    let kind = check_upload_request(&client_name, content_length)?;
+
+    // stream into `.incoming-<hex>` in a background thread.
+    let incoming_name = format!(".incoming-{}", store::random_hex(8));
+    let incoming = p.upload_group(&group).join(&incoming_name);
+    let partial = PartialGuard::new(h.clone(), incoming.clone());
+    let mode = 0o600;
+    let file = h.create(&incoming, Create::New, mode).map_err(|_| {
+        UploadReject::file_reject(&client_name, "write_failed", 500, serde_json::json!({}))
+    })?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(WRITE_QUEUE_FRAMES);
+    // Both the handler and the blocking writer retain the receiving flag. It
+    // covers content validation and the commit decision, and also outlives a
+    // cancelled handler until the thread holding the file has really ended.
+    let writer_guard = guard.clone();
+    let writer = spawn_upload_writer(file, rx, writer_guard);
+
+    let mut body = std::pin::pin!(body);
+    let mut read_error = false;
+    let mut too_large = false;
+    let mut written: u64 = 0;
+    // Cancelling the handler future drops this guard: the receive was interrupted, so the
+    // `disconnected` line is written even though the loop never reported an error.
+    let mut interruption = InterruptionLog::new();
+    read_upload_body(
+        body.as_mut(),
+        &tx,
+        &mut interruption,
+        &mut read_error,
+        &mut too_large,
+        &mut written,
+    )
+    .await;
+    // The body read is over; only a drop before this point is a receive
+    // interruption. A later rejection or the success path was not interrupted.
+    interruption.finished();
+    drop(tx);
+    let outcome = finish_upload_writer(writer, &client_name, too_large, read_error).await?;
+
+    let (result, deb) = validate_received_file(
+        h.as_ref(),
+        &incoming,
+        host_data_dir.as_deref(),
+        &client_name,
+        kind,
+        &outcome,
+    )?;
+
+    // finalize under the process lock. The group check, the file rename and the
+    // `group.json` rewrite are one critical section, so a submission can never move a
+    // half-finalized group. The old file and the old record survive a failed rewrite.
+    let final_path = upload_slot_path(&p, &group, &client_name, kind, &result)?;
+    {
+        let _lock = process_lock.lock().await;
+        check_upload_commit(&st, &group, &client_name, &result, &session_ok)?;
+        let (file_name, backup, had_old) =
+            replace_upload_slot(h.as_ref(), &incoming, &final_path, &client_name, kind)?;
+        partial.keep();
+        commit_upload_record(
+            h.as_ref(),
+            &p,
+            &group,
+            &client_name,
+            kind,
+            &outcome,
+            &result,
+            deb,
+            &final_path,
+            &file_name,
+            &backup,
+            had_old,
+        )?;
+    }
+    Ok((result, summary(h.as_ref(), &p, &group)))
+}
+
+fn admit_receive(
+    st: &UploadState,
+    group: &str,
+    client_name: &str,
+    session_ok: &impl Fn() -> bool,
+) -> Result<(), UploadReject> {
+    // Re-check before this receive marks the group busy or creates a file.
+    if !session_ok() {
+        return Err(UploadReject::Unauthorized);
+    }
+    let mut inner = st.inner.lock().unwrap_or_else(|e| e.into_inner());
+    if inner.current.as_deref() != Some(group) {
+        return Err(UploadReject::GroupReplaced);
+    }
+    if inner.receiving || inner.locked {
+        return Err(UploadReject::Busy {
+            params: serde_json::json!({"file_name": client_name}),
+        });
+    }
+    inner.receiving = true;
+    Ok(())
+}
+
+fn check_upload_request(
+    client_name: &str,
+    content_length: Option<u64>,
+) -> Result<FileKind, UploadReject> {
+    if !name_ok(client_name) {
         return Err(UploadReject::Rejected {
-            file_name: client_name,
+            file_name: client_name.to_string(),
             reason: "not_run_or_deb",
             status: 422,
             params: serde_json::json!({}),
         });
     }
-    let Some(kind) = file_kind(&client_name) else {
+    let Some(kind) = file_kind(client_name) else {
         return Err(UploadReject::file_reject(
-            &client_name,
+            client_name,
             "not_run_or_deb",
             422,
             serde_json::json!({}),
@@ -1078,27 +1168,21 @@ pub async fn receive(
         .unwrap_or(false)
     {
         return Err(UploadReject::file_reject(
-            &client_name,
+            client_name,
             "too_large",
             413,
             serde_json::json!({}),
         ));
     }
+    Ok(kind)
+}
 
-    // stream into `.incoming-<hex>` in a background thread.
-    let incoming_name = format!(".incoming-{}", store::random_hex(8));
-    let incoming = p.upload_group(&group).join(&incoming_name);
-    let partial = PartialGuard::new(h.clone(), incoming.clone());
-    let mode = 0o600;
-    let file = h.create(&incoming, Create::New, mode).map_err(|_| {
-        UploadReject::file_reject(&client_name, "write_failed", 500, serde_json::json!({}))
-    })?;
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(WRITE_QUEUE_FRAMES);
-    // Both the handler and the blocking writer retain the receiving flag. It
-    // covers content validation and the commit decision, and also outlives a
-    // cancelled handler until the thread holding the file has really ended.
-    let writer_guard = guard.clone();
-    let writer = tokio::task::spawn_blocking(move || -> std::io::Result<WriteOutcome> {
+fn spawn_upload_writer(
+    file: Box<dyn crate::host::SyncWrite + Send>,
+    mut rx: tokio::sync::mpsc::Receiver<Bytes>,
+    writer_guard: Arc<ReceivingGuard>,
+) -> tokio::task::JoinHandle<std::io::Result<WriteOutcome>> {
+    tokio::task::spawn_blocking(move || -> std::io::Result<WriteOutcome> {
         use sha2::{Digest, Sha256};
         let _guard = writer_guard;
         let mut file = file;
@@ -1123,15 +1207,17 @@ pub async fn receive(
             size,
             prefix,
         })
-    });
+    })
+}
 
-    let mut body = std::pin::pin!(body);
-    let mut read_error = false;
-    let mut too_large = false;
-    let mut written: u64 = 0;
-    // Cancelling the handler future drops this guard: the receive was interrupted, so the
-    // `disconnected` line is written even though the loop never reported an error.
-    let mut interruption = InterruptionLog::new();
+async fn read_upload_body(
+    mut body: std::pin::Pin<&mut Body>,
+    tx: &tokio::sync::mpsc::Sender<Bytes>,
+    interruption: &mut InterruptionLog,
+    read_error: &mut bool,
+    too_large: &mut bool,
+    written: &mut u64,
+) {
     loop {
         let next = tokio::time::timeout(
             UPLOAD_IDLE_TIMEOUT,
@@ -1141,13 +1227,13 @@ pub async fn receive(
         let frame = match next {
             Err(_) => {
                 interruption.report("idle");
-                read_error = true;
+                *read_error = true;
                 break;
             }
             Ok(None) => break,
             Ok(Some(Err(_))) => {
                 interruption.report("disconnected");
-                read_error = true;
+                *read_error = true;
                 break;
             }
             Ok(Some(Ok(frame))) => frame,
@@ -1155,26 +1241,30 @@ pub async fn receive(
         let Some(data) = frame.data_ref() else {
             continue;
         };
-        written += data.len() as u64;
-        if written > UPLOAD_FILE_LIMIT {
-            too_large = true;
+        *written += data.len() as u64;
+        if *written > UPLOAD_FILE_LIMIT {
+            *too_large = true;
             break;
         }
         if tx.send(data.clone()).await.is_err() {
             interruption.finished();
-            read_error = true;
+            *read_error = true;
             break;
         }
     }
-    // The body read is over; only a drop before this point is a receive
-    // interruption. A later rejection or the success path was not interrupted.
-    interruption.finished();
-    drop(tx);
+}
+
+async fn finish_upload_writer(
+    writer: tokio::task::JoinHandle<std::io::Result<WriteOutcome>>,
+    client_name: &str,
+    too_large: bool,
+    read_error: bool,
+) -> Result<WriteOutcome, UploadReject> {
     let outcome = match writer.await {
         Ok(Ok(o)) => o,
         Ok(Err(_)) | Err(_) => {
             return Err(UploadReject::file_reject(
-                &client_name,
+                client_name,
                 "write_failed",
                 500,
                 serde_json::json!({}),
@@ -1183,7 +1273,7 @@ pub async fn receive(
     };
     if too_large {
         return Err(UploadReject::file_reject(
-            &client_name,
+            client_name,
             "too_large",
             413,
             serde_json::json!({}),
@@ -1191,16 +1281,26 @@ pub async fn receive(
     }
     if read_error {
         return Err(UploadReject::file_reject(
-            &client_name,
+            client_name,
             "interrupted",
             400,
             serde_json::json!({}),
         ));
     }
+    Ok(outcome)
+}
 
+fn validate_received_file(
+    h: &dyn Host,
+    incoming: &std::path::Path,
+    host_data_dir: Option<&std::path::Path>,
+    client_name: &str,
+    kind: FileKind,
+    outcome: &WriteOutcome,
+) -> Result<(FileResult, Option<DebJson>), UploadReject> {
     let mut result = FileResult {
         kind: "run".to_string(),
-        client_name: client_name.clone(),
+        client_name: client_name.to_string(),
         sha256: outcome.sha256.clone(),
         size: outcome.size,
         package: None,
@@ -1216,7 +1316,7 @@ pub async fn receive(
             }
             Err(reason) => {
                 return Err(UploadReject::file_reject(
-                    &client_name,
+                    client_name,
                     reason,
                     422,
                     serde_json::json!({}),
@@ -1225,7 +1325,7 @@ pub async fn receive(
         },
         FileKind::Deb => {
             result.kind = "deb".to_string();
-            match deb_fields(h.as_ref(), &incoming, host_data_dir.as_deref()) {
+            match deb_fields(h, incoming, host_data_dir) {
                 Ok(fields) => {
                     result.package = Some(fields.package.clone());
                     result.version = Some(fields.version.clone());
@@ -1250,160 +1350,198 @@ pub async fn receive(
                             ("deb_version_format", serde_json::json!({"version": ""}))
                         }
                     };
-                    return Err(UploadReject::file_reject(&client_name, code, 422, params));
+                    return Err(UploadReject::file_reject(client_name, code, 422, params));
                 }
             }
         }
     }
+    Ok((result, deb))
+}
 
-    // finalize under the process lock. The group check, the file rename and the
-    // `group.json` rewrite are one critical section, so a submission can never move a
-    // half-finalized group. The old file and the old record survive a failed rewrite.
-    let final_path = match (&kind, result.package.as_deref()) {
-        (FileKind::Run, _) => p.upload_group(&group).join("driver.run"),
+fn upload_slot_path(
+    p: &Paths,
+    group: &str,
+    client_name: &str,
+    kind: FileKind,
+    result: &FileResult,
+) -> Result<PathBuf, UploadReject> {
+    Ok(match (&kind, result.package.as_deref()) {
+        (FileKind::Run, _) => p.upload_group(group).join("driver.run"),
         (FileKind::Deb, Some(package)) => p
-            .upload_group(&group)
+            .upload_group(group)
             .join("toolkit")
             .join(format!("{package}.deb")),
         (FileKind::Deb, None) => {
             return Err(UploadReject::file_reject(
-                &client_name,
+                client_name,
                 "deb_fields_unreadable",
                 422,
                 serde_json::json!({}),
             ))
         }
-    };
+    })
+}
+
+fn check_upload_commit(
+    st: &UploadState,
+    group: &str,
+    client_name: &str,
+    result: &FileResult,
+    session_ok: &impl Fn() -> bool,
+) -> Result<(), UploadReject> {
+    // Re-check again before the temporary file is renamed into the slot.
+    if !session_ok() {
+        return Err(UploadReject::Unauthorized);
+    }
     {
-        let _lock = process_lock.lock().await;
-        // Re-check again before the temporary file is renamed into the slot.
-        if !session_ok() {
-            return Err(UploadReject::Unauthorized);
+        let inner = st.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.current.as_deref() != Some(group) {
+            return Err(UploadReject::GroupReplaced);
         }
-        {
-            let inner = st.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if inner.current.as_deref() != Some(group.as_str()) {
-                return Err(UploadReject::GroupReplaced);
-            }
-            if inner.locked {
-                return Err(UploadReject::Busy {
-                    params: serde_json::json!({
-                        "file_name": client_name,
-                        "kind": result.kind,
-                        "package": result.package,
-                    }),
-                });
-            }
+        if inner.locked {
+            return Err(UploadReject::Busy {
+                params: serde_json::json!({
+                    "file_name": client_name,
+                    "kind": result.kind,
+                    "package": result.package,
+                }),
+            });
         }
-        let file_name = final_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        // A slot that still has protected recovery material must get those bytes back before
-        // a new replacement snapshots the slot.
-        let final_dir = final_path.parent().unwrap_or(std::path::Path::new("."));
-        if kind == FileKind::Deb && h.create_dir(final_dir, 0o755).is_err() {
-            return Err(UploadReject::file_reject(
-                &client_name,
-                "write_failed",
-                500,
-                serde_json::json!({}),
-            ));
-        }
-        if store::flush_recovery(h.as_ref(), final_dir, &file_name).is_err() {
-            return Err(UploadReject::file_reject(
-                &client_name,
-                "write_failed",
-                500,
-                serde_json::json!({}),
-            ));
-        }
-        // The accepted slot is moved under the protected recovery name, not a plain `.tmp-*`
-        // name: whatever happens next, the only copy of the old bytes can never be deleted by
-        // the ordinary leftover cleanup. `flush_recovery` above put back any earlier material
-        // first.
-        let backup = store::recovery_path(final_dir, &file_name);
-        let had_old = h.lstat(&final_path).is_ok();
-        if had_old && h.rename(&final_path, &backup).is_err() {
-            return Err(UploadReject::file_reject(
-                &client_name,
-                "write_failed",
-                500,
-                serde_json::json!({}),
-            ));
-        }
-        if h.rename(&incoming, &final_path).is_err() {
-            if had_old {
-                // The accepted slot must never be lost, including when the rollback rename is
-                // refused: the shared restore falls back to a verified copy and finally keeps
-                // the bytes under the protected name.
-                restore_slot(h.as_ref(), &backup, &final_path);
-            }
-            return Err(UploadReject::file_reject(
-                &client_name,
-                "write_failed",
-                500,
-                serde_json::json!({}),
-            ));
-        }
-        partial.keep();
-        let group_path = p.upload_group(&group).join("group.json");
-        let group_before = h.read(&group_path).ok();
-        let mut g = read_group(h.as_ref(), &p, &group);
-        match kind {
-            FileKind::Run => {
-                g.run = Some(RunJson {
-                    sha256: outcome.sha256.clone(),
-                    size: outcome.size,
-                    candidates: result.candidates.clone().unwrap_or_default(),
-                });
-            }
-            FileKind::Deb => {
-                if let (Some(package), Some(deb)) = (result.package.clone(), deb) {
-                    g.debs.insert(package, deb);
-                }
-            }
-        }
-        if write_group(h.as_ref(), &p, &group, &g).is_err() {
-            // Rejecting the new file must not destroy the accepted slot: drop the new file
-            // and put the old one back. A refused rename falls back to a verified copy, and a
-            // refused copy keeps the backup under the protected recovery name.
-            let _ = h.remove_file(&final_path);
-            if had_old {
-                restore_slot(h.as_ref(), &backup, &final_path);
-            }
-            // The accepted `group.json` must not describe the rejected file.
-            let _ = store::flush_recovery(h.as_ref(), final_dir, "group.json");
-            return Err(UploadReject::file_reject(
-                &client_name,
-                "write_failed",
-                500,
-                serde_json::json!({}),
-            ));
-        }
+    }
+    Ok(())
+}
+
+fn replace_upload_slot(
+    h: &dyn Host,
+    incoming: &std::path::Path,
+    final_path: &std::path::Path,
+    client_name: &str,
+    kind: FileKind,
+) -> Result<(String, PathBuf, bool), UploadReject> {
+    let file_name = final_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // A slot that still has protected recovery material must get those bytes back before
+    // a new replacement snapshots the slot.
+    let final_dir = final_path.parent().unwrap_or(std::path::Path::new("."));
+    if kind == FileKind::Deb && h.create_dir(final_dir, 0o755).is_err() {
+        return Err(UploadReject::file_reject(
+            client_name,
+            "write_failed",
+            500,
+            serde_json::json!({}),
+        ));
+    }
+    if store::flush_recovery(h, final_dir, &file_name).is_err() {
+        return Err(UploadReject::file_reject(
+            client_name,
+            "write_failed",
+            500,
+            serde_json::json!({}),
+        ));
+    }
+    // The accepted slot is moved under the protected recovery name, not a plain `.tmp-*`
+    // name: whatever happens next, the only copy of the old bytes can never be deleted by
+    // the ordinary leftover cleanup. `flush_recovery` above put back any earlier material
+    // first.
+    let backup = store::recovery_path(final_dir, &file_name);
+    let had_old = h.lstat(final_path).is_ok();
+    if had_old && h.rename(final_path, &backup).is_err() {
+        return Err(UploadReject::file_reject(
+            client_name,
+            "write_failed",
+            500,
+            serde_json::json!({}),
+        ));
+    }
+    if h.rename(incoming, final_path).is_err() {
         if had_old {
-            // A committed replacement must not keep protected recovery material: a later
-            // flush would put the old bytes back over the accepted file. Every retirement
-            // route is tried first; only when all of them are refused is the replacement
-            // undone.
-            if store::retire_recovery(h.as_ref(), final_dir, &file_name, &backup, &final_path)
-                .is_err()
-            {
-                let _ = h.remove_file(&final_path);
-                restore_slot(h.as_ref(), &backup, &final_path);
-                if let Some(before) = &group_before {
-                    let _ = store::write_in_place(h.as_ref(), &group_path, before, 0o644);
-                }
-                return Err(UploadReject::file_reject(
-                    &client_name,
-                    "write_failed",
-                    500,
-                    serde_json::json!({}),
-                ));
+            // The accepted slot must never be lost, including when the rollback rename is
+            // refused: the shared restore falls back to a verified copy and finally keeps
+            // the bytes under the protected name.
+            restore_slot(h, &backup, final_path);
+        }
+        return Err(UploadReject::file_reject(
+            client_name,
+            "write_failed",
+            500,
+            serde_json::json!({}),
+        ));
+    }
+    Ok((file_name, backup, had_old))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_upload_record(
+    h: &dyn Host,
+    p: &Paths,
+    group: &str,
+    client_name: &str,
+    kind: FileKind,
+    outcome: &WriteOutcome,
+    result: &FileResult,
+    deb: Option<DebJson>,
+    final_path: &std::path::Path,
+    file_name: &str,
+    backup: &std::path::Path,
+    had_old: bool,
+) -> Result<(), UploadReject> {
+    let final_dir = final_path.parent().unwrap_or(std::path::Path::new("."));
+    let group_path = p.upload_group(group).join("group.json");
+    let group_before = h.read(&group_path).ok();
+    let mut g = read_group(h, p, group);
+    match kind {
+        FileKind::Run => {
+            g.run = Some(RunJson {
+                sha256: outcome.sha256.clone(),
+                size: outcome.size,
+                candidates: result.candidates.clone().unwrap_or_default(),
+            });
+        }
+        FileKind::Deb => {
+            if let (Some(package), Some(deb)) = (result.package.clone(), deb) {
+                g.debs.insert(package, deb);
             }
         }
     }
-    Ok((result, summary(h.as_ref(), &p, &group)))
+    if write_group(h, p, group, &g).is_err() {
+        // Rejecting the new file must not destroy the accepted slot: drop the new file
+        // and put the old one back. A refused rename falls back to a verified copy, and a
+        // refused copy keeps the backup under the protected recovery name.
+        let _ = h.remove_file(final_path);
+        if had_old {
+            restore_slot(h, backup, final_path);
+        }
+        // The accepted `group.json` must not describe the rejected file.
+        let _ = store::flush_recovery(h, final_dir, "group.json");
+        return Err(UploadReject::file_reject(
+            client_name,
+            "write_failed",
+            500,
+            serde_json::json!({}),
+        ));
+    }
+    if had_old {
+        // A committed replacement must not keep protected recovery material: a later
+        // flush would put the old bytes back over the accepted file. Every retirement
+        // route is tried first; only when all of them are refused is the replacement
+        // undone.
+        if store::retire_recovery(h, final_dir, file_name, backup, final_path).is_err() {
+            let _ = h.remove_file(final_path);
+            restore_slot(h, backup, final_path);
+            if let Some(before) = &group_before {
+                let _ = store::write_in_place(h, &group_path, before, 0o644);
+            }
+            return Err(UploadReject::file_reject(
+                client_name,
+                "write_failed",
+                500,
+                serde_json::json!({}),
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct ReceivingGuard {

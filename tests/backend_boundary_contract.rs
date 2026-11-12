@@ -134,6 +134,19 @@ fn mutation_callers_share_the_root_guard() {
         .join("fsync-dir")
         .exists());
 
+    let owned = std::env::temp_dir().join(marker("remove-tree"));
+    std::fs::create_dir(&owned).unwrap();
+    std::fs::write(owned.join("OWNED_MARKER"), b"owned").unwrap();
+    host.put_link("/loop", "/loop");
+    host.put_link("/.fake-host-unresolvable", owned.to_str().unwrap());
+    assert!(!host.exists("/loop/child"));
+    host.remove("/loop/child");
+    host.remove_tree("/loop/child");
+    assert!(owned.join("OWNED_MARKER").exists());
+    assert!(host.exists("/.fake-host-unresolvable"));
+    std::fs::remove_file(owned.join("OWNED_MARKER")).unwrap();
+    std::fs::remove_dir(&owned).unwrap();
+
     std::fs::remove_file(&outside).unwrap();
     println!(
         "sandbox_mutation name={name} moved={moved} sandbox={:?} pass=true",
@@ -153,7 +166,10 @@ fn symlink_loop_fails_closed_without_escape() {
     let direct = host.read(Path::new("/self-loop"));
     let via_parent = host.read(Path::new(&format!("/../self-loop/{name}")));
     // `file` goes through the FakeHost helper fallback for unresolvable paths.
+    host.put_link("/.fake-host-unresolvable", outside.to_str().unwrap());
     let helper = host.file("/../self-loop");
+    assert!(host.file_text("/self-loop").is_none());
+    assert!(host.exists("/.fake-host-unresolvable"));
     println!("sandbox_symlink_loop direct={direct:?} via_parent={via_parent:?} helper={helper:?}");
     assert!(direct.is_err(), "a self-loop must fail, got {direct:?}");
     assert!(
@@ -165,6 +181,36 @@ fn symlink_loop_fails_closed_without_escape() {
         "the fallback must not resolve the loop, got {helper:?}"
     );
     assert_outside_untouched(&outside);
+    host.assert_red_lines();
+}
+
+#[test]
+fn unresolved_sentinel_must_not_list_an_owned_outside_directory() {
+    let host = FakeHost::new();
+    host.put_link("/loop", "/loop");
+    assert!(host.read(Path::new("/loop")).is_err());
+    assert!(host.read_dir(Path::new("/loop")).is_err());
+
+    let owned = std::env::temp_dir().join(marker("dir"));
+    assert!(
+        !owned.starts_with(host.sandbox_root()),
+        "the marker must live outside the sandbox: {owned:?}"
+    );
+    std::fs::create_dir(&owned).unwrap();
+    std::fs::write(owned.join("ONLY_OWNED_OUTSIDE_MARKER"), b"owned").unwrap();
+
+    host.put_link("/.fake-host-unresolvable", owned.to_str().unwrap());
+    let names = host.children("/loop");
+    assert!(
+        !names.iter().any(|n| n == "ONLY_OWNED_OUTSIDE_MARKER"),
+        "the helper listed a real directory outside the sandbox: {names:?}"
+    );
+    assert!(names.is_empty(), "{names:?}");
+
+    assert!(owned.join("ONLY_OWNED_OUTSIDE_MARKER").exists());
+    std::fs::remove_file(owned.join("ONLY_OWNED_OUTSIDE_MARKER")).unwrap();
+    std::fs::remove_dir(&owned).unwrap();
+    host.remove("/.fake-host-unresolvable");
     host.assert_red_lines();
 }
 
@@ -360,60 +406,37 @@ fn namespace_entry_classification_preserves_exit_and_stderr() {
     host.assert_red_lines();
 }
 
-// 6. the test-end red-line assertion cannot be disarmed -----------
-
-fn collect_command() -> Cmd {
-    Cmd::new(At::Host, "systemd-run", Duration::from_secs(5)).arg(concat!("--", "collect"))
-}
-
 #[test]
-fn guard_end_detects_a_violation_without_an_early_assert() {
-    let caught = catch_unwind(AssertUnwindSafe(|| {
-        let host = FakeHost::new();
-        host.preset("systemd-run", &[], FakeOutput::ok());
-        host.run(&collect_command());
-    }));
-    println!("GUARD_END no_prior_assert end_detected={}", caught.is_err());
-    assert!(
-        caught.is_err(),
-        "the test-end guard must detect the recorded violation"
-    );
-}
-
-#[test]
-fn guard_end_does_not_panic_twice_for_a_captured_violation() {
-    let host = FakeHost::new();
-    host.preset("systemd-run", &[], FakeOutput::ok());
-    host.run(&collect_command());
-    let first = catch_unwind(AssertUnwindSafe(|| host.assert_red_lines()));
-    let second = catch_unwind(AssertUnwindSafe(|| drop(host)));
-    println!(
-        "GUARD_END caught_previous_violation={} duplicate_panic={}",
-        first.is_err(),
-        second.is_err()
-    );
-    assert!(first.is_err(), "the explicit assert must see the violation");
-    assert!(
-        second.is_ok(),
-        "the captured violation must not panic twice"
-    );
-}
-
-#[test]
-fn guard_end_rearms_after_a_successful_early_assert() {
-    let caught = catch_unwind(AssertUnwindSafe(|| {
-        let host = FakeHost::new();
-        host.preset("systemd-run", &[], FakeOutput::ok());
-        host.assert_red_lines();
-        host.run(&collect_command());
-        println!(
-            "GUARD_END prior_success=true commands={:?}",
-            host.commands()
-        );
-    }));
-    println!("GUARD_END rearmed end_detected={}", caught.is_err());
-    assert!(
-        caught.is_err(),
-        "a successful early assert cannot replace the test-end assertion of commands recorded later"
-    );
+fn red_line_guard_catches_forbidden_commands_at_drop_even_after_an_assert() {
+    let command = |program, args: &[&str]| {
+        Cmd::new(At::Host, program, Duration::from_secs(5)).args(args.iter().copied())
+    };
+    let cases = [
+        command("systemd-run", &[concat!("--", "collect")]),
+        command(
+            "systemd-run",
+            &[concat!("Collect", "Mode"), "inactive-or-failed"],
+        ),
+        command("docker", &["update", "nvidia"]),
+        command("docker", &[concat!("docker", ".update")]),
+        command("tool", &[concat!("NVM_", "SETUP_CODE")]),
+        command("tool", &["forbidden-test-value"]),
+    ];
+    for cmd in cases {
+        for early_assert in [false, true] {
+            let caught = catch_unwind(AssertUnwindSafe(|| {
+                let host = FakeHost::new();
+                host.forbid_in_argv("forbidden-test-value");
+                host.preset(cmd.program, &[], FakeOutput::ok());
+                if early_assert {
+                    host.assert_red_lines();
+                }
+                host.run(&cmd);
+            }));
+            assert!(
+                caught.is_err(),
+                "drop missed {cmd:?}, early_assert={early_assert}"
+            );
+        }
+    }
 }
